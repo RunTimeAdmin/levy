@@ -54,7 +54,10 @@ signing/delivery broken).
 - Also watch the pending backlog:
   `SELECT COUNT(*) FROM webhook_deliveries WHERE status='pending'
    AND next_retry_at < strftime('%s','now');`
-  A large stuck backlog means the dispatcher isn't running its cycle.
+  A large stuck backlog means the delivery loop isn't running, or one
+  merchant's endpoints are hanging and eating the 8 parallel slots (charges
+  are unaffected; delivery has its own loop). `[webhooks]` lines in the keeper
+  log show each pass.
 
 ## 6. Keeper gas (USDC) balance low — PAGE before it hits zero
 

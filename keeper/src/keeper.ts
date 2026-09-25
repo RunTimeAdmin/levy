@@ -11,7 +11,6 @@ export interface CycleReport {
   charged: Array<{ subId: string; txHash: string }>;
   retried: Array<{ subId: string; txHash: string }>;
   failed: Array<{ subId: string; error: string }>;
-  webhooks: { sent: number; failed: number; dead: number };
 }
 
 /**
@@ -19,7 +18,8 @@ export interface CycleReport {
  *  1. Sync events (subscriptions, charges, failures, transfers).
  *  2. Charge every subscription whose cycle is due.
  *  3. Retry every dunning entry whose backoff has elapsed.
- * Sends are sequential so nonces stay ordered.
+ * Sends are sequential so nonces stay ordered. Webhook delivery is not part
+ * of the cycle; see the delivery loop in index.ts.
  */
 export class Keeper {
   private indexer: Indexer;
@@ -37,7 +37,7 @@ export class Keeper {
   }
 
   async runCycle(): Promise<CycleReport> {
-    const report: CycleReport = { syncedLogs: 0, charged: [], retried: [], failed: [], webhooks: { sent: 0, failed: 0, dead: 0 } };
+    const report: CycleReport = { syncedLogs: 0, charged: [], retried: [], failed: [] };
 
     const first = await this.indexer.sync();
     report.syncedLogs = first.logs;
@@ -67,13 +67,11 @@ export class Keeper {
       else report.failed.push({ subId: row.subId, error: r.error });
     }
 
-    // Re-sync so this cycle's own receipts land in the DB immediately.
+    // Re-sync so this cycle's own receipts land in the DB immediately. The
+    // webhook events they enqueue are delivered by the separate delivery loop
+    // (index.ts): charging never waits on a merchant's endpoint.
     const second = await this.indexer.sync();
     report.syncedLogs += second.logs;
-
-    // Deliver any due webhook events (contract events enqueued above, plus
-    // retries from earlier cycles).
-    report.webhooks = await this.webhooks.dispatchDue(second.nowSec);
     return report;
   }
 

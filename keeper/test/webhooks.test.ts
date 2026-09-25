@@ -195,6 +195,20 @@ describe("WebhookDispatcher", () => {
     assert.throws(() => d.register(MERCHANT, "https://a.example/hook", ["nope" as WebhookEventType], 0));
     db.close();
   });
+
+  it("orders a pass fairly across webhooks and caps each webhook", () => {
+    const db = testDb();
+    const d = new WebhookDispatcher(db, testKey());
+    const a = d.register(MERCHANT, "https://a.example/hook", ["charge.failed"], 0);
+    const b = d.register("0xother", "https://b.example/hook", ["charge.failed"], 0);
+    for (let i = 0; i < 10; i++) d.enqueue("charge.failed", MERCHANT, { n: i }, i); // a's backlog
+    d.enqueue("charge.failed", "0xother", { n: "b" }, 50); // b's one, enqueued last
+    const turn = db.dueDeliveries(100, { limit: 3 }).map((r) => r.webhook_id);
+    assert.deepEqual(turn, [a, b, a]); // b is served before a's second
+    const capped = db.dueDeliveries(100, { perWebhook: 2 }).map((r) => r.webhook_id);
+    assert.deepEqual(capped, [a, b, a]);
+    db.close();
+  });
 });
 
 describe("dispatchDue (live HTTP)", () => {
@@ -212,6 +226,7 @@ describe("dispatchDue (live HTTP)", () => {
         received.push({ headers: req.headers as Record<string, string>, body, path: req.url ?? "" });
         if (req.url === "/redirect") { res.statusCode = 302; res.setHeader("location", "/hook"); res.end(); }
         else if (req.url === "/trickle") { res.writeHead(200); res.write("never ends"); }
+        else if (req.url?.startsWith("/slow")) { setTimeout(() => { res.statusCode = 200; res.end("ok"); }, 400); }
         else if (failMode) { res.statusCode = 500; res.end("boom"); }
         else { res.statusCode = 200; res.end("ok"); }
       });
@@ -344,6 +359,35 @@ describe("dispatchDue (live HTTP)", () => {
     const out = await d.dispatchDue(0);
     assert.deepEqual(out, { sent: 1, failed: 0, dead: 0 });
     assert.ok(Date.now() - t0 < 2000, "should return on the status line");
+    db.close();
+  });
+
+  it("delivers to different webhooks in parallel", async () => {
+    await ready;
+    const db = testDb();
+    const d = new WebhookDispatcher(db, testKey(), LOCAL);
+    for (let i = 0; i < 8; i++) d.register(MERCHANT, `http://127.0.0.1:${port}/slow/${i}`, ["charge.failed"], 0);
+    d.enqueue("charge.failed", MERCHANT, { subId: "1" }, 0); // fans out to all 8
+    const t0 = Date.now();
+    const out = await d.dispatchDue(0);
+    assert.deepEqual(out, { sent: 8, failed: 0, dead: 0 });
+    // 8 x 400ms one after another would take 3.2s.
+    assert.ok(Date.now() - t0 < 1500, `took ${Date.now() - t0}ms`);
+    db.close();
+  });
+
+  it("sends one webhook's deliveries one at a time, in order", async () => {
+    await ready;
+    received.length = 0;
+    const db = testDb();
+    const d = new WebhookDispatcher(db, testKey(), LOCAL);
+    d.register(MERCHANT, `http://127.0.0.1:${port}/slow/ordered`, ["charge.failed"], 0);
+    for (let n = 1; n <= 3; n++) d.enqueue("charge.failed", MERCHANT, { n }, n);
+    const t0 = Date.now();
+    const out = await d.dispatchDue(10);
+    assert.deepEqual(out, { sent: 3, failed: 0, dead: 0 });
+    assert.ok(Date.now() - t0 >= 1150, "never two at once to the same endpoint");
+    assert.deepEqual(received.map((r) => JSON.parse(r.body).n), [1, 2, 3]);
     db.close();
   });
 

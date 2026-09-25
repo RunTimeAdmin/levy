@@ -39,8 +39,21 @@ async function main(): Promise<void> {
     }
   };
 
+  // Webhook retry times are wall-clock; on Arc block timestamps track it closely.
+  const deliver = async () => {
+    try {
+      const r = await keeper.webhooks.dispatchDue(Math.floor(Date.now() / 1000));
+      if (r.sent || r.failed || r.dead) {
+        console.log(`[webhooks] sent=${r.sent} failed=${r.failed} dead=${r.dead}`);
+      }
+    } catch (e: any) {
+      console.error(`[webhooks] error: ${e?.message ?? e}`);
+    }
+  };
+
   if (once) {
     await cycle();
+    await deliver();
     db.close();
     return;
   }
@@ -48,10 +61,14 @@ async function main(): Promise<void> {
   let stopped = false;
   process.on("SIGINT", () => { stopped = true; });
   process.on("SIGTERM", () => { stopped = true; });
-  while (!stopped) {
-    await cycle();
-    await sleep(cfg.pollIntervalMs);
-  }
+  // Two independent loops: charging never waits on a merchant's webhook endpoint.
+  const loop = async (pass: () => Promise<void>, ms: number) => {
+    while (!stopped) {
+      await pass();
+      await sleep(ms);
+    }
+  };
+  await Promise.all([loop(cycle, cfg.pollIntervalMs), loop(deliver, cfg.webhookPollMs)]);
   db.close();
 }
 

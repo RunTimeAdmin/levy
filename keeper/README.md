@@ -50,14 +50,19 @@ at connect time (so DNS rebinding after registration does not help), and
 redirects are never followed. `LEVY_WEBHOOK_ALLOW_PRIVATE=1` lifts this for
 local development only; see `src/webhook-url.ts`.
 
-Each keeper cycle dispatches due deliveries with a 5s POST timeout. Failures
-retry with backoff (1m, 5m, 15m, 1h, 6h) and dead-letter after 24h. Delivery
-state lives in `webhook_deliveries` (`pending` / `sent` / `failed` / `dead`).
+Delivery runs in its own loop (every `LEVY_WEBHOOK_POLL_MS`, default 5s),
+separate from charge cycles, so a slow or hanging endpoint can delay webhooks
+but never charges. Each pass sends up to 8 requests at once with a 5s timeout,
+takes at most 200 deliveries (5 per webhook), serves every webhook's oldest
+delivery before anyone's second, and keeps one request in flight per webhook so
+its deliveries arrive in order. Failures retry with backoff (1m, 5m, 15m, 1h,
+6h) and dead-letter after 24h. Delivery state lives in `webhook_deliveries`
+(`pending` / `sent` / `failed` / `dead`).
 
 ## Tests
 
 ```bash
-npm test              # unit + anvil integration (33 tests)
+npm test              # unit + anvil integration (45 tests)
 npm run test:integration
 ```
 

@@ -9,7 +9,7 @@ import {
 import { readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
-import { LevyDb } from "./db.js";
+import { LevyDb, type DeliveryRow } from "./db.js";
 import { publicOnlyLookup, webhookUrlProblem, type WebhookUrlPolicy } from "./webhook-url.js";
 
 /** The eight webhook event types merchants can subscribe to. */
@@ -274,32 +274,66 @@ export class WebhookDispatcher {
     };
   }
 
-  /** POST every due delivery. Sequential; failures reschedule with backoff. */
-  async dispatchDue(nowSec: number): Promise<{ sent: number; failed: number; dead: number }> {
+  /**
+   * One delivery pass: POST due deliveries, up to `concurrency` at a time.
+   * The pass is bounded and fair across webhooks (see LevyDb.dueDeliveries),
+   * and each webhook has at most one request in flight, so its deliveries go
+   * out in order and a hanging endpoint holds only one slot. Runs in its own
+   * loop (index.ts), never inside the charge cycle: a slow endpoint can delay
+   * webhooks, not charges. Failures reschedule with backoff.
+   */
+  async dispatchDue(
+    nowSec: number,
+    opts: { concurrency?: number; limit?: number; perWebhook?: number } = {}
+  ): Promise<{ sent: number; failed: number; dead: number }> {
     const out = { sent: 0, failed: 0, dead: 0 };
-    for (const d of this.db.dueDeliveries(nowSec)) {
-      const hook = this.db.getWebhook(d.webhook_id);
-      if (!hook || !hook.active) {
-        this.db.markDeliveryDead(d.id, "webhook deleted or deactivated");
-        out.dead++;
-        continue;
-      }
-      const res = await this.post(hook.url, d);
-      if (res.ok) {
-        this.db.markDeliverySent(d.id);
-        out.sent++;
-      } else {
-        const next = nextRetryAt(d.attempts + 1, nowSec, d.created_at);
-        if (next === null) {
-          this.db.markDeliveryDead(d.id, res.error);
-          out.dead++;
-        } else {
-          this.db.markDeliveryFailed(d.id, next, res.error);
-          out.failed++;
+    const queue = this.db.dueDeliveries(nowSec, opts);
+    const inFlight = new Set<number>();
+    const next = () => {
+      const i = queue.findIndex((d) => !inFlight.has(d.webhook_id));
+      return i < 0 ? undefined : queue.splice(i, 1)[0];
+    };
+    // A worker that finds only busy webhooks stops; the worker holding that
+    // webhook picks up its next delivery when it finishes, so nothing strands.
+    const worker = async () => {
+      for (let d = next(); d; d = next()) {
+        inFlight.add(d.webhook_id);
+        try {
+          await this.deliver(d, nowSec, out);
+        } finally {
+          inFlight.delete(d.webhook_id);
         }
       }
-    }
+    };
+    await Promise.all(Array.from({ length: opts.concurrency ?? 8 }, worker));
     return out;
+  }
+
+  private async deliver(
+    d: DeliveryRow,
+    nowSec: number,
+    out: { sent: number; failed: number; dead: number }
+  ): Promise<void> {
+    const hook = this.db.getWebhook(d.webhook_id);
+    if (!hook || !hook.active) {
+      this.db.markDeliveryDead(d.id, "webhook deleted or deactivated");
+      out.dead++;
+      return;
+    }
+    const res = await this.post(hook.url, d);
+    if (res.ok) {
+      this.db.markDeliverySent(d.id);
+      out.sent++;
+      return;
+    }
+    const next = nextRetryAt(d.attempts + 1, nowSec, d.created_at);
+    if (next === null) {
+      this.db.markDeliveryDead(d.id, res.error);
+      out.dead++;
+    } else {
+      this.db.markDeliveryFailed(d.id, next, res.error);
+      out.failed++;
+    }
   }
 
   /**

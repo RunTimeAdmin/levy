@@ -16,6 +16,8 @@ export interface LevyConfig {
   webhookKey?: string;
   /** Allow http and private-address webhook URLs. Local development only. */
   webhookAllowPrivate: boolean;
+  /** Milliseconds between webhook delivery passes (separate from charge cycles). */
+  webhookPollMs: number;
 }
 
 function required(name: string): string {
@@ -40,5 +42,6 @@ export function loadConfig(): LevyConfig {
     webhookKeyPath: process.env.LEVY_WEBHOOK_KEY_PATH ?? "./webhook-signing-key.pem",
     webhookKey: process.env.LEVY_WEBHOOK_KEY,
     webhookAllowPrivate: process.env.LEVY_WEBHOOK_ALLOW_PRIVATE === "1",
+    webhookPollMs: Number(process.env.LEVY_WEBHOOK_POLL_MS ?? 5_000),
   };
 }

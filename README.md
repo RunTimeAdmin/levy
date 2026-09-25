@@ -2,7 +2,7 @@
 
 Pull-based USDC subscription billing for Arc mainnet. Merchants define plans, subscribers approve once, and a keeper triggers per-cycle pulls. The protocol takes a 1% fee on collected payments.
 
-**Status:** M1 (contracts), M2 (keeper + dunning), M3 (webhooks + API + dashboards) complete, plus Permit2 subscribe path. Contracts: 50 tests green (43 unit + 7 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 41 tests green. API: 22 tests green. Not yet deployed. Not audited.
+**Status:** M1 (contracts), M2 (keeper + dunning), M3 (webhooks + API + dashboards) complete, plus Permit2 subscribe path. Contracts: 50 tests green (43 unit + 7 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 45 tests green. API: 22 tests green. Not yet deployed. Not audited.
 
 ## Contracts
 

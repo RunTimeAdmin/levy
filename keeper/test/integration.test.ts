@@ -1,6 +1,7 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createServer } from "node:http";
 import { readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -156,6 +157,7 @@ before(async () => {
   process.env.LEVY_KEEPER_KEY = KEEPER_KEY;
   process.env.LEVY_DB_PATH = ":memory:";
   process.env.LEVY_LOOKBACK_BLOCKS = "100000"; // anvil: scan from genesis
+  process.env.LEVY_WEBHOOK_ALLOW_PRIVATE = "1"; // webhooks below point at local servers
   process.env.LEVY_WEBHOOK_KEY_PATH = join(dirname(fileURLToPath(import.meta.url)), "test-webhook-key.pem");
 
   const { loadConfig } = await import("../src/config.js");
@@ -332,5 +334,47 @@ describe("keeper integration (anvil)", () => {
     const payload = JSON.parse(created.payload);
     assert.equal(payload.subId, "3");
     assert.equal(payload.merchant.toLowerCase(), keeper.address.toLowerCase());
+  });
+  it("charging never waits on webhook delivery", async () => {
+    // An endpoint that accepts connections and never answers. Before delivery
+    // moved to its own loop, runCycle POSTed to it and stalled all charging.
+    const hits: string[] = [];
+    const hang = createServer((req) => { hits.push(req.url ?? ""); });
+    await new Promise<void>((r) => hang.listen(0, "127.0.0.1", r));
+    const hangPort = (hang.address() as { port: number }).port;
+    try {
+      const hookId = keeperSvc.webhooks.register(
+        keeper.address,
+        `http://127.0.0.1:${hangPort}/hang`,
+        ["subscription.created", "charge.succeeded", "invoice.ready"],
+        await chainTime()
+      );
+      const aliceWallet = createWalletClient({
+        account: alice, chain: publicClient.chain, transport: http(RPC),
+      });
+      const asAlice = getContract({
+        address: manager.address, abi: abi("SubscriptionManager"),
+        client: { public: publicClient, wallet: aliceWallet },
+      });
+      const asAliceUsdc = getContract({
+        address: usdc.address, abi: usdc.abi,
+        client: { public: publicClient, wallet: aliceWallet },
+      });
+      await mined(await asAliceUsdc.write.approve([manager.address, PRICE * 100n], { account: alice, chain: publicClient.chain }));
+      await mined(await asAlice.write.subscribe([1n], { account: alice, chain: publicClient.chain }));
+      await increaseTime(CYCLE + 60);
+
+      const report = await keeperSvc.runCycle();
+      assert.ok(report.charged.some((c) => c.subId === "4"), "expected sub 4 charged");
+      assert.equal(hits.length, 0, "runCycle must not deliver webhooks");
+      const rows = db["db"]
+        .prepare("SELECT status FROM webhook_deliveries WHERE webhook_id = ?")
+        .all(hookId) as Array<{ status: string }>;
+      assert.ok(rows.length >= 3, `expected queued deliveries, got ${rows.length}`);
+      assert.ok(rows.every((r) => r.status === "pending"));
+    } finally {
+      hang.closeAllConnections();
+      hang.close();
+    }
   });
 });

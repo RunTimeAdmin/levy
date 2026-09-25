@@ -398,14 +398,27 @@ export class LevyDb {
     return Number(r.lastInsertRowid);
   }
 
-  dueDeliveries(nowSec: number): DeliveryRow[] {
+  /**
+   * One pass worth of due deliveries, fair across webhooks: every webhook's
+   * oldest due delivery comes before any webhook's second, no webhook gets more
+   * than `perWebhook`, and the pass holds at most `limit`. So one endpoint's
+   * backlog can neither starve the others nor make a pass unbounded.
+   */
+  dueDeliveries(nowSec: number, opts: { limit?: number; perWebhook?: number } = {}): DeliveryRow[] {
     return this.db
       .prepare(
-        `SELECT * FROM webhook_deliveries
-         WHERE status IN ('pending', 'failed') AND next_retry_at <= ?
-         ORDER BY next_retry_at ASC`
+        `SELECT id, webhook_id, event_type, payload, status, attempts,
+                next_retry_at, created_at, last_error
+         FROM (
+           SELECT *, ROW_NUMBER() OVER (PARTITION BY webhook_id ORDER BY next_retry_at, id) AS turn
+           FROM webhook_deliveries
+           WHERE status IN ('pending', 'failed') AND next_retry_at <= ?
+         )
+         WHERE turn <= ?
+         ORDER BY turn, next_retry_at, id
+         LIMIT ?`
       )
-      .all(nowSec) as unknown as DeliveryRow[];
+      .all(nowSec, opts.perWebhook ?? 5, opts.limit ?? 200) as unknown as DeliveryRow[];
   }
 
   /** `merchant` limits to deliveries of that merchant's (existing) webhooks. */
