@@ -1,0 +1,11 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+evm_version = "paris"
+
+# Arc rejects PUSH0 (Shanghai+), so paris is mandatory.
+
+[invariant]
+runs = 256
+depth = 15
