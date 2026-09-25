@@ -24,6 +24,9 @@ describe("wallet.js encodings match the contracts", () => {
     ["allowance", "allowance", "MockUSDC"],
     ["balanceOf", "balanceOf", "MockUSDC"],
     ["subscribe", "subscribe", "SubscriptionManager"],
+    ["pause", "pauseSubscription", "SubscriptionManager"],
+    ["resume", "resumeSubscription", "SubscriptionManager"],
+    ["cancel", "cancelSubscription", "SubscriptionManager"],
   ] as const) {
     it(`${key} selector`, () => {
       const m = src.match(new RegExp(`${key}: "(0x[0-9a-f]{8})"`));

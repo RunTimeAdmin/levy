@@ -8,6 +8,9 @@ const LevyWallet = (() => {
     allowance: "0xdd62ed3e", // allowance(address,address)
     balanceOf: "0x70a08231", // balanceOf(address)
     subscribe: "0x0f574ba7", // subscribe(uint256)
+    pause: "0x41f23f0a", // pauseSubscription(uint256)
+    resume: "0x023a584e", // resumeSubscription(uint256)
+    cancel: "0x21235083", // cancelSubscription(uint256)
   };
   // Subscribed(uint256 indexed subId, address indexed subscriber, uint256 indexed planId, uint64 nextChargeAt)
   const SUBSCRIBED_TOPIC = "0xdeda80306cf42bcb405d97f58f27bfaa4c960750693c1ada163cd06978d9b804";
@@ -75,5 +78,11 @@ const LevyWallet = (() => {
     return { subId: log ? BigInt(log.topics[1]).toString() : null, txHash: r.transactionHash };
   }
 
-  return { connect, balanceOf, allowance, approve, subscribe, explorer };
+  /** pause / resume / cancel a subscription (subscriber or merchant only). */
+  const manage = (from, manager, action, subId) => {
+    if (!["pause", "resume", "cancel"].includes(action)) throw new Error(`unknown action ${action}`);
+    return send(from, manager, SEL[action] + word(subId));
+  };
+
+  return { connect, balanceOf, allowance, approve, subscribe, manage, explorer };
 })();

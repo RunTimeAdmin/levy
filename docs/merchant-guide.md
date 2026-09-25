@@ -179,7 +179,7 @@ Create a new plan with the new price and point new subscribers at it. Plans are 
 Refunds are your policy and happen off-chain: send USDC back to the subscriber from your own wallet. The contract has no refund function, and cancelled subscriptions are terminal.
 
 **How do I cancel a subscriber?**
-Call `cancelSubscription(subId)` as the merchant, or have the subscriber call it themselves. Cancellation is terminal; the subscription cannot be resumed. For a temporary stop, use `pauseSubscription` instead. Nothing is charged while paused. On `resumeSubscription`, if the next charge date has passed, billing restarts from the resume date; paused cycles are never billed. Days already paid for keep running during the pause.
+Call `cancelSubscription(subId)` as the merchant, or have the subscriber do it themselves: the customer portal (`/portal.html`) has Pause, Resume and Cancel buttons that send the transaction from their wallet. Cancellation is terminal; the subscription cannot be resumed. For a temporary stop, use `pauseSubscription` instead. Nothing is charged while paused. On `resumeSubscription`, if the next charge date has passed, billing restarts from the resume date; paused cycles are never billed. Days already paid for keep running during the pause.
 
 **What does the 1% fee apply to?**
 Each collected payment. The contract sends 99% to the merchant address on the plan and 1% to the FeeRouter in the same transaction. Failed pulls cost nothing.

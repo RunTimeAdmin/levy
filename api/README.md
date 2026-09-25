@@ -13,11 +13,12 @@ cp .env.example .env   # point LEVY_DB_PATH at the keeper's DB
 npm start              # http://127.0.0.1:3001
 ```
 
-Pages: `/` (merchant dashboard), `/portal.html` (customer portal), both signed
-in with a browser wallet, and `/checkout.html?plan=<planId>`, where a customer
+Pages: `/` (merchant dashboard), `/portal.html` (customer portal, where
+subscribers also pause, resume and cancel from their wallet), both signed in
+with a browser wallet, and `/checkout.html?plan=<planId>`, where a customer
 subscribes: it shows the plan, adds 12 cycles (adjustable) to the customer's
 USDC allowance for Levy, and calls `subscribe`. It needs `LEVY_MANAGER_ADDRESS`
-and `LEVY_USDC_ADDRESS` set for the API. The page loads no third-party code; its
+and `LEVY_USDC_ADDRESS` set for the API. The pages load no third-party code; their
 contract calls are encoded in `public/wallet.js`, checked against the ABI by
 `test/wallet.test.ts`.
 
@@ -110,5 +111,5 @@ checks; the merchant guide has a standalone example.
 ## Tests
 
 ```bash
-npm test   # 28 tests, seeded temp DB, ephemeral port, real wallet signatures
+npm test   # 31 tests, seeded temp DB, ephemeral port, real wallet signatures
 ```

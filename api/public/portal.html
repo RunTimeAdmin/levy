@@ -30,6 +30,7 @@
   button { background: var(--accent); color: #0b0e12; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; font-weight: 600; }
   button:disabled { opacity: .45; cursor: default; }
   button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+  button.ghost.danger { color: var(--bad); border-color: var(--bad); }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .muted { color: var(--muted); }
   .note { background: #0f1115; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; font-size: 13px; color: var(--muted); }
@@ -52,10 +53,57 @@
 </main>
 
 <script src="/public/auth.js"></script>
+<script src="/public/wallet.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 const short = (a) => a ? a.slice(0, 6) + "..." + a.slice(-4) : "";
-const pill = (t) => `<span class="pill ${t}">${t}</span>`;
+let cfg; // chain id and contract addresses, for the wallet actions
+
+// What the contract allows in each state (SubscriptionManager.sol).
+const ACTIONS = { trial: ["pause", "cancel"], active: ["pause", "cancel"], past_due: ["pause", "cancel"], paused: ["resume", "cancel"] };
+const CONFIRM = {
+  pause: (id) => `Pause subscription #${id}? Nothing is charged while it is paused.`,
+  resume: (id) => `Resume subscription #${id}? If a charge date passed while it was paused, billing restarts today.`,
+  cancel: (id) => `Cancel subscription #${id}? This is final: it cannot be resumed, and time already paid for is not refunded on-chain (refunds are up to the merchant).`,
+};
+const DONE = { pause: "paused", resume: "active", cancel: "cancelled" };
+
+function renderActions(subId, status) {
+  const box = document.querySelector(`[data-actions="${subId}"]`);
+  box.replaceChildren(...(ACTIONS[status] || []).map((action) => {
+    const b = document.createElement("button");
+    b.className = action === "cancel" ? "ghost danger" : "ghost";
+    b.textContent = action[0].toUpperCase() + action.slice(1);
+    b.onclick = () => act(subId, action);
+    return b;
+  }));
+}
+
+async function act(subId, action) {
+  if (!confirm(CONFIRM[action](subId))) return;
+  const note = document.querySelector(`[data-status="${subId}"]`);
+  const buttons = document.querySelectorAll(`[data-actions="${subId}"] button`);
+  buttons.forEach((b) => { b.disabled = true; });
+  try {
+    note.textContent = "Confirm in your wallet...";
+    const account = await LevyWallet.connect(cfg.chainId);
+    if (account.toLowerCase() !== LevyAuth.address.toLowerCase()) {
+      throw new Error(`Your wallet is on ${short(account)}; switch it to ${short(LevyAuth.address)}, the account you signed in with.`);
+    }
+    await LevyWallet.manage(account, cfg.managerAddress, action, subId);
+    // The portal's data refreshes after the keeper's next sync; show the
+    // on-chain result now.
+    const status = DONE[action];
+    const p = document.querySelector(`[data-pill="${subId}"]`);
+    p.className = `pill ${status}`;
+    p.textContent = status;
+    renderActions(subId, status);
+    note.textContent = `Done: subscription #${subId} is ${status} on-chain.`;
+  } catch (e) {
+    note.textContent = e.message || String(e);
+    buttons.forEach((b) => { b.disabled = false; });
+  }
+}
 
 function showSession() {
   const s = LevyAuth.address;
@@ -68,7 +116,11 @@ async function load() {
   showSession();
   const s = LevyAuth.address;
   if (!s) return;
-  const subs = await LevyAuth.api(`/api/subscriptions?subscriber=${s}`);
+  const [subs, config] = await Promise.all([
+    LevyAuth.api(`/api/subscriptions?subscriber=${s}`),
+    fetch("/api/config").then((r) => r.json()),
+  ]);
+  cfg = config;
   const main = $("main");
   if (!subs.length) { main.innerHTML = `<p class="empty">No subscriptions found for this address.</p>`; return; }
   const cards = await Promise.all(subs.map(async (sub) => {
@@ -77,28 +129,22 @@ async function load() {
       <td class="addr">${short(c.invoiceRef)}</td><td>$${c.amountUsdc}</td>
       <td>$${c.feeUsdc}</td><td class="addr">${short(c.txHash)}</td></tr>`).join("");
     return `<div class="sub">
-      <h2>Subscription #${sub.subId} ${pill(sub.statusName)}</h2>
+      <h2>Subscription #${sub.subId} <span class="pill ${sub.statusName}" data-pill="${sub.subId}">${sub.statusName}</span></h2>
       <div class="grid">
         <div><div class="label">Price</div><div class="value">$${sub.priceUsdc}</div></div>
         <div><div class="label">Next charge</div><div class="value" style="font-size:15px">${sub.nextChargeAtIso.slice(0, 10)}</div></div>
         <div><div class="label">Failed attempts</div><div class="value">${sub.failedAttempts}</div></div>
         <div><div class="label">Merchant</div><div class="value addr" style="font-size:13px">${short(sub.merchant)}</div></div>
       </div>
-      <div class="row">
-        <button class="ghost" disabled title="Sign from your wallet: call pauseSubscription(${sub.subId}) on the Levy manager contract">Pause</button>
-        <button class="ghost" disabled title="Sign from your wallet: call cancelSubscription(${sub.subId}) on the Levy manager contract">Cancel</button>
-      </div>
-      <p class="note">Pause and cancel are on-chain actions and must be signed from your wallet.
-        This portal is read-only in M3 — use your wallet app to call
-        <code>pauseSubscription(${sub.subId})</code> or <code>cancelSubscription(${sub.subId})</code>
-        on the Levy SubscriptionManager contract. To change your allowance, update the USDC
-        approval granted to the manager contract.</p>
+      <div class="row" data-actions="${sub.subId}"></div>
+      <p class="note" data-status="${sub.subId}">Pause, resume and cancel are wallet transactions from the account you signed in with.</p>
       <h3 style="font-size:13px;margin:12px 0 4px">Invoice history</h3>
       ${invoices ? `<table><thead><tr><th>Invoice</th><th>Amount</th><th>Fee</th><th>Tx</th></tr></thead><tbody>${invoices}</tbody></table>`
                  : `<p class="muted">No charges yet.</p>`}
     </div>`;
   }));
   main.innerHTML = cards.join("");
+  if (cfg.managerAddress) subs.forEach((sub) => renderActions(sub.subId, sub.statusName));
 }
 
 $("signIn").onclick = () => LevyAuth.signIn().then(load).catch(e => alert("Sign-in failed: " + e.message));
