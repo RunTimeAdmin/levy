@@ -1,0 +1,35 @@
+export interface LevyConfig {
+  rpcUrl: string;
+  chainId: number;
+  managerAddress: `0x${string}`;
+  usdcAddress: `0x${string}`;
+  keeperKey: `0x${string}`;
+  pollIntervalMs: number;
+  /** Retry offsets in days after a failed pull, by attempt number (1-based). */
+  dunningScheduleDays: number[];
+  dbPath: string;
+  /** How far back to scan on first run (blocks). */
+  initialLookbackBlocks: number;
+}
+
+function required(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new Error(`missing env var ${name}`);
+  return v;
+}
+
+export function loadConfig(): LevyConfig {
+  return {
+    rpcUrl: process.env.LEVY_RPC_URL ?? "http://127.0.0.1:8545",
+    chainId: Number(process.env.LEVY_CHAIN_ID ?? 5042),
+    managerAddress: required("LEVY_MANAGER_ADDRESS") as `0x${string}`,
+    usdcAddress: required("LEVY_USDC_ADDRESS") as `0x${string}`,
+    keeperKey: required("LEVY_KEEPER_KEY") as `0x${string}`,
+    pollIntervalMs: Number(process.env.LEVY_POLL_MS ?? 30_000),
+    dunningScheduleDays: (process.env.LEVY_DUNNING_DAYS ?? "1,3,7")
+      .split(",")
+      .map(Number),
+    dbPath: process.env.LEVY_DB_PATH ?? "./levy.db",
+    initialLookbackBlocks: Number(process.env.LEVY_LOOKBACK_BLOCKS ?? 5000),
+  };
+}

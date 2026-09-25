@@ -1,0 +1,60 @@
+import { createClients } from "./chain.js";
+import { loadConfig } from "./config.js";
+import { LevyDb } from "./db.js";
+import { Indexer } from "./indexer.js";
+import { Keeper } from "./keeper.js";
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function main(): Promise<void> {
+  const cfg = loadConfig();
+  const clients = createClients(cfg);
+  const db = new LevyDb(cfg.dbPath);
+
+  const once = process.argv.includes("--once");
+
+  console.log(
+    `levy keeper: chain=${cfg.chainId} manager=${cfg.managerAddress} keeper=${clients.account.address}`
+  );
+
+  // First boot: hydrate subscription state from chain.
+  const indexer = new Indexer(cfg, clients, db);
+  const n = await indexer.backfillAll();
+  console.log(`backfilled ${n} subscriptions`);
+
+  const keeper = new Keeper(cfg, clients, db);
+
+  const cycle = async () => {
+    try {
+      const r = await keeper.runCycle();
+      if (r.charged.length || r.retried.length || r.failed.length) {
+        console.log(
+          `[cycle] charged=${r.charged.length} retried=${r.retried.length} failed=${r.failed.length} logs=${r.syncedLogs}`
+        );
+        for (const f of r.failed) console.log(`  ! sub ${f.subId}: ${f.error}`);
+      }
+    } catch (e: any) {
+      console.error(`[cycle] error: ${e?.message ?? e}`);
+    }
+  };
+
+  if (once) {
+    await cycle();
+    db.close();
+    return;
+  }
+
+  let stopped = false;
+  process.on("SIGINT", () => { stopped = true; });
+  process.on("SIGTERM", () => { stopped = true; });
+  while (!stopped) {
+    await cycle();
+    await sleep(cfg.pollIntervalMs);
+  }
+  db.close();
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

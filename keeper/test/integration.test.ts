@@ -1,0 +1,258 @@
+import { after, before, describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { spawn, type ChildProcess } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  createPublicClient,
+  createWalletClient,
+  getContract,
+  http,
+  parseAbi,
+} from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { createClients } from "../src/chain.js";
+import { LevyDb } from "../src/db.js";
+import { Keeper } from "../src/keeper.js";
+
+const ABI_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "abi");
+const abi = (n: string) => JSON.parse(readFileSync(join(ABI_DIR, `${n}.json`), "utf-8"));
+const bin = (n: string) => readFileSync(join(ABI_DIR, `${n}.bin`), "utf-8").trim() as `0x${string}`;
+
+const PORT = 8546;
+const RPC = `http://127.0.0.1:${PORT}`;
+const CHAIN_ID = 31337;
+
+const PRICE = 10_000_000n; // $10.00
+const CYCLE = 30 * 86_400;
+
+let anvil: ChildProcess;
+let keeper: ReturnType<typeof privateKeyToAccount>;
+let alice: ReturnType<typeof privateKeyToAccount>;
+let bob: ReturnType<typeof privateKeyToAccount>;
+let merchant: ReturnType<typeof privateKeyToAccount>;
+let publicClient: any;
+let usdc: any;
+let manager: any;
+let feeRouterAddr: string;
+let db: LevyDb;
+let keeperSvc: Keeper;
+
+async function mine() {
+  await publicClient.request({ method: "evm_mine", params: [] } as any);
+}
+
+/** Send a write and wait until it is mined, so later evm_increaseTime calls
+ *  cannot retroactively shift the tx's block timestamp. */
+async function mined(hash: `0x${string}`) {
+  await publicClient.waitForTransactionReceipt({ hash });
+}
+
+async function increaseTime(sec: number) {
+  await publicClient.request({ method: "evm_increaseTime", params: [sec] } as any);
+  await mine();
+}
+
+// Chain-head timestamp. The keeper operates on chain time, and these tests
+// warp chain time independently of the wall clock.
+async function chainTime(): Promise<number> {
+  return Number((await publicClient.getBlock()).timestamp);
+}
+
+async function waitForAnvil(): Promise<void> {
+  for (let i = 0; i < 50; i++) {
+    try {
+      await publicClient.getBlockNumber();
+      return;
+    } catch {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+  throw new Error("anvil did not start");
+}
+
+before(async () => {
+  // Start anvil and harvest its printed private keys (guaranteed correct).
+  let out = "";
+  const keyPromise = new Promise<string[]>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("anvil keys not printed")), 15000);
+    const check = () => {
+      const keys = [...out.matchAll(/^\(\d+\)\s+(0x[0-9a-f]{64})/gm)].map((m) => m[1]);
+      if (keys.length >= 3) {
+        clearTimeout(timer);
+        resolve(keys);
+      }
+    };
+    anvil = spawn("anvil", ["--port", String(PORT)], {
+      env: { ...process.env, PATH: `${process.env.HOME}/.foundry/bin:${process.env.PATH}` },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    anvil.stdout!.on("data", (d: Buffer) => { out += d.toString(); check(); });
+    anvil.stderr!.on("data", (d: Buffer) => { out += d.toString(); check(); });
+    anvil.on("error", reject);
+  });
+  const keys = await keyPromise;
+  const KEEPER_KEY = keys[0] as `0x${string}`;
+  const ALICE_KEY = keys[1] as `0x${string}`;
+  const BOB_KEY = keys[2] as `0x${string}`;
+
+  keeper = privateKeyToAccount(KEEPER_KEY as `0x${string}`);
+  alice = privateKeyToAccount(ALICE_KEY as `0x${string}`);
+  bob = privateKeyToAccount(BOB_KEY as `0x${string}`);
+  merchant = keeper; // keeper account doubles as merchant deployer
+
+  const chain = {
+    id: CHAIN_ID,
+    name: "anvil",
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    rpcUrls: { default: { http: [RPC] } },
+  } as const;
+  const transport = http(RPC);
+  publicClient = createPublicClient({ chain, transport });
+  await waitForAnvil();
+
+  const wallet = (key: `0x${string}`) =>
+    createWalletClient({ account: privateKeyToAccount(key), chain, transport });
+
+  const deployer = wallet(KEEPER_KEY as `0x${string}`);
+  const deploy = async (name: string, args: any[] = []) => {
+    const hash = await deployer.deployContract({
+      abi: abi(name), bytecode: bin(name), args, chain, account: keeper,
+    } as any);
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    return receipt.contractAddress as string;
+  };
+
+  const usdcAddr = await deploy("MockUSDC");
+  feeRouterAddr = await deploy("FeeRouter", [usdcAddr, keeper.address]);
+  const managerAddr = await deploy("SubscriptionManager", [usdcAddr, feeRouterAddr]);
+
+  const erc20 = parseAbi([
+    "function mint(address to, uint256 amount)",
+    "function approve(address spender, uint256 amount)",
+    "function balanceOf(address) view returns (uint256)",
+  ]);
+  usdc = getContract({ address: usdcAddr as `0x${string}`, abi: erc20, client: { public: publicClient, wallet: deployer } });
+  manager = getContract({
+    address: managerAddr as `0x${string}`, abi: abi("SubscriptionManager"),
+    client: { public: publicClient, wallet: deployer },
+  });
+
+  // Fund subscribers with USDC.
+  for (const a of [alice.address, bob.address]) {
+    await usdc.write.mint([a, 1_000_000_000n], { account: keeper, chain });
+  }
+
+  // Merchant creates a $10 / 30-day plan (maxFailed = 2).
+  await manager.write.createPlan([PRICE, CYCLE, 0, 3 * 86_400, 2], { account: keeper, chain });
+
+  // Keeper service under test.
+  process.env.LEVY_RPC_URL = RPC;
+  process.env.LEVY_CHAIN_ID = String(CHAIN_ID);
+  process.env.LEVY_MANAGER_ADDRESS = managerAddr;
+  process.env.LEVY_USDC_ADDRESS = usdcAddr;
+  process.env.LEVY_KEEPER_KEY = KEEPER_KEY;
+  process.env.LEVY_DB_PATH = ":memory:";
+  process.env.LEVY_LOOKBACK_BLOCKS = "100000"; // anvil: scan from genesis
+
+  const { loadConfig } = await import("../src/config.js");
+  const cfg = loadConfig();
+  const clients = createClients({ ...cfg, chainId: CHAIN_ID });
+  db = new LevyDb(":memory:");
+  keeperSvc = new Keeper(cfg, clients as any, db);
+});
+
+after(() => {
+  db?.close();
+  anvil?.kill("SIGKILL");
+});
+
+describe("keeper integration (anvil)", () => {
+  it("charges a due subscription and splits 99/1", async () => {
+    // Alice subscribes and approves.
+    const aliceWallet = createWalletClient({
+      account: alice, chain: publicClient.chain, transport: http(RPC),
+    });
+    const asAlice = getContract({
+      address: manager.address, abi: abi("SubscriptionManager"),
+      client: { public: publicClient, wallet: aliceWallet },
+    });
+    const asAliceUsdc = getContract({
+      address: usdc.address, abi: usdc.abi,
+      client: { public: publicClient, wallet: aliceWallet },
+    });
+    await asAliceUsdc.write.approve([manager.address, PRICE * 12n], { account: alice, chain: publicClient.chain });
+    await mined(await asAlice.write.subscribe([1n], { account: alice, chain: publicClient.chain }));
+
+    await increaseTime(CYCLE + 60);
+
+    const mBefore = await usdc.read.balanceOf([keeper.address]);
+    const report = await keeperSvc.runCycle();
+
+    assert.equal(report.charged.length, 1);
+    assert.equal(report.charged[0].subId, "1");
+
+    const mAfter = await usdc.read.balanceOf([keeper.address]);
+    assert.equal(mAfter - mBefore, PRICE - PRICE / 100n); // merchant (keeper acct) gets 99%
+    const feeBal = await usdc.read.balanceOf([feeRouterAddr]);
+    assert.equal(feeBal, PRICE / 100n); // 1% to the router
+
+    // DB recorded the charge with an invoice reference.
+    const row = db["db"].prepare("SELECT * FROM charges WHERE subId = '1'").get() as any;
+    assert.ok(row);
+    assert.equal(row.amount, PRICE.toString());
+    assert.ok(/^0x[0-9a-f]{64}$/.test(row.invoiceRef));
+    // No dunning for a successful charge.
+    assert.equal(db.dueRetries((await chainTime()) + 365 * 86_400).length, 0);
+  });
+
+  it("records failures and schedules dunning retries", async () => {
+    // Bob subscribes but never approves: every pull fails.
+    const bobWallet = createWalletClient({
+      account: bob, chain: publicClient.chain, transport: http(RPC),
+    });
+    const asBob = getContract({
+      address: manager.address, abi: abi("SubscriptionManager"),
+      client: { public: publicClient, wallet: bobWallet },
+    });
+    await mined(await asBob.write.subscribe([1n], { account: bob, chain: publicClient.chain }));
+    await increaseTime(CYCLE + 60);
+
+    const report = await keeperSvc.runCycle();
+    // Alice's sub charges again; Bob's pull fails but must not revert the cycle.
+    assert.ok(report.charged.some((c) => c.subId === "1"));
+
+    const failures = db["db"].prepare("SELECT * FROM charge_failures WHERE subId = '2'").all();
+    assert.ok(failures.length >= 1);
+
+    // Dunning row exists with the retry ~1 day out (chain time).
+    const nowSec = await chainTime();
+    const rows = db["db"].prepare("SELECT * FROM dunning WHERE subId = '2'").all() as any[];
+    assert.equal(rows.length, 1);
+    assert.ok(rows[0].nextRetryAt > nowSec);
+    assert.ok(rows[0].nextRetryAt <= nowSec + 86_400 + 120);
+    // Not due yet at chain now, due after the 1-day backoff.
+    assert.equal(db.dueRetries(nowSec).length, 0);
+    assert.equal(db.dueRetries(nowSec + 86_400 + 1).filter((r) => r.subId === "2").length, 1);
+  });
+
+  it("retries after the backoff and clears dunning on success", async () => {
+    // Bob approves now; warp past the 1-day retry; keeper should collect.
+    const bobWallet = createWalletClient({
+      account: bob, chain: publicClient.chain, transport: http(RPC),
+    });
+    const asBobUsdc = getContract({
+      address: usdc.address, abi: usdc.abi,
+      client: { public: publicClient, wallet: bobWallet },
+    });
+    await asBobUsdc.write.approve([manager.address, PRICE * 12n], { account: bob, chain: publicClient.chain });
+
+    await increaseTime(86_400 + 120);
+    const report = await keeperSvc.runCycle();
+    assert.ok(report.retried.some((c) => c.subId === "2"), "expected sub 2 in retried");
+
+    const rows = db["db"].prepare("SELECT * FROM dunning WHERE subId = '2'").all();
+    assert.equal(rows.length, 0); // cleared on success
+  });
+});
