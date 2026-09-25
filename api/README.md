@@ -13,8 +13,13 @@ cp .env.example .env   # point LEVY_DB_PATH at the keeper's DB
 npm start              # http://127.0.0.1:3001
 ```
 
-Dashboards: `/` (merchant), `/portal.html` (customer). Both sign in with a
-browser wallet.
+Pages: `/` (merchant dashboard), `/portal.html` (customer portal), both signed
+in with a browser wallet, and `/checkout.html?plan=<planId>`, where a customer
+subscribes: it shows the plan, adds 12 cycles (adjustable) to the customer's
+USDC allowance for Levy, and calls `subscribe`. It needs `LEVY_MANAGER_ADDRESS`
+and `LEVY_USDC_ADDRESS` set for the API. The page loads no third-party code; its
+contract calls are encoded in `public/wallet.js`, checked against the ABI by
+`test/wallet.test.ts`.
 
 ## Sign-in
 
@@ -44,6 +49,7 @@ merchant's webhook or subscription id gets 404.
 | Method | Path | Auth | Notes |
 |---|---|---|---|
 | GET | `/api/health` | public | liveness |
+| GET | `/api/config` | public | chain id and contract addresses for the checkout page |
 | GET | `/api/plans` | public | distinct plans seen on-chain (read-only mirror) |
 | GET | `/api/webhooks/public-key` | public | Ed25519 SPKI PEM for signature verification |
 | POST | `/api/auth/challenge`, `/api/auth/verify` | public | sign-in (above) |
@@ -104,5 +110,5 @@ checks; the merchant guide has a standalone example.
 ## Tests
 
 ```bash
-npm test   # 22 tests, seeded temp DB, ephemeral port, real wallet signatures
+npm test   # 28 tests, seeded temp DB, ephemeral port, real wallet signatures
 ```

@@ -27,6 +27,9 @@ export interface ApiOptions {
   chainId: number;
   /** Allow http and private-address webhook URLs. Local development only. */
   webhookAllowPrivate?: boolean;
+  /** Contracts the checkout page talks to (same values the keeper uses). */
+  managerAddress?: string;
+  usdcAddress?: string;
 }
 
 export function apiOptionsFromEnv(): ApiOptions {
@@ -45,6 +48,8 @@ export function apiOptionsFromEnv(): ApiOptions {
     origin: process.env.LEVY_PUBLIC_ORIGIN ?? `http://localhost:${process.env.LEVY_API_PORT ?? 3001}`,
     chainId: Number(process.env.LEVY_CHAIN_ID ?? 5042),
     webhookAllowPrivate: process.env.LEVY_WEBHOOK_ALLOW_PRIVATE === "1",
+    managerAddress: process.env.LEVY_MANAGER_ADDRESS,
+    usdcAddress: process.env.LEVY_USDC_ADDRESS,
   };
 }
 
@@ -106,6 +111,14 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   // ---- health ----
 
   app.get("/api/health", async () => ({ ok: true, service: "levy-api", version: "0.1.0" }));
+
+  // What the checkout page needs to build transactions. Public: these are
+  // on-chain addresses.
+  app.get("/api/config", async () => ({
+    chainId: opts.chainId,
+    managerAddress: isAddress(opts.managerAddress) ? opts.managerAddress : null,
+    usdcAddress: isAddress(opts.usdcAddress) ? opts.usdcAddress : null,
+  }));
 
   // ---- plans (read-only mirror of the on-chain plan registry) ----
 
@@ -336,6 +349,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
 
   app.get("/", async (_req, reply) => sendFile(reply, "index.html"));
   app.get("/portal.html", async (_req, reply) => sendFile(reply, "portal.html"));
+  app.get("/checkout.html", async (_req, reply) => sendFile(reply, "checkout.html"));
   app.get<{ Params: { "*": string } }>("/public/*", async (req, reply) => {
     return sendFile(reply, (req.params as { "*": string })["*"]);
   });

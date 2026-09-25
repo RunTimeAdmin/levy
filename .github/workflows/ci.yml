@@ -77,6 +77,8 @@ jobs:
           curl -fsS http://127.0.0.1:3001/api/health
           curl -fsS -o /dev/null http://127.0.0.1:3001/
           curl -fsS -o /dev/null http://127.0.0.1:3001/public/auth.js
+          curl -fsS -o /dev/null http://127.0.0.1:3001/checkout.html
+          curl -fsS http://127.0.0.1:3001/api/config
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3001/api/metrics)" = 401
       - name: API refuses to start without LEVY_PUBLIC_ORIGIN
         run: "! docker run --rm levy-api:ci"

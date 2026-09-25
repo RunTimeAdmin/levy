@@ -160,7 +160,9 @@ A subscriber fixes a failed subscription by topping up USDC or re-granting the a
 
 ## 6. The subscriber flow
 
-Send the subscriber your `planId`. Two ways to onboard:
+The easiest way: send the subscriber your checkout link, `https://<your Levy host>/checkout.html?plan=<planId>`. It shows the plan, connects their wallet, and walks them through the approval and the subscription (two wallet confirmations). Without a trial, the first cycle is charged right away.
+
+To build your own flow instead, there are two ways to onboard:
 
 **Direct approve (two transactions).** The subscriber:
 1. Calls `approve` on the USDC contract for the `SubscriptionManager` address, for at least one cycle's price (more for a buffer).

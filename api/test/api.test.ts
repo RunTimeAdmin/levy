@@ -23,6 +23,8 @@ const otherAcct = privateKeyToAccount(`0x${"33".repeat(32)}`); // a second merch
 const MERCHANT = merchantAcct.address;
 const SUBSCRIBER = subscriberAcct.address;
 const OTHER = otherAcct.address;
+const MANAGER = "0x14220536ACABfC65543E6129b3d48d2272809CF0";
+const USDC = "0x3600000000000000000000000000000000000000";
 
 let app: FastifyInstance;
 let base: string;
@@ -73,7 +75,10 @@ before(async () => {
   const { privateKey } = generateKeyPairSync("ed25519");
   writeFileSync(KEY, privateKey.export({ format: "pem", type: "pkcs8" }), { mode: 0o600 });
 
-  app = buildServer({ dbPath: DB, webhookKeyPath: KEY, origin: ORIGIN, chainId: 5042002 });
+  app = buildServer({
+    dbPath: DB, webhookKeyPath: KEY, origin: ORIGIN, chainId: 5042002,
+    managerAddress: MANAGER, usdcAddress: USDC,
+  });
   await app.listen({ port: 0, host: "127.0.0.1" });
   const addr = app.server.address();
   if (typeof addr !== "object" || !addr) throw new Error("no address");
@@ -197,6 +202,12 @@ describe("public endpoints", () => {
     const r = await get("/api/health");
     assert.equal(r.status, 200);
     assert.equal(r.json.ok, true);
+  });
+
+  it("GET /api/config gives the checkout page its chain and contracts", async () => {
+    const r = await get("/api/config");
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json, { chainId: 5042002, managerAddress: MANAGER, usdcAddress: USDC });
   });
 
   it("GET /api/plans", async () => {
@@ -412,5 +423,10 @@ describe("static frontend", () => {
     const auth = await get("/public/auth.js");
     assert.equal(auth.status, 200);
     assert.ok(auth.headers.get("content-type")?.includes("javascript"));
+
+    const checkout = await get("/checkout.html");
+    assert.equal(checkout.status, 200);
+    assert.ok(checkout.body.includes("Levy Checkout"));
+    assert.equal((await get("/public/wallet.js")).status, 200);
   });
 });
