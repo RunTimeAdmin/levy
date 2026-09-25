@@ -1,13 +1,13 @@
 # LEVY — Subscription Billing on Arc Mainnet
 
-**Status:** Build spec v1.0 — 2026-09-25
+**Status:** Living build doc — 2026-09-25. M1 (contracts), M2 (keeper), M3 (webhooks/API/dashboards) complete; Permit2 subscribe path implemented. See VERIFICATION.md for cleared pre-mainnet facts.
 **One-liner:** Stripe Billing for Arc. Merchants create plans, subscribers approve once, Levy pulls USDC every cycle with dunning, proration, webhooks, and invoicing built in.
 
 ## Why this, why Arc, why now
 
 - Circle names software billing a target Arc use case. Nothing live fills it; only testnet toys exist.
-- Arc is purpose-built for money movement: USDC gas, fast finality, low fixed fees. (Exact finality time and base-fee behavior are pre-mainnet verification items — see M4 checklist. Do not treat the ~0.5s / 20 gwei figures as confirmed.)
-- Claimed chain facts (mainnet, chain ID 5042) — UNVERIFIED, confirm before mainnet: Permit2, Multicall3, CREATE2 deployer, Safe v1.4.1 at canonical addresses. EIP-7702 delegators present. Osaka EVM.
+- Arc is purpose-built for money movement: USDC gas, ~0.5s blocks, deterministic single-block finality (Malachite BFT, no reorgs — confirmed 2026-09-25, see VERIFICATION.md). Base-fee behavior is still unverified; do not quote a fixed gwei figure.
+- Chain facts (mainnet, chain ID 5042): Permit2 verified on Arc mainnet at `0x000000000022D473030F116dDEE9F6B43aC78BA3` — NOT the Ethereum canonical `...c3a50`. Multicall3, CREATE2 deployer, Safe v1.4.1 at canonical addresses — still unconfirmed, verify before mainnet.
 - Willingness to pay is proven: Request Finance charges $600–$9,000/mo for crypto billing ops. No competitor (Request, Superfluid, Sablier, Diagonal) supports Arc.
 - Defense: keep the on-chain pull primitive free and open-source; monetize the SaaS layer (dunning engine, webhooks, reconciliation, dashboards).
 
@@ -21,13 +21,13 @@
 
 ## Core flows
 
-**Subscribe.** Subscriber grants USDC allowance to the SubscriptionManager via direct `approve()` then `subscribe()` — two transactions. (A Permit2 signature path — one user action, keeper-submitted — is proposed for M4 but not implemented; direct approve is the only working path today.)
+**Subscribe.** Subscriber grants USDC allowance to the SubscriptionManager via direct `approve()` then `subscribe()` — two transactions. Or one transaction: `subscribeWithPermit2()` with an off-chain EIP-712 Permit2 signature (the keeper can submit it on the subscriber's behalf). Uses Arc's Permit2 at `0x000000000022D473030F116dDEE9F6B43aC78BA3`.
 
-**Charge.** Keeper calls `charge(subscriptionId)` when `block.timestamp >= nextChargeAt`. Contract checks state is chargeable (TRIAL, ACTIVE, or PAST_DUE), pulls `price` via `transferFrom` against a direct ERC-20 allowance, splits 1% to FeeRouter and 99% to merchant, advances `nextChargeAt` by cycle length, emits `Charged`. If the pull fails (allowance/balance), increments `failedAttempts`, emits `ChargeFailed`, and the dunning engine takes over off-chain. (Permit2 is a proposed future path, not implemented.)
+**Charge.** Keeper calls `charge(subscriptionId)` when `block.timestamp >= nextChargeAt`. `charge()` is permissionless — the pull can only move the subscriber's pre-approved funds to the correct merchant, so there is nothing to gain by calling it. Contract checks state is chargeable (TRIAL, ACTIVE, or PAST_DUE), pulls `price` via `transferFrom` (direct allowance first, Permit2 `transferFrom` fallback), splits 1% to FeeRouter and 99% to merchant, advances `nextChargeAt` by cycle length, emits `Charged`. If the pull fails (allowance/balance), increments `failedAttempts`, emits `ChargeFailed`, and the dunning engine takes over off-chain.
 
-**Dunning.** Failure state is managed on-chain by the contract, not by the keeper. When `failedAttempts` reaches the plan's `maxFailed`, the subscription moves to `PAST_DUE`. At `2 × maxFailed` failures the contract auto-pauses it (`PAUSED`); the keeper never needs to call `pauseSubscription()` for dunning. Off-chain, the keeper watches `ChargeFailed` and retries on a schedule (default day 1, 3, 7; configurable). A successful retry clears the dunning schedule. Merchant can resume a paused subscription manually; subscriber notifications (webhooks/email) are M3 scope, not built.
+**Dunning.** Failure state is managed on-chain by the contract, not by the keeper. When `failedAttempts` reaches the plan's `maxFailed`, the subscription moves to `PAST_DUE`. At `2 × maxFailed` failures the contract auto-pauses it (`PAUSED`); the keeper never needs to call `pauseSubscription()` for dunning. Off-chain, the keeper watches `ChargeFailed` and retries on a schedule (default day 1, 3, 7; configurable). A successful retry clears the dunning schedule. Merchant can resume a paused subscription manually; subscriber notifications go out as Ed25519-signed webhooks.
 
-**Proration.** Plan change mid-cycle: contract computes `credit = price * remainingSeconds / cycleSeconds` (integer math, 6-decimal units, round down — remainder stays with merchant, documented). Credit applies against the next charge of the new plan. Downgrades take effect next cycle; upgrades take effect immediately with a prorated top-up pull.
+**Proration.** Plan change mid-cycle: contract computes `credit = price * remainingSeconds / cycleSeconds` (integer math, 6-decimal units, round down — remainder stays with merchant, documented). Credit reduces the next charge of the new plan (or covers several cycles if it exceeds the new price). Downgrades take effect next cycle; upgrades take effect immediately with the credit applied — there is no prorated top-up pull, the subscriber's next charge is simply reduced.
 
 **Pause / cancel.** Subscriber or merchant can pause (no charges accrue, `nextChargeAt` frozen) or cancel (terminal; no on-chain refunds — refunds are merchant policy, handled off-chain). `cancelSubscription()` emits `Cancelled`.
 
@@ -37,11 +37,12 @@
 
 **SubscriptionManager** (the pull primitive, open-source):
 - `createPlan(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed) → planId`
-- `subscribe(planId, subscriber)` — requires allowance; handles trial → sets first `nextChargeAt`
-- `charge(subscriptionId)` — keeper-only; pull, split, advance, emit
-- `pauseSubscription(subscriptionId)` / `resumeSubscription(subscriptionId)` / `cancelSubscription(subscriptionId)` — subscriber, merchant, or keeper (keeper only for dunning-triggered pause)
-- `changePlan(subscriptionId, newPlanId)` — proration math
-- Events: `PlanCreated`, `Subscribed`, `Charged(subscriptionId, amount, fee, invoiceRef)`, `ChargeFailed(subscriptionId, attempts)`, `Paused`, `Resumed`, `Cancelled`, `PlanChanged`
+- `subscribe(planId)` — requires allowance; subscriber is `msg.sender`; handles trial → sets first `nextChargeAt`
+- `subscribeWithPermit2(planId, owner, permitSingle, signature)` — one-tx subscribe via Arc Permit2; anyone can submit
+- `charge(subscriptionId)` — permissionless; pull, split, advance, emit
+- `pauseSubscription(subId)` / `resumeSubscription(subId)` / `cancelSubscription(subId)` — subscriber or merchant only. The keeper never calls these for dunning; auto-pause on `2 × maxFailed` failures happens inside `charge()` and emits `AutoPaused`
+- `changePlan(subscriptionId, newPlanId)` — subscriber only; proration math
+- Events: `PlanCreated`, `Subscribed`, `Charged(subId, amount, fee, invoiceRef, chargeCount)`, `ChargeFailed(subId, attempts)`, `AutoPaused`, `Paused`, `Resumed`, `Cancelled`, `PlanChanged`
 
 **FeeRouter:** receives 1% at charge time. Phase 1: forwards to treasury multisig. Phase 2: splits 50% buyback-and-burn LEVY / 50% staking rewards.
 
@@ -60,12 +61,12 @@
 - ALL accounting in **6-decimal ERC-20 USDC units** via `0x3600…0000`. Never let a native 18-decimal value into payment math. Convert at the boundary only.
 - Integer arithmetic only. Division rounds down; document who keeps dust (merchant).
 - Fee is exactly 1% of the pulled amount, computed as `amount / 100` (integer division). On a $1.00 pull the fee is $0.01; dust below $0.01 rounds to zero fee — acceptable, documented.
-- Compile with `evmVersion: paris` or earlier. Solidity ≥0.8.20 defaults to Shanghai and emits PUSH0, which Arc rejects at deploy.
+- Compile with `evmVersion: paris` as a conservative default. Arc mainnet runs an Osaka-baseline EVM (PUSH0 works); the paris pin is no longer load-bearing, but it is harmless. Do not claim PUSH0 is rejected on mainnet — that was testnet-only.
 - One block is final. No multi-block confirmation logic anywhere.
 
-## Memos (upgrade path, not MVP dependency)
+## Memos (live on mainnet, not yet wired into Levy)
 
-Arc transaction memos are **testnet-only as of 2026-09-10** (Circle DevRel). Do NOT architect the MVP around them. Design: every invoice carries a `bytes32 invoiceRef`; when memos land on mainnet, the keeper wraps each `charge()` in the Memo contract so the payment carries invoice/subscriber/plan metadata on-chain with the real payer preserved via CALL_FROM. Until then, the reference lives in events + the indexer DB. Re-verify memo mainnet status before building the integration.
+Arc transaction memos are **live on mainnet** (verified 2026-09-25; Memo contract `0x5294E9927c3306DcBaDb03fe70b92e01cCede505`, with `Multicall3From` at `0x522fAf9A91c41c443c66765030741e4AaCe147D0`). The September 2026 "testnet-only" note is superseded. Design: every invoice carries a `bytes32 invoiceRef`; when memos are wired in, the keeper wraps each `charge()` in the Memo contract so the payment carries invoice/subscriber/plan metadata on-chain with the real payer preserved via CALL_FROM. Until then, the reference lives in events + the indexer DB. This integration is pre-mainnet work, not MVP.
 
 ## Token economics — LEVY (Phase 2, not day one)
 
@@ -82,7 +83,7 @@ Phase 1 ships with fees to treasury. The token launches with traction, not befor
 This is not a security product, but it holds other people's money rails. Non-negotiables:
 - Reentrancy guards on `charge()` (it calls an external token contract mid-flow).
 - `transferFrom` return-value checks; handle non-standard return behavior defensively.
-- Access control: subscriber-only pause/cancel own subs; merchant-only plan edits; keeper role for dunning pause.
+- Access control: subscriber-or-merchant pause/cancel; plans immutable (no edits); `charge()` permissionless by design (pulls only move the subscriber's pre-approved funds to the right merchant). The keeper never force-pauses — dunning auto-pause happens inside `charge()` at `2 × maxFailed` failures.
 - Allowance hygiene: never request unlimited allowance in the default UX — request `price × N cycles` (N merchant-configurable, default 12) and surface re-approval in the portal.
 - Invariant fuzzing in Foundry: fee math, proration bounds, state machine transitions.
 - Testnet soak: run the keeper against testnet for at least a week of simulated cycles before mainnet.
@@ -101,23 +102,31 @@ This is not a security product, but it holds other people's money rails. Non-neg
 
 ## Open verification checklist (clear before mainnet)
 
-- [ ] Transaction memos on mainnet? (testnet-only as of 2026-09-10)
-- [ ] Permit2 pull flow against mainnet USDC precompile end-to-end
+- [x] Transaction memos on mainnet — confirmed live 2026-09-25 (VERIFICATION.md)
+- [x] Finality assumptions — confirmed: single-block deterministic, ~0.5s, no reorgs
+- [x] PUSH0 behavior — Osaka EVM; paris pin kept as harmless default
+- [x] Permit2 mainnet address — `0x000000000022D473030F116dDEE9F6B43aC78BA3` (not Ethereum's canonical); subscribeWithPermit2 built against it
+- [ ] Permit2 end-to-end against Arc mainnet (anvil-tested only)
 - [ ] FeeRouter treasury multisig signers set
-- [ ] Dunning copy reviewed (no banned-word issues in customer-facing text)
+- [x] Dunning copy reviewed (no banned-word issues; see docs/dunning-copy.md)
 - [ ] Thin-liquidity assumption documented for launch comms
 
 ## Repo layout
 
 ```
 levy/
-├── contracts/          # Foundry: SubscriptionManager, FeeRouter
-├── keeper/             # charge scheduler + dunning engine
-├── indexer/            # EIP-7708-deduped event indexer + invoice store
-├── webhooks/           # Ed25519-signed dispatcher
-├── api/                # merchant + portal API
-├── web/                # merchant dashboard + customer portal
-└── docs/               # this spec, fee math notes, verification log
+├── src/                # Foundry: SubscriptionManager, FeeRouter, IPermit2
+├── test/               # unit + invariant tests (28)
+├── foundry.toml
+├── FEE_MATH_AUDIT.md   # fee + proration math audit
+├── SECURITY_REVIEW.md  # adversarial pre-audit self-review
+├── keeper/             # charge scheduler + dunning engine + webhook dispatcher
+├── api/                # Fastify REST API + static merchant dashboard + customer portal
+├── ops/                # docker-compose, systemd, monitoring runbook, multisig plan
+├── site/               # getlevy.xyz landing page (static)
+├── docs/               # merchant guide, dunning copy
+├── SPEC.md             # this doc
+└── VERIFICATION.md     # pre-mainnet fact checks with sources
 ```
 
 ## Name check

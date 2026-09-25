@@ -137,7 +137,7 @@ The CSV download has the columns: `id,invoiceRef,subId,subscriber,merchant,amoun
 
 A pull fails when the subscriber has insufficient USDC or has revoked the allowance. The contract never reverts on a failed pull; it records the failure on-chain and emits `ChargeFailed`. From there:
 
-1. The keeper retries on a schedule (default: 1 day, 3 days, 7 days after each failure; configurable per deployment).
+1. The keeper retries per failure: after failure 1 it retries in 1 day, after failure 2 in 3 days, after failure 3 and beyond every 7 days (configurable per deployment via `LEVY_DUNNING_DAYS`).
 2. When failures reach your plan's `maxFailed`, the subscription moves to `PAST_DUE`. It is still chargeable; the keeper keeps retrying.
 3. At twice `maxFailed` failures, the contract pauses the subscription automatically. No further pulls happen until someone resumes it.
 4. A successful pull at any point clears the failure count and the retry schedule.
@@ -148,12 +148,13 @@ A subscriber fixes a failed subscription by topping up USDC or re-granting the a
 
 ## 6. The subscriber flow
 
-Send the subscriber your `planId`. They:
+Send the subscriber your `planId`. Two ways to onboard:
 
-1. Call `approve` on the USDC contract for the `SubscriptionManager` address, for at least one cycle's price (more if they want a buffer).
-2. Call `subscribe(planId)` on the `SubscriptionManager`.
+**Direct approve (two transactions).** The subscriber:
+1. Calls `approve` on the USDC contract for the `SubscriptionManager` address, for at least one cycle's price (more for a buffer).
+2. Calls `subscribe(planId)` on the `SubscriptionManager`.
 
-That is the whole onboarding. One approval, one subscribe call.
+**Permit2 (one transaction).** The subscriber signs an off-chain EIP-712 Permit2 message authorizing the `SubscriptionManager` to pull USDC (spender = the manager address, token = USDC). You or the subscriber then submits `subscribeWithPermit2(planId, owner, permitSingle, signature)` — one transaction, atomic. Uses Arc's Permit2 contract at `0x000000000022D473030F116dDEE9F6B43aC78BA3`.
 
 ## FAQ
 

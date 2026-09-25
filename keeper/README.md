@@ -7,8 +7,8 @@ Off-chain service that executes pull-based USDC subscription charges on Arc. Wat
 Each cycle (default 30s):
 
 1. **Sync** — pulls new `SubscriptionManager` and USDC `Transfer` events into SQLite, refreshes subscription state from chain.
-2. **Charge due** — calls `charge(subId)` for TRIAL/ACTIVE subscriptions past `nextChargeAt`. Anyone can call `charge()`; the keeper is just the always-on anyone.
-3. **Dunning retries** — re-calls `charge()` for failed subscriptions on the backoff schedule (default day 1, 3, 7). A success clears the schedule.
+2. **Charge due** — calls `charge(subId)` for TRIAL/ACTIVE/PAST_DUE subscriptions past `nextChargeAt`. Anyone can call `charge()`; the keeper is just the always-on anyone.
+3. **Dunning retries** — re-calls `charge()` for failed subscriptions on the per-attempt backoff schedule (after failure 1: 1 day, failure 2: 3 days, failure 3+: 7 days; configurable). A success clears the schedule.
 4. **Re-sync** — picks up this cycle's own receipts immediately.
 
 Failed pulls never revert on-chain; the contract emits `ChargeFailed` and the keeper records it. At `maxFailed` failures the contract marks the subscription `PAST_DUE`; at `2x` it auto-pauses. The keeper never force-pauses for dunning.
@@ -62,7 +62,7 @@ Integration tests spin up a local `anvil`, deploy `MockUSDC` + `FeeRouter` + `Su
 
 - **Key safety.** `LEVY_KEEPER_KEY` is a hot EOA that pays gas (USDC on Arc). Fund it minimally, rotate if exposed, never commit it.
 - **Idempotency.** `charge()` is safe to retry; the contract enforces `nextChargeAt` and state. The keeper dedupes within a cycle (a sub is charged once per cycle even if it appears in both the due sweep and the retry queue).
-- **Chain time, not wall time.** All due/dunning math uses the chain-head timestamp, so the keeper behaves correctly across reorgs and test time-warps.
+- **Chain time, not wall time.** All due/dunning math uses the chain-head timestamp, so the keeper behaves correctly across clock skew and test time-warps. (Arc has deterministic finality with no reorgs; this is belt-and-suspenders.)
 - **Single instance.** Run one keeper per deployment. Two keepers would race `charge()` calls (harmless on-chain — the second reverts or no-ops — but wasteful).
 - **DB is the state.** `levy.db` holds sync cursors, dunning schedules, and charge history. Back it up; deleting it causes a full resync from `LEVY_LOOKBACK_BLOCKS`.
 - **Transfer accounting.** `usdc_transfers` records raw ERC-20 `Transfer` logs for visibility. `dedupedTransfers()` collapses same-tx identical (from,to,amount) rows — see the doc comment in `src/db.ts` for the limitation. Charge truth comes from `Charged`/`ChargeFailed` events, not transfer sums.

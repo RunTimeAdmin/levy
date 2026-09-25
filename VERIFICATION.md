@@ -90,6 +90,6 @@ Sources:
 | 3 | Finality | Confirmed: ~0.5s blocks, single-block deterministic finality, no reorgs | "~0.5s / one block final" — CONFIRMED |
 | 4 | Permit2 address | Present, but at `...F6B43aC78BA3`, not `...c3a50` | Old address — WRONG, must use Arc's listed address |
 
-## Follow-ups for the Permit2 build (Track A)
+## Follow-ups for the Permit2 build (done 2026-09-25)
 
-If/when the Permit2 subscribe path is built, use `0x000000000022D473030F116dDEE9F6B43aC78BA3` as the Permit2 address on both Arc mainnet and testnet. Verify with an `eth_getCode` call before wiring it into the contract.
+`subscribeWithPermit2` is implemented and tested against a mock Permit2 on anvil, using `0x000000000022D473030F116dDEE9F6B43aC78BA3` as the Permit2 address on both Arc mainnet and testnet. Before mainnet, verify the address with an `eth_getCode` call and run the end-to-end flow against Arc mainnet.

@@ -34,7 +34,7 @@ Subject: Your subscription is paused
 
 > Your subscription was paused after {n} failed payment attempts. No further charges will be attempted until it is resumed.
 >
-> To restart: top up USDC, re-approve spending for the Levy contract, and resume the subscription from your account. Your merchant is also able to resume it for you.
+> To restart: top up USDC, re-approve spending for the Levy contract, and resume the subscription by signing a resume transaction with your wallet. Your merchant is also able to resume it for you.
 
 ## 5. Successful retry (charge.succeeded after failures)
 
