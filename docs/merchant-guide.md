@@ -139,7 +139,7 @@ A pull fails when the subscriber has insufficient USDC or has revoked the allowa
 
 1. The keeper retries per failure: after failure 1 it retries in 1 day, after failure 2 in 3 days, after failure 3 and beyond every 7 days (configurable per deployment via `LEVY_DUNNING_DAYS`).
 2. When failures reach your plan's `maxFailed`, the subscription moves to `PAST_DUE`. It is still chargeable; the keeper keeps retrying.
-3. At twice `maxFailed` failures, the contract pauses the subscription automatically. No further pulls happen until someone resumes it.
+3. At twice `maxFailed` failures, the contract pauses the subscription automatically. No further pulls happen until someone resumes it. Resuming starts a fresh retry run and bills from the resume date; the overdue cycle is not collected.
 4. A successful pull at any point clears the failure count and the retry schedule.
 
 You receive `charge.failed` on every failure, `dunning.started` on the first failure, and `subscription.paused` if the contract auto-pauses. Use these to email the subscriber or flag the account in your own system. Levy does not send subscriber emails; that is your layer.
@@ -165,7 +165,7 @@ Create a new plan with the new price and point new subscribers at it. Plans are 
 Refunds are your policy and happen off-chain: send USDC back to the subscriber from your own wallet. The contract has no refund function, and cancelled subscriptions are terminal.
 
 **How do I cancel a subscriber?**
-Call `cancelSubscription(subId)` as the merchant, or have the subscriber call it themselves. Cancellation is terminal; the subscription cannot be resumed. For a temporary stop, use `pauseSubscription` instead, which freezes `nextChargeAt` until `resumeSubscription` is called.
+Call `cancelSubscription(subId)` as the merchant, or have the subscriber call it themselves. Cancellation is terminal; the subscription cannot be resumed. For a temporary stop, use `pauseSubscription` instead. Nothing is charged while paused. On `resumeSubscription`, if the next charge date has passed, billing restarts from the resume date; paused cycles are never billed. Days already paid for keep running during the pause.
 
 **What does the 1% fee apply to?**
 Each collected payment. The contract sends 99% to the merchant address on the plan and 1% to the FeeRouter in the same transaction. Failed pulls cost nothing.

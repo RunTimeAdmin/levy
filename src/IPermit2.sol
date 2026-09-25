@@ -3,8 +3,8 @@ pragma solidity ^0.8.20;
 
 /// @notice Minimal Uniswap Permit2 interface: only the two functions Levy uses.
 /// @dev Full Permit2 repo: https://github.com/Uniswap/permit2
-///      On Arc mainnet/testnet: 0x000000000022D473030F116dDEE9F6B43aC78BA3
-///      (NOT the Ethereum canonical 0x0000...c3a50; see VERIFICATION.md).
+///      On Arc mainnet/testnet: 0x000000000022D473030F116dDEE9F6B43aC78BA3,
+///      the canonical address (same as Ethereum; see VERIFICATION.md).
 interface IPermit2 {
     struct PermitDetails {
         address token;

@@ -7,7 +7,7 @@
 
 - Circle names software billing a target Arc use case. Nothing live fills it; only testnet toys exist.
 - Arc is purpose-built for money movement: USDC gas, ~0.5s blocks, deterministic single-block finality (Malachite BFT, no reorgs — confirmed 2026-09-25, see VERIFICATION.md). Base-fee behavior is still unverified; do not quote a fixed gwei figure.
-- Chain facts (mainnet, chain ID 5042): Permit2 verified on Arc mainnet at `0x000000000022D473030F116dDEE9F6B43aC78BA3` — NOT the Ethereum canonical `...c3a50`. Multicall3, CREATE2 deployer, Safe v1.4.1 at canonical addresses — still unconfirmed, verify before mainnet.
+- Chain facts (mainnet, chain ID 5042): Permit2 verified on Arc mainnet at the canonical `0x000000000022D473030F116dDEE9F6B43aC78BA3`, same as Ethereum. Multicall3, CREATE2 deployer, Safe v1.4.1 at canonical addresses — still unconfirmed, verify before mainnet.
 - Willingness to pay is proven: Request Finance charges $600–$9,000/mo for crypto billing ops. No competitor (Request, Superfluid, Sablier, Diagonal) supports Arc.
 - Defense: keep the on-chain pull primitive free and open-source; monetize the SaaS layer (dunning engine, webhooks, reconciliation, dashboards).
 
@@ -25,11 +25,11 @@
 
 **Charge.** Keeper calls `charge(subscriptionId)` when `block.timestamp >= nextChargeAt`; the pull pays for the cycle that starts then. `charge()` is permissionless — the pull can only move the subscriber's pre-approved funds to the correct merchant, so there is nothing to gain by calling it. Contract checks state is chargeable (TRIAL, ACTIVE, or PAST_DUE), pulls `price` via `transferFrom` (direct allowance first, Permit2 `transferFrom` fallback), splits 1% to FeeRouter and 99% to merchant, advances `nextChargeAt` by cycle length, emits `Charged`. If the pull fails (allowance/balance), increments `failedAttempts`, emits `ChargeFailed`, and the dunning engine takes over off-chain.
 
-**Dunning.** Failure state is managed on-chain by the contract, not by the keeper. When `failedAttempts` reaches the plan's `maxFailed`, the subscription moves to `PAST_DUE`. At `2 × maxFailed` failures the contract auto-pauses it (`PAUSED`); the keeper never needs to call `pauseSubscription()` for dunning. Off-chain, the keeper watches `ChargeFailed` and retries on a schedule (default day 1, 3, 7; configurable). A successful retry clears the dunning schedule. Merchant can resume a paused subscription manually; subscriber notifications go out as Ed25519-signed webhooks.
+**Dunning.** Failure state is managed on-chain by the contract, not by the keeper. When `failedAttempts` reaches the plan's `maxFailed`, the subscription moves to `PAST_DUE`. At `2 × maxFailed` failures the contract auto-pauses it (`PAUSED`); the keeper never needs to call `pauseSubscription()` for dunning. Off-chain, the keeper watches `ChargeFailed` and retries on a schedule (default day 1, 3, 7; configurable). A successful retry clears the dunning schedule. Merchant (or subscriber) can resume a paused subscription, which resets `failedAttempts` and the keeper's retry schedule; subscriber notifications go out as Ed25519-signed webhooks.
 
 **Proration.** Plan change mid-cycle, same merchant only: the new plan starts immediately and its first cycle is billed immediately. Unused paid time on the old plan becomes credit, `price * remainingSeconds / cycleSeconds` (integer math, 6-decimal units, round down; remainder stays with merchant), added to any credit already held. Credit is spent first; the rest is pulled. Credit left over after a downgrade covers later cycles. Trial time was never paid for and earns no credit. Credit can never move to another merchant.
 
-**Pause / cancel.** Subscriber or merchant can pause (no charges accrue, `nextChargeAt` frozen) or cancel (terminal; no on-chain refunds — refunds are merchant policy, handled off-chain). `cancelSubscription()` emits `Cancelled`.
+**Pause / cancel.** Subscriber or merchant can pause (no charges while paused) or cancel (terminal; no on-chain refunds — refunds are merchant policy, handled off-chain). `cancelSubscription()` emits `Cancelled`. Resume is a fresh start: if `nextChargeAt` passed during the pause, it moves to the resume time, so paused cycles are never billed and an overdue cycle is forgiven (as with `changePlan`). Paid days keep running during a pause.
 
 **Invoicing.** Every `Charged` event generates an invoice record: invoice ID, subscription, cycle dates, amount, fee, tx hash, memo reference (see Memos below). Merchant dashboard exports CSV; PDF receipts are post-MVP.
 
@@ -46,11 +46,11 @@
 
 **FeeRouter:** receives 1% at charge time. Phase 1: forwards to treasury multisig. Phase 2: splits 50% buyback-and-burn LEVY / 50% staking rewards.
 
-**Invariants (test these):** total pulled == merchant received + fees, always; `nextChargeAt` only advances on successful pull; no charge when CANCELLED; proration credit never exceeds the USDC that subscription actually paid, and never moves between merchants; keeper cannot charge for another merchant's plan (merchant-scoped keeper auth or fully permissionless `charge` — permissionless is simpler and safe since pulls only move the subscriber's approved funds to the right merchant).
+**Invariants (test these):** total pulled == merchant received + fees, always; `nextChargeAt` only moves on a successful pull, a paid plan change, or a resume, and never falls below `start`; no charge when CANCELLED; proration credit never exceeds the USDC that subscription actually paid, and never moves between merchants; keeper cannot charge for another merchant's plan (merchant-scoped keeper auth or fully permissionless `charge` — permissionless is simpler and safe since pulls only move the subscriber's approved funds to the right merchant).
 
 ## Off-chain services
 
-- **Keeper:** watches `nextChargeAt` across subscriptions, submits `charge()` txs. Pays its own USDC gas (trivial at fixed 20 gwei). Single binary to start; later: distributed keepers.
+- **Keeper:** watches `nextChargeAt` across subscriptions, submits `charge()` txs. Pays its own gas in USDC (small per charge; base-fee behavior still unverified). Single binary to start; later: distributed keepers.
 - **Indexer:** tracks subscriptions, charges, invoices. MUST dedupe EIP-7708 double-counting: the USDC precompile emits Transfer events for native movements, so naive ERC-20 log indexing double-counts. Index from the system-emitter stream and dedupe by tx hash.
 - **Webhook dispatcher:** Ed25519-signed payloads to merchant endpoints. Events: subscription.created, charge.succeeded, charge.failed, dunning.started, subscription.paused, subscription.resumed, subscription.cancelled, invoice.ready. Retry with exponential backoff; dead-letter after 24h.
 - **API + dashboard (merchant):** plan CRUD, subscriber list, MRR/churn metrics, dunning queue, invoice export, webhook config.
@@ -105,7 +105,7 @@ This is not a security product, but it holds other people's money rails. Non-neg
 - [x] Transaction memos on mainnet — confirmed live 2026-09-25 (VERIFICATION.md)
 - [x] Finality assumptions — confirmed: single-block deterministic, ~0.5s, no reorgs
 - [x] PUSH0 behavior — Osaka EVM; paris pin kept as harmless default
-- [x] Permit2 mainnet address — `0x000000000022D473030F116dDEE9F6B43aC78BA3` (not Ethereum's canonical); subscribeWithPermit2 built against it
+- [x] Permit2 mainnet address: canonical `0x000000000022D473030F116dDEE9F6B43aC78BA3`; subscribeWithPermit2 built against it
 - [ ] Permit2 end-to-end against Arc mainnet (anvil-tested only)
 - [ ] FeeRouter treasury multisig signers set
 - [x] Dunning copy reviewed (no banned-word issues; see docs/dunning-copy.md)
@@ -116,7 +116,7 @@ This is not a security product, but it holds other people's money rails. Non-neg
 ```
 levy/
 ├── src/                # Foundry: SubscriptionManager, FeeRouter, IPermit2
-├── test/               # unit + invariant tests (41)
+├── test/               # unit + invariant tests (44)
 ├── foundry.toml
 ├── FEE_MATH_AUDIT.md   # fee + proration math audit
 ├── SECURITY_REVIEW.md  # adversarial pre-audit self-review

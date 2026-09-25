@@ -56,10 +56,9 @@ contract SubscriptionManager is ReentrancyGuard {
     address public immutable feeRouter;
     IPermit2 public immutable permit2;
 
-    /// @notice Permit2 on Arc mainnet/testnet. NOTE: this is NOT the Ethereum
-    ///         canonical address (0x0000...c3a50). Arc deploys Permit2 at
-    ///         0x0000...C78BA3; see VERIFICATION.md. Pass a different address
-    ///         at construction for testing.
+    /// @notice Permit2 on Arc mainnet/testnet: the canonical address, same as
+    ///         Ethereum (see VERIFICATION.md). Pass a different address at
+    ///         construction for testing.
     address public constant PERMIT2_ARC = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
 
     uint256 public planCount;
@@ -279,10 +278,16 @@ contract SubscriptionManager is ReentrancyGuard {
         emit Paused(subId);
     }
 
+    /// @notice Resume a paused subscription as a fresh start. Paused time is
+    ///         never billed: if the next charge date passed during the pause,
+    ///         billing restarts now (an overdue cycle is forgiven, as with
+    ///         changePlan). The failure count resets for a new dunning run.
     function resumeSubscription(uint256 subId) external {
         Subscription storage sub = subscriptions[subId];
         _onlySubscriberOrMerchant(sub);
         if (sub.status != Status.PAUSED) revert NotChargeable();
+        if (sub.nextChargeAt < block.timestamp) sub.nextChargeAt = uint64(block.timestamp);
+        sub.failedAttempts = 0;
         sub.status = Status.ACTIVE;
         emit Resumed(subId);
     }

@@ -120,9 +120,14 @@ export class Indexer {
     const subId = (args.subId as bigint).toString();
     let dunningNextRetryAt: number | undefined;
     switch (name) {
+      case "Resumed":
+        // Resume resets failedAttempts on-chain and bills from now; a stale
+        // retry row would hold the sub out of the due sweep until its old time.
+        clearDunning(this.db, subId);
+        await this.refreshSubscription(subId);
+        break;
       case "Subscribed":
       case "Paused":
-      case "Resumed":
       case "Cancelled":
       case "PlanChanged":
       case "AutoPaused":

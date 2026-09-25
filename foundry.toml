@@ -4,7 +4,8 @@ out = "out"
 libs = ["lib"]
 evm_version = "paris"
 
-# Arc rejects PUSH0 (Shanghai+), so paris is mandatory.
+# Conservative default. Arc mainnet runs an Osaka EVM, so PUSH0 works and
+# paris is not required (see VERIFICATION.md section 2).
 
 [invariant]
 runs = 256

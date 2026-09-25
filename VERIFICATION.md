@@ -62,9 +62,11 @@ Sources:
 
 ## 4. Permit2 on Arc mainnet
 
-**VERDICT: CONFIRMED present — but NOT at the address in the old docs.**
+**VERDICT: CONFIRMED present, at the canonical Permit2 address.**
 
-Permit2 **is** deployed on Arc mainnet, but at **`0x000000000022D473030F116dDEE9F6B43aC78BA3`** — not at `0x000000000022D473030F64699cA503418c3a50` (the Ethereum-mainnet canonical address from the old Levy docs).
+Permit2 is deployed on Arc mainnet at **`0x000000000022D473030F116dDEE9F6B43aC78BA3`**, the same address Uniswap uses on Ethereum and every other chain it supports except zkSync.
+
+*Correction (2026-09-25):* an earlier version of this section said Arc's address was not the Ethereum canonical one, comparing it to `0x000000000022D473030F64699cA503418c3a50`. That string has 38 hex digits, so it is not a valid address at all; it was a garbled copy. The original SPEC claim ("Permit2 at canonical addresses") was right.
 
 Primary source: the Arc Docs contract-addresses page lists under "Common Ethereum contracts" → Mainnet:
 
@@ -74,10 +76,12 @@ Primary source: the Arc Docs contract-addresses page lists under "Common Ethereu
 
 The same address is listed for testnet. The docs note it is "required for StableFX."
 
-Implication for Levy: the old SPEC.md claim ("Permit2 at canonical addresses") is **wrong on the address**. Any Permit2 integration must target `0x000000000022D473030F116dDEE9F6B43aC78BA3` on Arc, not the Ethereum canonical address. Do not copy-paste the `...c3a50` address — it is not the one Arc documents.
+Implication for Levy: target `0x000000000022D473030F116dDEE9F6B43aC78BA3` on Arc. It is the canonical address, so Permit2 tooling and SDK defaults work unchanged.
 
 Sources:
 - https://docs.arc.io/arc/references/contract-addresses (accessed 2026-09-25; Permit2 under Mainnet "Common Ethereum contracts")
+- https://developers.uniswap.org/docs/protocols/permit2/overview (same address on every Uniswap chain except zkSync; accessed 2026-09-25)
+- https://developers.uniswap.org/docs/liquidity/uniswapx/deployments (lists Arc at this address; accessed 2026-09-25)
 
 ---
 
@@ -88,7 +92,7 @@ Sources:
 | 1 | Memos on mainnet | Confirmed live | "Testnet-only" — SUPERSEDED |
 | 2 | PUSH0 / paris mandatory | Contradicted for mainnet (Osaka EVM) | "Mandatory" — FALSE for mainnet; keep paris as harmless conservative default |
 | 3 | Finality | Confirmed: ~0.5s blocks, single-block deterministic finality, no reorgs | "~0.5s / one block final" — CONFIRMED |
-| 4 | Permit2 address | Present, but at `...F6B43aC78BA3`, not `...c3a50` | Old address — WRONG, must use Arc's listed address |
+| 4 | Permit2 address | Present at the canonical `...F6B43aC78BA3` | "Canonical address" — CONFIRMED (the `...c3a50` comparison was a malformed string) |
 
 ## Follow-ups for the Permit2 build (done 2026-09-25)
 

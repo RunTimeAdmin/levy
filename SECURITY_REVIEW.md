@@ -45,7 +45,10 @@ there is no repricing or merchant-swap attack.
 - Griefing is **bounded**: after `maxFailed * 2` failures the contract
   auto-pauses the subscription (`AutoPaused`), and the keeper's dunning
   schedule stops retrying paused subs. With the default `maxFailed = 2`, a
-  malicious subscriber can waste at most ~4 keeper transactions.
+  malicious subscriber can waste at most ~4 keeper transactions per resume.
+  Resume resets the failure count, and a subscriber can resume their own sub,
+  so each resume (paid by the attacker) buys another ~4 keeper attempts,
+  spread over the dunning schedule (days, not blocks).
 - Allowance front-running (subscriber sees keeper's `charge()` in mempool and
   revokes first): the charge fails gracefully, dunning handles it. No theft,
   just a wasted tx. Same bound as above.

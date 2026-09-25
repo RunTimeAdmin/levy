@@ -81,8 +81,10 @@ themselves. See SECURITY_REVIEW.md §9.
   `uint64(...)` casts cannot truncate in practice.
 - `charge()` advances `nextChargeAt` by exactly one `cycleSeconds` per call
   (from the stored value, not `block.timestamp`), so a late keeper does not
-  cause multi-cycle surprise pulls; catching up requires one `charge()` per
-  missed cycle. `nextChargeAt` never moves backwards (invariant-tested).
+  cause multi-cycle surprise pulls; catching up after missed charges requires
+  one `charge()` per missed cycle. Paused time is the exception: resume moves
+  a passed `nextChargeAt` up to the resume time, so paused cycles are never
+  caught up. `nextChargeAt` never falls below `start` (invariant-tested).
 
 ## 5. Failure counters
 
@@ -91,7 +93,10 @@ themselves. See SECURITY_REVIEW.md §9.
   `maxFailed` is uint8 (max 255), so the pause threshold is at most 510.
   No overflow: `maxFailed * 2` is computed in uint256 context (Solidity 0.8
   arithmetic on uint8 promotes safely here; 255*2 = 510 fits).
-- `failedAttempts` resets to 0 on any successful charge or plan change.
+- `failedAttempts` resets to 0 on any successful charge, plan change, or resume.
+  A resume therefore starts a full new dunning run instead of re-pausing on
+  the next failure. (Before 2026-09-25 resume kept the count, so
+  `failedAttempts` could pass `2 * maxFailed`; deep fuzzing caught it.)
 
 ## 6. Edge cases
 
@@ -102,6 +107,7 @@ themselves. See SECURITY_REVIEW.md §9.
 | `changePlan` while overdue (`nextChargeAt <= now`) | No credit from unused time (none remains); the new plan's cycle is billed now (less any carried credit) and the overdue cycle is forgiven. Economically identical to cancel + resubscribe. |
 | `changePlan` to a cheaper plan mid-cycle | Credit can exceed the new price; the excess covers later cycles. Correct. |
 | `changePlan` during a trial | No credit; the new plan's first cycle is billed in full now. |
+| Resume after `nextChargeAt` passed | `nextChargeAt` = resume time; one charge bills a fresh cycle. Paused cycles are never billed. |
 | Subscriber approves exactly `price`, then price... | Price is immutable per plan; no repricing race. |
 | `permit2.transferFrom` amount | `uint160` cast guarded by `amount > type(uint160).max` check; realistic USDC amounts are ~1e6–1e15. |
 

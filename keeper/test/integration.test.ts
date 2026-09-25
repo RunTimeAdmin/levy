@@ -265,6 +265,36 @@ describe("keeper integration (anvil)", () => {
     assert.equal(rows.length, 0); // cleared on success
   });
 
+  it("resume clears dunning and charges from now", async () => {
+    // Bob's allowance lapses, his next charge fails and dunning schedules a
+    // retry a day out. He pauses, then resumes right away with a new allowance.
+    const bobWallet = createWalletClient({
+      account: bob, chain: publicClient.chain, transport: http(RPC),
+    });
+    const asBob = getContract({
+      address: manager.address, abi: abi("SubscriptionManager"),
+      client: { public: publicClient, wallet: bobWallet },
+    });
+    const asBobUsdc = getContract({
+      address: usdc.address, abi: usdc.abi,
+      client: { public: publicClient, wallet: bobWallet },
+    });
+    await mined(await asBobUsdc.write.approve([manager.address, 0n], { account: bob, chain: publicClient.chain }));
+    await increaseTime(CYCLE + 60);
+    const failing = await keeperSvc.runCycle();
+    assert.ok(failing.failed.some((f) => f.subId === "2"), "expected sub 2 to fail");
+    assert.equal(db["db"].prepare("SELECT * FROM dunning WHERE subId = '2'").all().length, 1);
+
+    await mined(await asBob.write.pauseSubscription([2n], { account: bob, chain: publicClient.chain }));
+    await mined(await asBob.write.resumeSubscription([2n], { account: bob, chain: publicClient.chain }));
+    await mined(await asBobUsdc.write.approve([manager.address, PRICE * 12n], { account: bob, chain: publicClient.chain }));
+
+    // The retry is not due for a day, but the resumed sub is charged now.
+    const report = await keeperSvc.runCycle();
+    assert.equal(report.charged.filter((c) => c.subId === "2").length, 1);
+    assert.equal(db["db"].prepare("SELECT * FROM dunning WHERE subId = '2'").all().length, 0);
+  });
+
   it("enqueues webhook events on Subscribed and Charged", async () => {
     // Merchant (keeper account) registers for the billing events. The URL is
     // unreachable on purpose: this test asserts enqueueing, not delivery.

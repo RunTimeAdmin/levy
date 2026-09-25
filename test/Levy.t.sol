@@ -211,12 +211,66 @@ contract LevyTest is Test {
 
         vm.prank(alice);
         manager.resumeSubscription(subId);
+        (, , , , uint64 failed, , , ) = manager.subscriptions(subId);
+        assertEq(failed, 0); // resume starts a fresh dunning run
         vm.prank(alice);
         usdc.approve(address(manager), PRICE * 12);
 
         vm.prank(keeper);
         manager.charge(subId);
         assertEq(usdc.balanceOf(merchant), 2 * (PRICE - PRICE / 100));
+        // The overdue cycles before the auto-pause are forgiven, not caught up.
+        assertFalse(manager.isChargeable(subId));
+    }
+
+    function testResumeDoesNotBillPausedCycles() public {
+        uint256 subId = _subscribeAndApprove(); // cycle 1 paid
+        vm.prank(alice);
+        manager.pauseSubscription(subId);
+        vm.warp(block.timestamp + 180 days);
+        vm.prank(alice);
+        manager.resumeSubscription(subId);
+
+        // Billing restarts at the resume: one charge now, then nothing is due.
+        uint256 resumedAt = block.timestamp;
+        assertTrue(manager.isChargeable(subId));
+        vm.prank(keeper);
+        manager.charge(subId);
+        assertFalse(manager.isChargeable(subId));
+        (, , , uint64 nextCharge, , , uint256 chargeCount, ) = manager.subscriptions(subId);
+        assertEq(nextCharge, resumedAt + CYCLE);
+        assertEq(chargeCount, 2);
+        assertEq(usdc.balanceOf(merchant), 2 * (PRICE - PRICE / 100));
+    }
+
+    function testResumeBeforeNextChargeKeepsSchedule() public {
+        uint256 subId = _subscribeAndApprove();
+        (, , , uint64 nextCharge, , , , ) = manager.subscriptions(subId);
+        vm.prank(alice);
+        manager.pauseSubscription(subId);
+        vm.warp(block.timestamp + 10 days);
+        vm.prank(alice);
+        manager.resumeSubscription(subId);
+        (, , , uint64 nextChargeAfter, , , , ) = manager.subscriptions(subId);
+        assertEq(nextChargeAfter, nextCharge); // still inside the paid cycle
+    }
+
+    function testResumedSubscriptionGetsFullDunningRun() public {
+        uint256 subId = _subscribeOneCycleOnly();
+        (, , , uint64 nextCharge, , , , ) = manager.subscriptions(subId);
+        for (uint256 i = 0; i < 4; i++) {
+            vm.warp(nextCharge + i * CYCLE);
+            manager.charge(subId); // auto-pauses on the 4th failure
+        }
+        vm.prank(alice);
+        manager.resumeSubscription(subId);
+
+        // Still no allowance: the next failure starts a new count instead of
+        // pushing past 2 * maxFailed and re-pausing at once.
+        manager.charge(subId);
+        (, , , , uint64 failed, , , SubscriptionManager.Status status) = manager.subscriptions(subId);
+        assertEq(failed, 1);
+        assertEq(uint256(status), uint256(SubscriptionManager.Status.ACTIVE));
     }
 
     function testChargeFailurePreservesCredit() public {
@@ -514,7 +568,7 @@ contract LevyTest is Test {
     }
 
     function testPermit2ArcAddress() public view {
-        // Arc mainnet/testnet Permit2; NOT the Ethereum canonical address.
+        // Arc mainnet/testnet Permit2: the canonical address.
         assertEq(
             manager.PERMIT2_ARC(),
             0x000000000022D473030F116dDEE9F6B43aC78BA3
