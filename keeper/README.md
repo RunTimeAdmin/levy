@@ -66,7 +66,7 @@ its deliveries arrive in order. Failures retry with backoff (1m, 5m, 15m, 1h,
 ## Tests
 
 ```bash
-npm test              # unit + anvil integration (53 tests)
+npm test              # unit + anvil integration (54 tests)
 npm run test:integration
 ```
 
@@ -82,7 +82,8 @@ Integration tests spin up a local `anvil`, deploy `MockUSDC` + `FeeRouter` + `Su
 - **Log sync is chunked.** `eth_getLogs` goes out in `LEVY_LOG_CHUNK_BLOCKS` ranges (default 500; dRPC rejects 1,000) and the cursor advances after each, so a keeper that was down for a day catches up in ~350 requests.
 - **Single instance.** Run one keeper per deployment. Two keepers would race `charge()` calls (harmless on-chain — the second reverts or no-ops — but wasteful).
 - **DB is the state.** `levy.db` holds sync cursors, dunning schedules, and charge history. Back it up; deleting it causes a full resync from `LEVY_LOOKBACK_BLOCKS`.
-- **Transfer accounting.** `usdc_transfers` records raw ERC-20 `Transfer` logs for visibility. `dedupedTransfers()` collapses same-tx identical (from,to,amount) rows — see the doc comment in `src/db.ts` for the limitation. Charge truth comes from `Charged`/`ChargeFailed` events, not transfer sums.
+- **Log scope.** Each chunk fetches the manager's events plus only the USDC `Transfer`s into or out of the manager and `Approval`s to it, never every USDC log: on Arc, USDC is the gas token (measured 25 Sep 2026: ~4,000 USDC logs per 500 blocks on testnet, ~1,200 on mainnet), so an unfiltered query would store ~700k unrelated rows a day and hit provider result caps when catching up.
+- **Transfer accounting.** `usdc_transfers` records the USDC `Transfer` logs into and out of the manager, for visibility. `dedupedTransfers()` collapses same-tx identical (from,to,amount) rows — see the doc comment in `src/db.ts` for the limitation. Charge truth comes from `Charged`/`ChargeFailed` events, not transfer sums.
 
 ## Layout
 

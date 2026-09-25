@@ -468,4 +468,18 @@ describe("keeper integration (anvil)", () => {
     assert.equal(db.getFunds(carol.address)?.low, 0);
     assert.equal(db.getFunds(carol.address)?.cycles_covered, 12);
   });
+
+  it("indexes only the USDC logs that involve Levy", async () => {
+    // This suite minted USDC to alice, bob and carol: unrelated to Levy, so
+    // those Transfers must not be fetched. On Arc, where USDC is the gas
+    // token, fetching every USDC log would swamp the RPC.
+    const rows = db["db"].prepare("SELECT fromAddr, toAddr FROM usdc_transfers").all() as Array<{ fromAddr: string; toAddr: string }>;
+    const m = manager.address.toLowerCase();
+    assert.ok(rows.length > 0, "the charges' transfers are indexed");
+    assert.ok(
+      rows.every((r) => r.fromAddr.toLowerCase() === m || r.toAddr.toLowerCase() === m),
+      "every indexed transfer moves USDC into or out of the manager"
+    );
+    assert.ok(!rows.some((r) => /^0x0{40}$/.test(r.fromAddr)), "no mints");
+  });
 });

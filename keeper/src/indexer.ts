@@ -89,11 +89,7 @@ export class Indexer {
     // through a long catch-up loses at most one chunk of progress.
     let count = 0;
     for (const [from, to] of logRanges(fromBlock, toBlock, BigInt(this.cfg.logChunkBlocks))) {
-      const logs = (await this.clients.public.getLogs({
-        address: [this.cfg.managerAddress, this.cfg.usdcAddress],
-        fromBlock: from,
-        toBlock: to,
-      })) as unknown as RawLog[];
+      const logs = await this.fetchLogs(from, to);
       for (const log of logs) {
         await this.handleLog(log, nowSec);
       }
@@ -101,6 +97,28 @@ export class Indexer {
       count += logs.length;
     }
     return { fromBlock, toBlock, logs: count, nowSec };
+  }
+
+  /**
+   * One chunk of the logs the keeper uses: every SubscriptionManager event,
+   * plus USDC Transfers into or out of the manager and Approvals to it. Never
+   * every USDC log: on Arc USDC is the gas token, so an unfiltered query
+   * returns so many logs that providers refuse it (they cap results per call).
+   */
+  private async fetchLogs(fromBlock: bigint, toBlock: bigint): Promise<RawLog[]> {
+    const pub = this.clients.public;
+    const usdc = this.cfg.usdcAddress;
+    const manager = this.cfg.managerAddress;
+    const batches = await Promise.all([
+      pub.getLogs({ address: manager, fromBlock, toBlock }),
+      pub.getLogs({ address: usdc, event: TRANSFER_EVENT, args: { to: manager }, fromBlock, toBlock }),
+      pub.getLogs({ address: usdc, event: TRANSFER_EVENT, args: { from: manager }, fromBlock, toBlock }),
+      pub.getLogs({ address: usdc, event: APPROVAL_EVENT, args: { spender: manager }, fromBlock, toBlock }),
+    ]);
+    // Back into chain order, so events are handled as they happened.
+    return (batches.flat() as unknown as RawLog[]).sort((a, b) =>
+      a.blockNumber === b.blockNumber ? a.logIndex - b.logIndex : a.blockNumber < b.blockNumber ? -1 : 1
+    );
   }
 
   private async handleLog(log: RawLog, nowSec: number): Promise<void> {
@@ -115,7 +133,7 @@ export class Indexer {
       }
       // Otherwise only Transfer events are movements.
       if (log.topics[0] !== toEventSelector(TRANSFER_EVENT)) return;
-      // Raw USDC movement. Dedup happens at query time (see db.dedupedTransfers).
+      // USDC into or out of the manager. Dedup happens at query time (see db.dedupedTransfers).
       this.db.insertTransfer({
         txHash: log.transactionHash,
         logIndex: log.logIndex,
