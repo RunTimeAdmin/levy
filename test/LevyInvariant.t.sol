@@ -60,7 +60,7 @@ contract LevyHandler is Test {
     function createPlan(uint256 price, uint256 cycleDays, uint8 maxFailed, bool withTrial) external {
         price = bound(price, 1, 1_000_000_000_000);
         cycleDays = bound(cycleDays, 1, 365);
-        maxFailed = uint8(bound(maxFailed, 1, 10));
+        maxFailed = uint8(bound(maxFailed, 1, 255)); // full range: maxFailed * 2 once overflowed at 128
         uint256 trial = withTrial ? (cycleDays * 1 days) / 2 : 0;
         address merchant = actors[0];
         vm.prank(merchant);

@@ -239,6 +239,23 @@ contract LevyTest is Test {
         assertFalse(manager.isChargeable(subId));
     }
 
+    function testLargeMaxFailedStillRecordsFailures() public {
+        // maxFailed * 2 once overflowed uint8 for maxFailed >= 128, so a
+        // failed pull reverted instead of being recorded (found 2026-09-25).
+        vm.prank(merchant);
+        uint256 lenient = manager.createPlan(PRICE, CYCLE, 0, 3 days, 200);
+        vm.prank(alice);
+        usdc.approve(address(manager), PRICE); // one cycle, spent at subscribe
+        vm.prank(alice);
+        uint256 subId = manager.subscribe(lenient, bytes32(0));
+        (, , , uint64 nextCharge, , , , ) = manager.subscriptions(subId);
+        vm.warp(nextCharge);
+        manager.charge(subId); // must record the failure, not revert
+        (, , , , uint64 failed, , , SubscriptionManager.Status status) = manager.subscriptions(subId);
+        assertEq(failed, 1);
+        assertEq(uint256(status), uint256(SubscriptionManager.Status.ACTIVE));
+    }
+
     function testResumeDoesNotBillPausedCycles() public {
         uint256 subId = _subscribeAndApprove(); // cycle 1 paid
         vm.prank(alice);

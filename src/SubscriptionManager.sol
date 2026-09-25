@@ -277,7 +277,7 @@ contract SubscriptionManager is ReentrancyGuard {
         if (sub.failedAttempts >= plan.maxFailed && sub.status != Status.PAST_DUE) {
             sub.status = Status.PAST_DUE;
         }
-        if (sub.failedAttempts >= plan.maxFailed * 2) {
+        if (sub.failedAttempts >= uint256(plan.maxFailed) * 2) { // uint8 * 2 would overflow at 128
             // Long-dead subscription: stop burning keeper gas on it.
             sub.status = Status.PAUSED;
             emit AutoPaused(subId);
