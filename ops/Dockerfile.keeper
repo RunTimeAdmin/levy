@@ -11,11 +11,16 @@ RUN npx tsc
 FROM node:24-slim
 WORKDIR /app
 ENV NODE_ENV=production
+# State lives on the /data volume (the only path the runtime user can write).
+ENV LEVY_DB_PATH=/data/levy.db LEVY_WEBHOOK_KEY_PATH=/data/webhook-signing-key.pem
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /build/dist ./dist
 COPY --from=build /build/abi ./abi
 # /data holds the SQLite DB and webhook signing key (mounted volume).
-RUN mkdir -p /data && useradd -m levy && chown -R levy:levy /app /data
+# The runtime user owns only /data; the code stays root-owned and read-only
+# to it (a recursive chown of /app would also copy every node_modules file
+# into a new layer).
+RUN mkdir -p /data && useradd -m levy && chown levy:levy /data
 USER levy
 CMD ["node", "dist/index.js"]

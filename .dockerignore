@@ -1,0 +1,13 @@
+# The API image builds from the repo root. Keep the context small and keep
+# secrets and local state out of it.
+.git
+**/node_modules
+lib
+out
+cache
+broadcast
+**/dist
+**/.env
+**/*.pem
+**/*.db
+**/*.db-*

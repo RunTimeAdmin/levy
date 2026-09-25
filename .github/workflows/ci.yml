@@ -59,6 +59,33 @@ jobs:
       - run: npx tsc --noEmit
       - run: npm test
 
+  # The Docker files broke silently once (the API image could not build);
+  # build both images and start the API for real.
+  docker:
+    name: Docker images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build
+        run: |
+          docker build -f ops/Dockerfile.api -t levy-api:ci .
+          docker build -f ops/Dockerfile.keeper -t levy-keeper:ci keeper
+      - name: API container serves and enforces sign-in
+        run: |
+          docker run -d --name api -e LEVY_PUBLIC_ORIGIN=http://localhost:3001 -p 127.0.0.1:3001:3001 levy-api:ci
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:3001/api/health && break; sleep 1; done
+          curl -fsS http://127.0.0.1:3001/api/health
+          curl -fsS -o /dev/null http://127.0.0.1:3001/
+          curl -fsS -o /dev/null http://127.0.0.1:3001/public/auth.js
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3001/api/metrics)" = 401
+      - name: API refuses to start without LEVY_PUBLIC_ORIGIN
+        run: "! docker run --rm levy-api:ci"
+      - name: Keeper image loads (stops at missing config)
+        run: docker run --rm levy-keeper:ci 2>&1 | grep -q "missing env var LEVY_MANAGER_ADDRESS"
+      - name: API logs
+        if: always()
+        run: docker logs api || true
+
   api:
     name: API (node --test)
     runs-on: ubuntu-latest

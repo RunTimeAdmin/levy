@@ -72,7 +72,13 @@ Failed deliveries record a coarse reason (`HTTP 500`, `timeout after 5s`,
 
 ## Deploying
 
-`LEVY_PUBLIC_ORIGIN` is required when `NODE_ENV=production`. Put the API behind
+With Docker: `docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --build`.
+The API image builds from the repo root (it compiles `keeper/src` too), runs
+as a non-root user that can write only the `/data` volume, and is published on
+the host's `127.0.0.1` only. Point a TLS reverse proxy (nginx, Caddy) at it.
+Outside Docker the server listens on `LEVY_API_HOST` (default `127.0.0.1`).
+
+`LEVY_PUBLIC_ORIGIN` is required when `NODE_ENV=production`, which the image sets. Put the API behind
 a reverse proxy that rate-limits `POST /api/auth/challenge` per client IP: it is
 the one unauthenticated endpoint that writes. The server also caps pending
 challenges at 10,000 and answers 503 beyond that.

@@ -370,8 +370,10 @@ async function sendFile(reply: FastifyReply, name: string) {
 async function main(): Promise<void> {
   const app = buildServer(apiOptionsFromEnv());
   const port = Number(process.env.LEVY_API_PORT ?? 3001);
-  await app.listen({ port, host: "127.0.0.1" });
-  console.log(`levy api listening on http://127.0.0.1:${port}`);
+  // Loopback by default; the Docker image sets 0.0.0.0 (container interfaces).
+  const host = process.env.LEVY_API_HOST ?? "127.0.0.1";
+  await app.listen({ port, host });
+  console.log(`levy api listening on http://${host}:${port}`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

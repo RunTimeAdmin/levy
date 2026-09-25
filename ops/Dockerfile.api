@@ -1,21 +1,39 @@
-# Levy API + dashboards image. Multi-stage: compile TypeScript, ship only dist + prod deps.
+# Levy API + dashboards. Build from the repo root (the API imports
+# keeper/src/db.ts and friends):
+#   docker build -f ops/Dockerfile.api -t levy-api .
+# docker-compose.yml does this for you.
+
 FROM node:24-slim AS build
 WORKDIR /build
-COPY package.json package-lock.json ./
-RUN npm ci
-COPY tsconfig.json ./
-COPY src/ ./src/
-RUN npx tsc
+COPY api/package.json api/package-lock.json api/
+RUN cd api && npm ci
+COPY api/tsconfig.json api/
+COPY api/src/ api/src/
+COPY keeper/src/ keeper/src/
+# Only for its "type": "module": without it tsc emits the keeper files as
+# CommonJS, and they then fail to load next to the ESM server.
+COPY keeper/package.json keeper/
+# tsc roots the output at the repo root because of the keeper imports:
+# api/dist/api/src/server.js and api/dist/keeper/src/*.js.
+RUN cd api && npx tsc
 
 FROM node:24-slim
 WORKDIR /app
 ENV NODE_ENV=production
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
-COPY --from=build /build/dist ./dist
-COPY public/ ./public/
-# /data holds the shared SQLite DB (mounted volume, same as the keeper's).
-RUN mkdir -p /data && useradd -m levy && chown -R levy:levy /app /data
+# Listen on the container's interfaces; publish it on the host's loopback
+# only and put a TLS reverse proxy in front (see docker-compose.yml).
+ENV LEVY_API_HOST=0.0.0.0
+# State lives on the /data volume (the only path the runtime user can write).
+ENV LEVY_DB_PATH=/data/levy.db LEVY_WEBHOOK_KEY_PATH=/data/webhook-signing-key.pem
+COPY api/package.json api/package-lock.json api/
+RUN cd api && npm ci --omit=dev && npm cache clean --force
+COPY --from=build /build/api/dist/ api/dist/
+# server.js serves ../public relative to itself.
+COPY api/public/ api/dist/api/public/
+# The runtime user owns only /data; the code stays root-owned and read-only
+# to it (a recursive chown of /app would also copy every node_modules file
+# into a new layer).
+RUN mkdir -p /data && useradd -m levy && chown levy:levy /data
 USER levy
 EXPOSE 3001
-CMD ["node", "dist/server.js"]
+CMD ["node", "api/dist/api/src/server.js"]
