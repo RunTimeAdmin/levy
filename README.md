@@ -2,7 +2,7 @@
 
 Pull-based USDC subscription billing for Arc mainnet. Merchants define plans, subscribers approve once, and a keeper triggers per-cycle pulls. The protocol takes a 1% fee on collected payments.
 
-**Status:** M1 (contracts), M2 (keeper + dunning), M3 (webhooks + API + dashboards) complete, plus Permit2 subscribe path. Contracts: 28 tests green (incl. 256-run invariant suite). Keeper: 33 tests green. API: 12 tests green. Not yet deployed. Not audited.
+**Status:** M1 (contracts), M2 (keeper + dunning), M3 (webhooks + API + dashboards) complete, plus Permit2 subscribe path. Contracts: 41 tests green (34 unit + 7 invariants, 256 runs each). Keeper: 33 tests green. API: 12 tests green. Not yet deployed. Not audited.
 
 ## Contracts
 
@@ -14,15 +14,15 @@ Pull-based USDC subscription billing for Arc mainnet. Merchants define plans, su
 ### How charging works
 
 1. Merchant calls `createPlan(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed)`. Price is immutable; repricing means a new plan.
-2. Subscriber calls `subscribe(planId)` after granting a direct ERC-20 `approve` allowance, or `subscribeWithPermit2(planId, ...)` with an off-chain Permit2 signature (one user action; the keeper can submit it). Uses Arc's Permit2 at `0x000000000022D473030F116dDEE9F6B43aC78BA3`.
-3. Anyone calls `charge(subId)` once `block.timestamp >= nextChargeAt`. The contract pulls via `transferFrom`, routes 99% to the merchant and 1% to the FeeRouter, advances the cycle, and emits `Charged`. The call is permissionless by design: it can only move the subscriber's pre-approved funds to the correct merchant.
+2. Subscriber calls `subscribe(planId)` after granting a direct ERC-20 `approve` allowance, or `subscribeWithPermit2(planId, ...)` with an off-chain Permit2 signature (one transaction, submitted by the subscriber). Uses Arc's Permit2 at `0x000000000022D473030F116dDEE9F6B43aC78BA3`. Billing is in advance: without a trial, the first cycle is pulled at subscribe, and the subscribe reverts if that pull fails.
+3. Anyone calls `charge(subId)` once `block.timestamp >= nextChargeAt`, paying for the cycle that starts then. The contract pulls via `transferFrom`, routes 99% to the merchant and 1% to the FeeRouter, advances the cycle, and emits `Charged`. The call is permissionless by design: it can only move the subscriber's pre-approved funds to the correct merchant.
 4. Failed pulls never revert. The failure is recorded on-chain (`ChargeFailed`), the subscription goes `PAST_DUE` at `maxFailed` attempts and auto-pauses at `2x`, and the off-chain keeper retries on a dunning schedule (default day 1, 3, 7).
 
 ### Money math
 
 - All amounts are 6-decimal USDC units through the ERC-20 interface (`0x3600...0000`). Native 18-decimal values never enter payment logic.
 - Integer arithmetic only. The fee is `amount / 100`, rounded down; sub-cent dust stays with the merchant.
-- Proration credit from a mid-cycle plan change applies to the next charge. Excess credit carries forward, and credit survives failed pulls.
+- A plan change (same merchant only) starts the new plan now and bills its first cycle now. Unused paid time on the old plan is credited against that bill; trial time earns no credit. Excess credit carries forward, and credit survives failed pulls.
 
 ### Invariants (fuzz-tested)
 
@@ -30,6 +30,7 @@ Pull-based USDC subscription billing for Arc mainnet. Merchants define plans, su
 - `failedAttempts <= 2 * maxFailed` for every subscription.
 - Cancel is terminal: `chargeCount` never moves after cancellation.
 - `nextChargeAt` never moves backwards.
+- Credit is backed: a subscription never holds more credit than the USDC it has paid.
 - The manager holds no funds at rest: every pull is fully split in the same transaction.
 
 ## Keeper

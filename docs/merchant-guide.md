@@ -43,7 +43,7 @@ GET /api/plans
 
 - `price`: what the subscriber pays each cycle. Fixed at creation.
 - `cycleSeconds`: how often the pull happens. Keep it aligned to the presets above unless you have a reason not to.
-- `trialSeconds`: the subscriber is not charged until the trial ends. Set to 0 to skip trials.
+- `trialSeconds`: the subscriber is not charged until the trial ends. Set to 0 to skip trials; the first cycle is then charged the moment they subscribe.
 - `maxFailed`: how many failed pulls the subscription tolerates before the contract marks it `PAST_DUE`. At twice this number, the contract pauses the subscription automatically. A value of 2 or 3 fits most businesses.
 
 ## 2. Register a webhook endpoint
@@ -152,9 +152,9 @@ Send the subscriber your `planId`. Two ways to onboard:
 
 **Direct approve (two transactions).** The subscriber:
 1. Calls `approve` on the USDC contract for the `SubscriptionManager` address, for at least one cycle's price (more for a buffer).
-2. Calls `subscribe(planId)` on the `SubscriptionManager`.
+2. Calls `subscribe(planId)` on the `SubscriptionManager`. Without a trial this charges the first cycle immediately, and fails if it can't.
 
-**Permit2 (one transaction).** The subscriber signs an off-chain EIP-712 Permit2 message authorizing the `SubscriptionManager` to pull USDC (spender = the manager address, token = USDC). You or the subscriber then submits `subscribeWithPermit2(planId, owner, permitSingle, signature)` — one transaction, atomic. Uses Arc's Permit2 contract at `0x000000000022D473030F116dDEE9F6B43aC78BA3`.
+**Permit2 (one transaction).** The subscriber signs an off-chain EIP-712 Permit2 message authorizing the `SubscriptionManager` to pull USDC (spender = the manager address, token = USDC). The subscriber then submits `subscribeWithPermit2(planId, permitSingle, signature)` from the same wallet. One transaction, atomic. Only the signer can submit it. Uses Arc's Permit2 contract at `0x000000000022D473030F116dDEE9F6B43aC78BA3`.
 
 ## FAQ
 

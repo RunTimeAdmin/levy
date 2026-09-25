@@ -199,7 +199,7 @@ describe("keeper integration (anvil)", () => {
     const mAfter = await usdc.read.balanceOf([keeper.address]);
     assert.equal(mAfter - mBefore, PRICE - PRICE / 100n); // merchant (keeper acct) gets 99%
     const feeBal = await usdc.read.balanceOf([feeRouterAddr]);
-    assert.equal(feeBal, PRICE / 100n); // 1% to the router
+    assert.equal(feeBal, 2n * (PRICE / 100n)); // 1% to the router, for subscribe + this charge
 
     // DB recorded the charge with an invoice reference.
     const row = db["db"].prepare("SELECT * FROM charges WHERE subId = '1'").get() as any;
@@ -211,7 +211,8 @@ describe("keeper integration (anvil)", () => {
   });
 
   it("records failures and schedules dunning retries", async () => {
-    // Bob subscribes but never approves: every pull fails.
+    // Bob approves exactly one cycle, which subscribe spends up front: every
+    // later pull fails.
     const bobWallet = createWalletClient({
       account: bob, chain: publicClient.chain, transport: http(RPC),
     });
@@ -219,6 +220,11 @@ describe("keeper integration (anvil)", () => {
       address: manager.address, abi: abi("SubscriptionManager"),
       client: { public: publicClient, wallet: bobWallet },
     });
+    const asBobUsdc = getContract({
+      address: usdc.address, abi: usdc.abi,
+      client: { public: publicClient, wallet: bobWallet },
+    });
+    await mined(await asBobUsdc.write.approve([manager.address, PRICE], { account: bob, chain: publicClient.chain }));
     await mined(await asBob.write.subscribe([1n], { account: bob, chain: publicClient.chain }));
     await increaseTime(CYCLE + 60);
 

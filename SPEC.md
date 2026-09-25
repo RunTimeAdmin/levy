@@ -21,13 +21,13 @@
 
 ## Core flows
 
-**Subscribe.** Subscriber grants USDC allowance to the SubscriptionManager via direct `approve()` then `subscribe()` — two transactions. Or one transaction: `subscribeWithPermit2()` with an off-chain EIP-712 Permit2 signature (the keeper can submit it on the subscriber's behalf). Uses Arc's Permit2 at `0x000000000022D473030F116dDEE9F6B43aC78BA3`.
+**Subscribe.** Subscriber grants USDC allowance to the SubscriptionManager via direct `approve()` then `subscribe()` — two transactions. Or one transaction: `subscribeWithPermit2()` with an off-chain EIP-712 Permit2 signature, submitted by the subscriber (the permit does not bind a plan, so it cannot be relayed safely). Uses Arc's Permit2 at `0x000000000022D473030F116dDEE9F6B43aC78BA3`. Billing is in advance: without a trial, subscribe pulls the first cycle and reverts if the pull fails.
 
-**Charge.** Keeper calls `charge(subscriptionId)` when `block.timestamp >= nextChargeAt`. `charge()` is permissionless — the pull can only move the subscriber's pre-approved funds to the correct merchant, so there is nothing to gain by calling it. Contract checks state is chargeable (TRIAL, ACTIVE, or PAST_DUE), pulls `price` via `transferFrom` (direct allowance first, Permit2 `transferFrom` fallback), splits 1% to FeeRouter and 99% to merchant, advances `nextChargeAt` by cycle length, emits `Charged`. If the pull fails (allowance/balance), increments `failedAttempts`, emits `ChargeFailed`, and the dunning engine takes over off-chain.
+**Charge.** Keeper calls `charge(subscriptionId)` when `block.timestamp >= nextChargeAt`; the pull pays for the cycle that starts then. `charge()` is permissionless — the pull can only move the subscriber's pre-approved funds to the correct merchant, so there is nothing to gain by calling it. Contract checks state is chargeable (TRIAL, ACTIVE, or PAST_DUE), pulls `price` via `transferFrom` (direct allowance first, Permit2 `transferFrom` fallback), splits 1% to FeeRouter and 99% to merchant, advances `nextChargeAt` by cycle length, emits `Charged`. If the pull fails (allowance/balance), increments `failedAttempts`, emits `ChargeFailed`, and the dunning engine takes over off-chain.
 
 **Dunning.** Failure state is managed on-chain by the contract, not by the keeper. When `failedAttempts` reaches the plan's `maxFailed`, the subscription moves to `PAST_DUE`. At `2 × maxFailed` failures the contract auto-pauses it (`PAUSED`); the keeper never needs to call `pauseSubscription()` for dunning. Off-chain, the keeper watches `ChargeFailed` and retries on a schedule (default day 1, 3, 7; configurable). A successful retry clears the dunning schedule. Merchant can resume a paused subscription manually; subscriber notifications go out as Ed25519-signed webhooks.
 
-**Proration.** Plan change mid-cycle: contract computes `credit = price * remainingSeconds / cycleSeconds` (integer math, 6-decimal units, round down — remainder stays with merchant, documented). Credit reduces the next charge of the new plan (or covers several cycles if it exceeds the new price). Downgrades take effect next cycle; upgrades take effect immediately with the credit applied — there is no prorated top-up pull, the subscriber's next charge is simply reduced.
+**Proration.** Plan change mid-cycle, same merchant only: the new plan starts immediately and its first cycle is billed immediately. Unused paid time on the old plan becomes credit, `price * remainingSeconds / cycleSeconds` (integer math, 6-decimal units, round down; remainder stays with merchant), added to any credit already held. Credit is spent first; the rest is pulled. Credit left over after a downgrade covers later cycles. Trial time was never paid for and earns no credit. Credit can never move to another merchant.
 
 **Pause / cancel.** Subscriber or merchant can pause (no charges accrue, `nextChargeAt` frozen) or cancel (terminal; no on-chain refunds — refunds are merchant policy, handled off-chain). `cancelSubscription()` emits `Cancelled`.
 
@@ -38,15 +38,15 @@
 **SubscriptionManager** (the pull primitive, open-source):
 - `createPlan(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed) → planId`
 - `subscribe(planId)` — requires allowance; subscriber is `msg.sender`; handles trial → sets first `nextChargeAt`
-- `subscribeWithPermit2(planId, owner, permitSingle, signature)` — one-tx subscribe via Arc Permit2; anyone can submit
+- `subscribeWithPermit2(planId, permitSingle, signature)`: one-tx subscribe via Arc Permit2; the permit owner is `msg.sender`
 - `charge(subscriptionId)` — permissionless; pull, split, advance, emit
 - `pauseSubscription(subId)` / `resumeSubscription(subId)` / `cancelSubscription(subId)` — subscriber or merchant only. The keeper never calls these for dunning; auto-pause on `2 × maxFailed` failures happens inside `charge()` and emits `AutoPaused`
-- `changePlan(subscriptionId, newPlanId)` — subscriber only; proration math
+- `changePlan(subscriptionId, newPlanId)`: subscriber only, same-merchant plans only; bills the new plan now, less proration credit
 - Events: `PlanCreated`, `Subscribed`, `Charged(subId, amount, fee, invoiceRef, chargeCount)`, `ChargeFailed(subId, attempts)`, `AutoPaused`, `Paused`, `Resumed`, `Cancelled`, `PlanChanged`
 
 **FeeRouter:** receives 1% at charge time. Phase 1: forwards to treasury multisig. Phase 2: splits 50% buyback-and-burn LEVY / 50% staking rewards.
 
-**Invariants (test these):** total pulled == merchant received + fees, always; `nextChargeAt` only advances on successful pull; no charge when CANCELLED; proration credit never exceeds price paid; keeper cannot charge for another merchant's plan (merchant-scoped keeper auth or fully permissionless `charge` — permissionless is simpler and safe since pulls only move the subscriber's approved funds to the right merchant).
+**Invariants (test these):** total pulled == merchant received + fees, always; `nextChargeAt` only advances on successful pull; no charge when CANCELLED; proration credit never exceeds the USDC that subscription actually paid, and never moves between merchants; keeper cannot charge for another merchant's plan (merchant-scoped keeper auth or fully permissionless `charge` — permissionless is simpler and safe since pulls only move the subscriber's approved funds to the right merchant).
 
 ## Off-chain services
 
@@ -116,7 +116,7 @@ This is not a security product, but it holds other people's money rails. Non-neg
 ```
 levy/
 ├── src/                # Foundry: SubscriptionManager, FeeRouter, IPermit2
-├── test/               # unit + invariant tests (28)
+├── test/               # unit + invariant tests (41)
 ├── foundry.toml
 ├── FEE_MATH_AUDIT.md   # fee + proration math audit
 ├── SECURITY_REVIEW.md  # adversarial pre-audit self-review

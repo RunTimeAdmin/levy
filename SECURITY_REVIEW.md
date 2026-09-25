@@ -9,10 +9,10 @@ paid audit. Goal: find problems, not confirm correctness.
 |---|---|---|
 | `createPlan` | anyone | OK — plan is scoped to `msg.sender` as merchant; no cross-merchant effect. |
 | `subscribe` | anyone (as themselves) | OK — subscriber is `msg.sender`. |
-| `subscribeWithPermit2` | anyone (for any `owner` with valid sig) | OK — EIP-712 signature binds `owner`; submitter cannot impersonate. See §7. |
+| `subscribeWithPermit2` | the permit signer only | OK. The owner is `msg.sender`, so a relayer cannot pick the plan. See §7. |
 | `charge` | anyone | OK by design — see §4. |
 | `pause/resume/cancelSubscription` | subscriber or plan merchant | OK — `_onlySubscriberOrMerchant`. |
-| `changePlan` | subscriber only | OK — `msg.sender != sub.subscriber` reverts. Merchant cannot force-migrate. |
+| `changePlan` | subscriber only, same-merchant plans only | OK — `msg.sender != sub.subscriber` reverts; a plan from another merchant reverts `DifferentMerchant`. Merchant cannot force-migrate. |
 | `FeeRouter.sweep` | anyone | OK — destination is fixed to `treasury`. |
 | `FeeRouter.setTreasury` | current treasury only | OK. |
 
@@ -32,13 +32,10 @@ there is no repricing or merchant-swap attack.
   checks-effects-interactions *inverted*, but safe here because (a) USDC has
   no callbacks, (b) `nonReentrant` blocks the only reentrant entry points.
   If the token ever changes, reorder to update state first.
-- `changePlan()` is `nonReentrant` but makes zero external calls — the guard
-  is unnecessary but harmless.
-- `subscribeWithPermit2()` is NOT `nonReentrant` and calls the untrusted
-  `permit2.permit()`. Worst case if Permit2 is malicious: reentrant
-  `subscribe*` calls create extra subscriptions (attacker pays gas, no funds
-  move in subscribe). No fund-loss path. Acceptable; a guard could be added
-  for hygiene.
+- `subscribe()`, `subscribeWithPermit2()` and `changePlan()` all pull and
+  split a payment (advance billing), so all three are `nonReentrant`, with the
+  same inverted-CEI note as `charge()`. `subscribeWithPermit2()` also calls
+  `permit2.permit()` first; the guard covers that call too.
 
 ## 3. Keeper griefing (allowance games)
 
@@ -101,15 +98,16 @@ cannot overflow its bounds.
   signature authorizing a different spender/token would be submitted pointlessly
   (funds stay safe — Permit2 enforces the signed spender — but the user experience
   would be a silent no-op allowance). The checks fail fast with clear errors.
-- The `owner` parameter is explicit so the keeper can submit. The EIP-712
-  signature is verified against `owner` by Permit2 itself; a submitter cannot
-  forge or replay for a different owner (nonce binds each signature to one use).
-- Residual consideration: the signed permit does not bind `planId`. A relayer
-  holding Alice's valid signature could subscribe her to a *different* plan
-  than she intended. Impact is low (she can cancel/changePlan; the permit amount
-  may not even cover the other plan's price, causing immediate dunning), but
-  frontends should treat the (permit, planId) pair as a unit and submit both
-  together.
+- The owner is `msg.sender`; there is no `owner` parameter. Permit2 verifies
+  the EIP-712 signature against it, and the nonce binds each signature to one
+  use.
+- Why relaying is not allowed: the signed permit does not bind `planId`. An
+  earlier version took an explicit `owner` so the keeper could relay. Anyone
+  holding Alice's signature (a relayer, or anyone reading it from the mempool)
+  could then subscribe her to a plan of their own. With a 1-second cycle, or
+  with advance billing's up-front pull, that drains the permit amount almost
+  at once. Removed 2026-09-25. Relaying could come back only with a second
+  signature that binds the plan.
 - `_tryPull` tries direct `transferFrom` first, then Permit2. A subscriber with
   both allowances always spends the direct one first (tested). No double-spend:
   the first success returns immediately.
@@ -129,7 +127,25 @@ cannot overflow its bounds.
 
 ## 9. Findings
 
-**No fund-loss or theft vectors found.** Notes for the paid audit / M4:
+**Correction (2026-09-25):** this review missed a fund-loss vector, found
+and fixed the same day:
+
+- **Unbacked proration credit.** Billing was effectively in arrears (the
+  first charge came one cycle after subscribe), yet `changePlan` credited
+  "unused" time on a cycle nobody had paid for, and accepted plans from any
+  merchant. A subscriber could create their own plan priced at 1e30, subscribe
+  without paying, switch to a real merchant's plan, and ride the credit for
+  free cycles indefinitely, each one emitting `Charged(0, 0)` and a
+  `charge.succeeded` webhook. Hopping between plans just before each charge
+  also deferred payment forever. Fix: advance billing (the first cycle is paid
+  at subscribe, a plan change bills the new plan immediately), credit only from
+  a paid cycle, same-merchant plan changes only. Regression tests and the
+  `invariant_creditBacked` fuzz invariant cover it.
+- **Relayed Permit2 subscribe.** Rated low in §7 originally, but a plan with
+  a 1-second cycle turned a copied permit into a near-instant drain. Fixed by
+  making `msg.sender` the permit owner (§7).
+
+Notes for the paid audit / M4:
 
 1. `charge()` updates `nextChargeAt`/`failedAttempts`/`status` *after* the
    `safeTransfer`s (CEI inverted). Safe with standard USDC + `nonReentrant`,
@@ -137,8 +153,7 @@ cannot overflow its bounds.
 2. `changePlan` while a charge is overdue forgives the overdue cycle
    (economically equivalent to cancel + resubscribe; not a bug, but confirm
    the product intends this).
-3. Consider adding `nonReentrant` to `subscribeWithPermit2` for hygiene
-   (untrusted external call to Permit2).
+3. ~~Consider adding `nonReentrant` to `subscribeWithPermit2`~~ Done.
 4. The keeper should index `AutoPaused` events (emitted on 2x auto-pause) —
    currently the dunning schedule relies on the status flip being picked up
    via subscription refresh.

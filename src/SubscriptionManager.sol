@@ -9,7 +9,9 @@ import {IPermit2} from "./IPermit2.sol";
 /// @title Levy SubscriptionManager
 /// @notice Pull-based USDC subscription billing. Merchants define plans, subscribers
 ///         grant an allowance once, and anyone (the keeper in practice) triggers
-///         per-cycle pulls. Failed pulls never revert: they are recorded on-chain
+///         per-cycle pulls. Billing is in advance: each pull pays for the cycle
+///         that starts at it, and without a trial the first cycle is paid at
+///         subscribe. Failed keeper pulls never revert: they are recorded on-chain
 ///         so the off-chain dunning engine can retry, and the subscription
 ///         auto-pauses after maxFailed attempts.
 /// @dev Money math: ALL amounts are 6-decimal USDC units via the ERC-20 interface.
@@ -45,7 +47,7 @@ contract SubscriptionManager is ReentrancyGuard {
         uint64 start;
         uint64 nextChargeAt;
         uint64 failedAttempts;
-        uint256 credit; // proration credit, 6-decimal USDC. Never exceeds last price paid.
+        uint256 credit; // proration credit, 6-decimal USDC. Always backed by USDC this merchant received.
         uint256 chargeCount;
         Status status;
     }
@@ -91,6 +93,8 @@ contract SubscriptionManager is ReentrancyGuard {
     error BadPermitSpender();
     error BadPermitToken();
     error ZeroAddress();
+    error PaymentFailed();
+    error DifferentMerchant();
 
     constructor(address _usdc, address _feeRouter, address _permit2) {
         if (_usdc == address(0) || _feeRouter == address(0) || _permit2 == address(0)) {
@@ -129,31 +133,33 @@ contract SubscriptionManager is ReentrancyGuard {
 
     /// @notice Subscriber starts a subscription. Requires a prior approve() or
     ///         Permit2 allowance covering at least price * expected cycles.
-    function subscribe(uint256 planId) external returns (uint256 subId) {
+    ///         Without a trial the first cycle is pulled now, and a failed
+    ///         pull reverts the subscribe.
+    function subscribe(uint256 planId) external nonReentrant returns (uint256 subId) {
         return _subscribe(planId, msg.sender);
     }
 
     /// @notice One-transaction subscribe via Uniswap Permit2. The subscriber
     ///         signs a PermitSingle off-chain (EIP-712) authorizing this
-    ///         contract as spender; anyone (the subscriber or the keeper)
-    ///         submits the permit and subscribe atomically.
+    ///         contract as spender, then submits the permit and subscribe
+    ///         atomically.
     /// @dev The permit's spender must be this contract and the token must be
     ///      USDC, otherwise the signature authorizes something we cannot use.
-    ///      `owner` is explicit (not msg.sender) so the keeper can submit on
-    ///      the subscriber's behalf; the EIP-712 signature binds the owner,
-    ///      so a submitter cannot impersonate anyone.
-    ///      The signed amount is the subscriber's choice; charges simply fail
-    ///      (and dunning handles it) if it covers fewer than one cycle.
+    ///      Only the signer can submit. The permit does not bind a plan, so if
+    ///      anyone could relay it, a relayer (or anyone copying it from the
+    ///      mempool) could subscribe the owner to a plan of their own and pull
+    ///      the first cycle at once.
+    ///      The signed amount is the subscriber's choice; later charges simply
+    ///      fail (and dunning handles it) once it runs out.
     function subscribeWithPermit2(
         uint256 planId,
-        address owner,
         IPermit2.PermitSingle calldata permitSingle,
         bytes calldata signature
-    ) external returns (uint256 subId) {
+    ) external nonReentrant returns (uint256 subId) {
         if (permitSingle.spender != address(this)) revert BadPermitSpender();
         if (permitSingle.details.token != address(usdc)) revert BadPermitToken();
-        permit2.permit(owner, permitSingle, signature);
-        return _subscribe(planId, owner);
+        permit2.permit(msg.sender, permitSingle, signature);
+        return _subscribe(planId, msg.sender);
     }
 
     function _subscribe(uint256 planId, address subscriber) internal returns (uint256 subId) {
@@ -177,6 +183,11 @@ contract SubscriptionManager is ReentrancyGuard {
             status: plan.trialSeconds > 0 ? Status.TRIAL : Status.ACTIVE
         });
         emit Subscribed(subId, subscriber, planId, firstCharge);
+
+        // Advance billing: without a trial the first cycle is paid up front.
+        if (plan.trialSeconds == 0 && !_collect(subId, subscriptions[subId], plan)) {
+            revert PaymentFailed();
+        }
     }
 
     /// @notice Pull one cycle's payment. Permissionless: the pull can only move
@@ -194,46 +205,10 @@ contract SubscriptionManager is ReentrancyGuard {
         if (block.timestamp < sub.nextChargeAt) revert NotChargeable();
 
         Plan memory plan = plans[sub.planId];
-
-        // Proration credit applies to this charge. Excess carries forward.
-        uint256 due;
-        if (sub.credit >= plan.price) {
-            sub.credit -= plan.price;
-            due = 0;
-        } else {
-            due = plan.price - sub.credit;
-        }
-
-        if (due > 0) {
-            bool pulled = _tryPull(sub.subscriber, due);
-            if (!pulled) {
-                // Credit survives the failure: the subscriber still paid for it.
-                _recordFailure(subId, sub, plan);
-                return;
-            }
-            sub.credit = 0;
-            uint256 fee = due / FEE_BPS; // rounds down; sub-cent dust stays with merchant
-            usdc.safeTransfer(plan.merchant, due - fee);
-            usdc.safeTransfer(feeRouter, fee);
-
-            sub.chargeCount += 1;
-            emit Charged(
-                subId,
-                due,
-                fee,
-                keccak256(abi.encode(subId, sub.chargeCount)),
-                sub.chargeCount
-            );
-        } else {
-            // Fully covered by proration credit: advance the cycle, no movement.
-            sub.chargeCount += 1;
-            emit Charged(
-                subId,
-                0,
-                0,
-                keccak256(abi.encode(subId, sub.chargeCount)),
-                sub.chargeCount
-            );
+        if (!_collect(subId, sub, plan)) {
+            // Credit survives the failure: the subscriber still paid for it.
+            _recordFailure(subId, sub, plan);
+            return;
         }
 
         sub.nextChargeAt = sub.nextChargeAt + uint64(plan.cycleSeconds);
@@ -241,6 +216,29 @@ contract SubscriptionManager is ReentrancyGuard {
         if (sub.status == Status.TRIAL || sub.status == Status.PAST_DUE) {
             sub.status = Status.ACTIVE;
         }
+    }
+
+    /// @notice Bill one cycle of `plan`: proration credit first (excess carries
+    ///         forward), then pull the rest and split it 99/1. Returns false,
+    ///         with nothing changed, if the pull fails.
+    function _collect(uint256 subId, Subscription storage sub, Plan memory plan) internal returns (bool) {
+        uint256 due;
+        uint256 fee;
+        if (sub.credit >= plan.price) {
+            // Fully covered by credit: the cycle is paid, no movement.
+            sub.credit -= plan.price;
+        } else {
+            due = plan.price - sub.credit;
+            if (!_tryPull(sub.subscriber, due)) return false;
+            sub.credit = 0;
+            fee = due / FEE_BPS; // rounds down; sub-cent dust stays with merchant
+            usdc.safeTransfer(plan.merchant, due - fee);
+            usdc.safeTransfer(feeRouter, fee);
+        }
+
+        sub.chargeCount += 1;
+        emit Charged(subId, due, fee, keccak256(abi.encode(subId, sub.chargeCount)), sub.chargeCount);
+        return true;
     }
 
     /// @notice Attempt the ERC-20 pull. Returns false instead of reverting so the
@@ -297,9 +295,11 @@ contract SubscriptionManager is ReentrancyGuard {
         emit Cancelled(subId);
     }
 
-    /// @notice Switch plans mid-cycle. Unused time on the old plan becomes a
-    ///         credit against the new plan's next charge. Credit never accumulates:
-    ///         a second changePlan replaces it.
+    /// @notice Switch to another plan from the same merchant. The new plan's
+    ///         first cycle starts and is billed now. Unused paid time on the old
+    ///         plan becomes credit against it; leftover credit carries forward.
+    /// @dev Credit only ever comes from a cycle that was paid, and only moves
+    ///      between plans of the merchant who was paid, so it is always backed.
     function changePlan(uint256 subId, uint256 newPlanId) external nonReentrant {
         Subscription storage sub = subscriptions[subId];
         if (sub.subscriber == address(0)) revert UnknownSubscription();
@@ -314,19 +314,26 @@ contract SubscriptionManager is ReentrancyGuard {
         ) revert NotChargeable();
 
         Plan memory oldPlan = plans[sub.planId];
-        uint256 credit = 0;
-        if (sub.nextChargeAt > block.timestamp) {
+        if (newPlan.merchant != oldPlan.merchant) revert DifferentMerchant();
+
+        // Before the first charge nextChargeAt marks the end of an unpaid
+        // trial; after it, the end of a paid cycle.
+        uint256 credit = sub.credit;
+        if (sub.chargeCount > 0 && sub.nextChargeAt > block.timestamp) {
             uint256 remaining = sub.nextChargeAt - block.timestamp;
             if (remaining > oldPlan.cycleSeconds) remaining = oldPlan.cycleSeconds;
-            credit = (oldPlan.price * remaining) / oldPlan.cycleSeconds; // rounds down
+            credit += (oldPlan.price * remaining) / oldPlan.cycleSeconds; // rounds down
         }
 
         uint256 oldPlanId = sub.planId;
         sub.planId = newPlanId;
         sub.credit = credit;
-        sub.nextChargeAt = uint64(block.timestamp) + uint64(newPlan.cycleSeconds);
-        if (sub.status == Status.TRIAL) sub.status = Status.ACTIVE; // plan change ends trial
         emit PlanChanged(subId, oldPlanId, newPlanId, credit);
+
+        if (!_collect(subId, sub, newPlan)) revert PaymentFailed();
+        sub.nextChargeAt = uint64(block.timestamp) + uint64(newPlan.cycleSeconds);
+        sub.failedAttempts = 0;
+        sub.status = Status.ACTIVE; // a paid plan change ends a trial and clears past-due
     }
 
     function isChargeable(uint256 subId) external view returns (bool) {

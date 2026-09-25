@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {SubscriptionManager} from "../src/SubscriptionManager.sol";
 import {FeeRouter} from "../src/FeeRouter.sol";
 import {MockUSDC} from "./mocks/MockUSDC.sol";
@@ -22,6 +23,7 @@ contract LevyHandler is Test {
     uint256 public maxPriceSeen;
     mapping(uint256 => bool) public cancelled;
     mapping(uint256 => uint256) public chargeCountAtCancel;
+    mapping(uint256 => uint256) public paid; // USDC pulled per subscription, summed from Charged
 
     constructor(MockUSDC _usdc, FeeRouter _router, SubscriptionManager _manager, address _treasury) {
         usdc = _usdc;
@@ -41,13 +43,28 @@ contract LevyHandler is Test {
         return actors[seed % actors.length];
     }
 
-    function createPlan(uint256 price, uint256 cycleDays, uint8 maxFailed) external {
+    /// @dev Credits every Charged amount in the recorded logs to its subscription.
+    function _recordPaid() internal {
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (
+                logs[i].emitter == address(manager) &&
+                logs[i].topics[0] == SubscriptionManager.Charged.selector
+            ) {
+                (uint256 amount, , ) = abi.decode(logs[i].data, (uint256, uint256, uint256));
+                paid[uint256(logs[i].topics[1])] += amount;
+            }
+        }
+    }
+
+    function createPlan(uint256 price, uint256 cycleDays, uint8 maxFailed, bool withTrial) external {
         price = bound(price, 1, 1_000_000_000_000);
         cycleDays = bound(cycleDays, 1, 365);
         maxFailed = uint8(bound(maxFailed, 1, 10));
+        uint256 trial = withTrial ? (cycleDays * 1 days) / 2 : 0;
         address merchant = actors[0];
         vm.prank(merchant);
-        try manager.createPlan(price, cycleDays * 1 days, 0, 3 days, maxFailed) returns (
+        try manager.createPlan(price, cycleDays * 1 days, trial, 3 days, maxFailed) returns (
             uint256 planId
         ) {
             planIds.push(planId);
@@ -59,10 +76,12 @@ contract LevyHandler is Test {
         if (planIds.length == 0) return;
         address sub = _actor(actorSeed);
         uint256 planId = planIds[planSeed % planIds.length];
+        vm.recordLogs();
         vm.prank(sub);
         try manager.subscribe(planId) returns (uint256 subId) {
             subIds.push(subId);
         } catch {}
+        _recordPaid();
     }
 
     function approve(uint256 actorSeed, uint256 amount) external {
@@ -77,7 +96,9 @@ contract LevyHandler is Test {
         uint256 subId = subIds[subSeed % subIds.length];
         daysForward = bound(daysForward, 0, 60);
         vm.warp(block.timestamp + daysForward * 1 days);
+        vm.recordLogs();
         try manager.charge(subId) {} catch {}
+        _recordPaid();
     }
 
     function changePlan(uint256 subSeed, uint256 planSeed) external {
@@ -85,8 +106,10 @@ contract LevyHandler is Test {
         uint256 subId = subIds[subSeed % subIds.length];
         (address subscriber, , , , , , , ) = manager.subscriptions(subId);
         uint256 newPlan = planIds[planSeed % planIds.length];
+        vm.recordLogs();
         vm.prank(subscriber);
         try manager.changePlan(subId, newPlan) {} catch {}
+        _recordPaid();
     }
 
     function cancelSub(uint256 subSeed, uint256 actorSeed) external {
@@ -187,6 +210,16 @@ contract LevyInvariantTest is Test {
         for (uint256 id = 1; id <= n; id++) {
             (, , , , , uint256 credit, , ) = manager.subscriptions(id);
             assertLe(credit, handler.maxPriceSeen());
+        }
+    }
+
+    /// @notice Credit is backed: a subscription never holds more credit than the
+    ///         USDC it has actually paid.
+    function invariant_creditBacked() public view {
+        uint256 n = manager.subCount();
+        for (uint256 id = 1; id <= n; id++) {
+            (, , , , , uint256 credit, , ) = manager.subscriptions(id);
+            assertLe(credit, handler.paid(id));
         }
     }
 

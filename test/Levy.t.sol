@@ -72,6 +72,8 @@ contract LevyTest is Test {
 
     function testSubscribeNoTrial() public {
         vm.prank(alice);
+        usdc.approve(address(manager), PRICE * 12);
+        vm.prank(alice);
         uint256 subId = manager.subscribe(planId);
         (
             address subscriber,
@@ -80,12 +82,22 @@ contract LevyTest is Test {
             uint64 nextCharge,
             ,
             ,
-            ,
+            uint256 chargeCount,
             SubscriptionManager.Status status
         ) = manager.subscriptions(subId);
         assertEq(subscriber, alice);
         assertEq(uint256(status), uint256(SubscriptionManager.Status.ACTIVE));
         assertEq(nextCharge, start + CYCLE);
+        // Advance billing: the first cycle is paid at subscribe.
+        assertEq(chargeCount, 1);
+        assertEq(usdc.balanceOf(merchant), PRICE - PRICE / 100);
+        assertEq(usdc.balanceOf(address(router)), PRICE / 100);
+    }
+
+    function testSubscribeWithoutAllowanceReverts() public {
+        vm.prank(alice);
+        vm.expectRevert(SubscriptionManager.PaymentFailed.selector);
+        manager.subscribe(planId);
     }
 
     function testSubscribeWithTrial() public {
@@ -93,10 +105,11 @@ contract LevyTest is Test {
         uint256 trialPlan = manager.createPlan(PRICE, CYCLE, 7 days, 3 days, 2);
         vm.prank(alice);
         uint256 subId = manager.subscribe(trialPlan);
-        (, , uint64 start, uint64 nextCharge, , , , SubscriptionManager.Status status) =
+        (, , uint64 start, uint64 nextCharge, , , uint256 chargeCount, SubscriptionManager.Status status) =
             manager.subscriptions(subId);
         assertEq(uint256(status), uint256(SubscriptionManager.Status.TRIAL));
         assertEq(nextCharge, start + 7 days);
+        assertEq(chargeCount, 0); // trial: nothing pulled, no allowance needed
     }
 
     function testSubscribeUnknownPlanReverts() public {
@@ -107,11 +120,20 @@ contract LevyTest is Test {
 
     // ---- charge ----
 
+    /// @dev Approves 12 cycles, then subscribes (which pays the first cycle).
     function _subscribeAndApprove() internal returns (uint256 subId) {
         vm.prank(alice);
-        subId = manager.subscribe(planId);
-        vm.prank(alice);
         usdc.approve(address(manager), PRICE * 12);
+        vm.prank(alice);
+        subId = manager.subscribe(planId);
+    }
+
+    /// @dev Approves exactly one cycle, so every pull after subscribe fails.
+    function _subscribeOneCycleOnly() internal returns (uint256 subId) {
+        vm.prank(alice);
+        usdc.approve(address(manager), PRICE);
+        vm.prank(alice);
+        subId = manager.subscribe(planId);
     }
 
     function testChargeSplits99And1() public {
@@ -120,16 +142,17 @@ contract LevyTest is Test {
         vm.warp(nextCharge);
 
         uint256 merchantBefore = usdc.balanceOf(merchant);
+        uint256 routerBefore = usdc.balanceOf(address(router));
         vm.prank(keeper);
         manager.charge(subId);
 
         assertEq(usdc.balanceOf(merchant) - merchantBefore, PRICE - PRICE / 100);
-        assertEq(usdc.balanceOf(address(router)), PRICE / 100);
+        assertEq(usdc.balanceOf(address(router)) - routerBefore, PRICE / 100);
 
         (, , , uint64 nextChargeAfter, , , uint256 chargeCount, SubscriptionManager.Status status) =
             manager.subscriptions(subId);
         assertEq(nextChargeAfter, nextCharge + CYCLE);
-        assertEq(chargeCount, 1);
+        assertEq(chargeCount, 2);
         assertEq(uint256(status), uint256(SubscriptionManager.Status.ACTIVE));
     }
 
@@ -141,11 +164,11 @@ contract LevyTest is Test {
     }
 
     function testChargeWithoutAllowanceRecordsFailure() public {
-        vm.prank(alice);
-        uint256 subId = manager.subscribe(planId); // no approve
+        uint256 subId = _subscribeOneCycleOnly(); // allowance spent on cycle 1
         (, , , uint64 nextCharge, , , , ) = manager.subscriptions(subId);
         vm.warp(nextCharge);
 
+        uint256 merchantBefore = usdc.balanceOf(merchant);
         vm.prank(keeper);
         manager.charge(subId); // must NOT revert
 
@@ -153,12 +176,11 @@ contract LevyTest is Test {
             manager.subscriptions(subId);
         assertEq(failed, 1);
         assertEq(uint256(status), uint256(SubscriptionManager.Status.ACTIVE));
-        assertEq(usdc.balanceOf(merchant), 0);
+        assertEq(usdc.balanceOf(merchant), merchantBefore);
     }
 
     function testPastDueThenAutoPause() public {
-        vm.prank(alice);
-        uint256 subId = manager.subscribe(planId);
+        uint256 subId = _subscribeOneCycleOnly();
         (, , , uint64 nextCharge, , , , ) = manager.subscriptions(subId);
 
         // maxFailed = 2: attempts 1-2 -> PAST_DUE at 2, PAUSED at 4
@@ -179,8 +201,7 @@ contract LevyTest is Test {
     }
 
     function testResumeAndChargeAfterReapproval() public {
-        vm.prank(alice);
-        uint256 subId = manager.subscribe(planId);
+        uint256 subId = _subscribeOneCycleOnly();
         (, , , uint64 nextCharge, , , , ) = manager.subscriptions(subId);
         for (uint256 i = 0; i < 4; i++) {
             vm.warp(nextCharge + i * CYCLE);
@@ -195,60 +216,115 @@ contract LevyTest is Test {
 
         vm.prank(keeper);
         manager.charge(subId);
-        assertEq(usdc.balanceOf(merchant), PRICE - PRICE / 100);
+        assertEq(usdc.balanceOf(merchant), 2 * (PRICE - PRICE / 100));
     }
 
     function testChargeFailurePreservesCredit() public {
-        // Alice gets $5 proration credit, moves to an $8 plan, then her
-        // allowance lapses. The $3 pull fails; the $5 credit must survive.
+        // Alice downgrades from $10 to $8 three days into a paid cycle:
+        // $9 unused credit, $8 of it pays the new plan's first cycle, $1 is
+        // left over. Her allowance then lapses; the $7 pull fails and the $1
+        // credit must survive.
         vm.prank(merchant);
         uint256 eightDollarPlan = manager.createPlan(8_000_000, CYCLE, 0, 3 days, 10);
-        vm.prank(alice);
-        uint256 subId = manager.subscribe(planId);
-        vm.prank(alice);
-        usdc.approve(address(manager), PRICE * 12);
+        uint256 subId = _subscribeAndApprove();
 
-        vm.warp(block.timestamp + 15 days); // halfway through cycle
+        vm.warp(block.timestamp + 3 days);
         vm.prank(alice);
-        manager.changePlan(subId, eightDollarPlan); // credit = $5
+        manager.changePlan(subId, eightDollarPlan);
 
         // Drain allowance so the next pull fails
         vm.prank(alice);
         usdc.approve(address(manager), 0);
         (, , , uint64 nextCharge, , uint256 creditBefore, , ) = manager.subscriptions(subId);
-        assertEq(creditBefore, PRICE / 2);
+        assertEq(creditBefore, 1_000_000);
 
         vm.warp(nextCharge);
         vm.prank(keeper);
         manager.charge(subId); // fails, must not revert, must keep credit
 
-        (, , , , , uint256 creditAfter, , ) = manager.subscriptions(subId);
-        assertEq(creditAfter, PRICE / 2);
+        (, , , , uint64 failed, uint256 creditAfter, , ) = manager.subscriptions(subId);
+        assertEq(failed, 1);
+        assertEq(creditAfter, 1_000_000);
     }
 
     // ---- proration ----
 
     function testChangePlanProrates() public {
-        uint256 subId = _subscribeAndApprove();
+        uint256 subId = _subscribeAndApprove(); // paid $10 for cycle 1
         vm.prank(merchant);
         uint256 priceyPlan = manager.createPlan(PRICE * 2, CYCLE, 0, 3 days, 2);
 
-        vm.warp(block.timestamp + 15 days); // exactly half the cycle used
+        vm.warp(block.timestamp + 15 days); // exactly half the paid cycle used
+        uint256 merchantBefore = usdc.balanceOf(merchant);
         vm.prank(alice);
         manager.changePlan(subId, priceyPlan);
 
-        (, uint256 newPlanId, , uint64 nextCharge, , uint256 credit, ,) =
+        // The $20 plan starts now: $20 - $5 unused credit = $15 pulled now.
+        assertEq(usdc.balanceOf(merchant) - merchantBefore, 15_000_000 - 150_000);
+        (, uint256 newPlanId, , uint64 nextCharge, , uint256 credit, uint256 chargeCount,) =
             manager.subscriptions(subId);
         assertEq(newPlanId, priceyPlan);
-        assertEq(credit, PRICE / 2); // $5 unused on the old plan
+        assertEq(credit, 0);
+        assertEq(chargeCount, 2);
         assertEq(nextCharge, block.timestamp + CYCLE);
 
-        // Next charge pulls $20 - $5 credit = $15, fee on $15
+        // The following cycle is the full $20.
         vm.warp(nextCharge);
+        merchantBefore = usdc.balanceOf(merchant);
         vm.prank(keeper);
         manager.charge(subId);
-        assertEq(usdc.balanceOf(merchant), 15_000_000 - 150_000);
-        assertEq(usdc.balanceOf(address(router)), 150_000);
+        assertEq(usdc.balanceOf(merchant) - merchantBefore, 20_000_000 - 200_000);
+    }
+
+    function testDowngradeCreditCoversLaterCycles() public {
+        vm.prank(merchant);
+        uint256 twoDollarPlan = manager.createPlan(2_000_000, CYCLE, 0, 3 days, 2);
+        uint256 subId = _subscribeAndApprove(); // paid $10
+
+        // Downgrade immediately: $10 unused credit, $2 pays the new cycle now.
+        vm.prank(alice);
+        manager.changePlan(subId, twoDollarPlan);
+        (, , , , , uint256 credit, , ) = manager.subscriptions(subId);
+        assertEq(credit, 8_000_000);
+
+        // The next four cycles are covered by credit: nothing moves.
+        uint256 aliceBefore = usdc.balanceOf(alice);
+        for (uint256 i = 0; i < 4; i++) {
+            (, , , uint64 next, , , , ) = manager.subscriptions(subId);
+            vm.warp(next);
+            manager.charge(subId);
+        }
+        assertEq(usdc.balanceOf(alice), aliceBefore);
+        (, , , , , credit, , ) = manager.subscriptions(subId);
+        assertEq(credit, 0);
+    }
+
+    function testChangePlanDuringTrialGivesNoCredit() public {
+        vm.prank(merchant);
+        uint256 trialPlan = manager.createPlan(PRICE, CYCLE, 7 days, 3 days, 2);
+        vm.prank(alice);
+        usdc.approve(address(manager), PRICE * 12);
+        vm.prank(alice);
+        uint256 subId = manager.subscribe(trialPlan);
+
+        // Unused trial days were never paid for, so they are worth nothing.
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(alice);
+        manager.changePlan(subId, planId);
+        (, , , , , uint256 credit, , SubscriptionManager.Status status) = manager.subscriptions(subId);
+        assertEq(credit, 0);
+        assertEq(uint256(status), uint256(SubscriptionManager.Status.ACTIVE));
+        assertEq(usdc.balanceOf(merchant), PRICE - PRICE / 100);
+    }
+
+    function testChangePlanWithoutPaymentReverts() public {
+        uint256 subId = _subscribeOneCycleOnly();
+        vm.prank(merchant);
+        uint256 priceyPlan = manager.createPlan(PRICE * 2, CYCLE, 0, 3 days, 2);
+        vm.warp(block.timestamp + 15 days);
+        vm.prank(alice);
+        vm.expectRevert(SubscriptionManager.PaymentFailed.selector);
+        manager.changePlan(subId, priceyPlan);
     }
 
     function testChangePlanToSamePlanReverts() public {
@@ -256,6 +332,55 @@ contract LevyTest is Test {
         vm.prank(alice);
         vm.expectRevert(SubscriptionManager.SamePlan.selector);
         manager.changePlan(subId, planId);
+    }
+
+    function testChangePlanToOtherMerchantReverts() public {
+        uint256 subId = _subscribeAndApprove();
+        vm.prank(bob);
+        uint256 bobPlan = manager.createPlan(PRICE, CYCLE, 0, 3 days, 2);
+        vm.prank(alice);
+        vm.expectRevert(SubscriptionManager.DifferentMerchant.selector);
+        manager.changePlan(subId, bobPlan);
+    }
+
+    // ---- regressions: unbacked proration credit (found 2026-09-25) ----
+
+    function testSelfPricedPlanCannotFundAnotherMerchant() public {
+        // Old exploit: subscribe unpaid to a self-made 1e30 plan, switch to a
+        // real merchant's plan, ride the 1e30 credit forever.
+        address attacker = makeAddr("attacker");
+        vm.startPrank(attacker);
+        uint256 selfPlan = manager.createPlan(1e30, CYCLE, 0, 0, 1);
+        vm.expectRevert(SubscriptionManager.PaymentFailed.selector);
+        manager.subscribe(selfPlan); // the 1e30 is now owed up front
+
+        // Even a genuinely paid self-plan cannot move credit to another merchant.
+        uint256 cheapSelfPlan = manager.createPlan(PRICE, CYCLE, 0, 0, 1);
+        usdc.mint(attacker, PRICE);
+        usdc.approve(address(manager), PRICE);
+        uint256 subId = manager.subscribe(cheapSelfPlan);
+        vm.expectRevert(SubscriptionManager.DifferentMerchant.selector);
+        manager.changePlan(subId, planId);
+        vm.stopPrank();
+    }
+
+    function testPlanHoppingStillPaysEveryCycle() public {
+        // Old exploit: hop plans a second before each charge so nextChargeAt
+        // keeps moving and nothing is ever pulled.
+        vm.prank(merchant);
+        uint256 otherPlan = manager.createPlan(PRICE, CYCLE, 0, 3 days, 2);
+        uint256 subId = _subscribeAndApprove();
+        for (uint256 i = 0; i < 6; i++) {
+            (, uint256 cur, , uint64 next, , , , ) = manager.subscriptions(subId);
+            vm.warp(next - 1);
+            vm.prank(alice);
+            manager.changePlan(subId, cur == planId ? otherPlan : planId);
+        }
+        // Seven cycles started (subscribe + six hops); each was paid in full
+        // apart from the one second of unused credit carried at each hop.
+        (, , , , , , uint256 chargeCount, ) = manager.subscriptions(subId);
+        assertEq(chargeCount, 7);
+        assertGe(usdc.balanceOf(merchant), 7 * (PRICE - PRICE / 100) - 6 * 100);
     }
 
     // ---- pause / cancel / access control ----
@@ -295,15 +420,15 @@ contract LevyTest is Test {
         vm.prank(merchant);
         uint256 dustPlan = manager.createPlan(199, CYCLE, 0, 3 days, 2);
         vm.prank(alice);
-        uint256 subId = manager.subscribe(dustPlan);
-        vm.prank(alice);
         usdc.approve(address(manager), 199 * 12);
+        vm.prank(alice);
+        uint256 subId = manager.subscribe(dustPlan); // cycle 1
         (, , , uint64 nextCharge, , , , ) = manager.subscriptions(subId);
         vm.warp(nextCharge);
         vm.prank(keeper);
-        manager.charge(subId);
-        assertEq(usdc.balanceOf(address(router)), 1);
-        assertEq(usdc.balanceOf(merchant), 198);
+        manager.charge(subId); // cycle 2
+        assertEq(usdc.balanceOf(address(router)), 2);
+        assertEq(usdc.balanceOf(merchant), 396);
     }
 
     // ---- fee router ----
@@ -318,7 +443,7 @@ contract LevyTest is Test {
         uint256 fee = PRICE / 100;
         vm.prank(bob); // anyone can sweep; destination is fixed
         router.sweep();
-        assertEq(usdc.balanceOf(treasury), fee);
+        assertEq(usdc.balanceOf(treasury), 2 * fee); // subscribe + one charge
         assertEq(usdc.balanceOf(address(router)), 0);
     }
 
@@ -410,45 +535,35 @@ contract LevyTest is Test {
             block.timestamp + 1 hours
         );
         vm.prank(s);
-        uint256 subId = manager.subscribeWithPermit2(planId, s, p, sig);
+        uint256 subId = manager.subscribeWithPermit2(planId, p, sig);
 
         (address subscriber, , , uint64 nextCharge, , , , SubscriptionManager.Status status) =
             manager.subscriptions(subId);
         assertEq(subscriber, s);
         assertTrue(status == SubscriptionManager.Status.ACTIVE);
 
-        // No direct ERC-20 allowance; the pull must go through Permit2.
+        // No direct ERC-20 allowance; both pulls must go through Permit2.
         assertEq(usdc.allowance(s, address(manager)), 0);
         vm.warp(nextCharge);
         vm.prank(keeper);
         manager.charge(subId);
 
         uint256 fee = PRICE / 100;
-        assertEq(usdc.balanceOf(merchant), PRICE - fee);
-        assertEq(usdc.balanceOf(address(router)), fee);
-        // Permit2 allowance was spent down by one cycle.
-        assertEq(permit2.allowance(s, address(usdc), address(manager)), PRICE * 12 - PRICE);
+        assertEq(usdc.balanceOf(merchant), 2 * (PRICE - fee));
+        assertEq(usdc.balanceOf(address(router)), 2 * fee);
+        // Permit2 allowance was spent down by two cycles (subscribe + charge).
+        assertEq(permit2.allowance(s, address(usdc), address(manager)), PRICE * 12 - 2 * PRICE);
     }
 
-    function testSubscribeWithPermit2KeeperSubmits() public {
+    function testSubscribeWithPermit2OnlySignerCanSubmit() public {
+        // A relayer holding s's signed permit could otherwise subscribe s to a
+        // plan of the relayer's choosing and pull the first cycle at once.
         address s = _signer();
         vm.prank(s);
         usdc.approve(address(permit2), type(uint256).max);
-
-        // The keeper cannot forge a permit for someone else: s's signature
-        // does not validate against owner=bob.
-        (IPermit2.PermitSingle memory bad, bytes memory badSig) = _signPermit(
-            s,
-            address(usdc),
-            uint160(PRICE * 12),
-            address(manager),
-            block.timestamp + 1 hours
-        );
         vm.prank(keeper);
-        vm.expectRevert(MockPermit2.BadSignature.selector);
-        manager.subscribeWithPermit2(planId, bob, bad, badSig); // owner=bob, sig=s's
+        uint256 keeperPlan = manager.createPlan(PRICE * 12, CYCLE, 0, 0, 1);
 
-        // Keeper (not the signer) submits the signed permit for the real owner.
         (IPermit2.PermitSingle memory p, bytes memory sig) = _signPermit(
             s,
             address(usdc),
@@ -457,10 +572,9 @@ contract LevyTest is Test {
             block.timestamp + 1 hours
         );
         vm.prank(keeper);
-        uint256 subId = manager.subscribeWithPermit2(planId, s, p, sig);
-
-        (address subscriber, , , , , , , ) = manager.subscriptions(subId);
-        assertEq(subscriber, s);
+        vm.expectRevert(MockPermit2.BadSignature.selector); // checked against msg.sender
+        manager.subscribeWithPermit2(keeperPlan, p, sig);
+        assertEq(usdc.balanceOf(keeper), 0);
     }
 
     function testSubscribeWithPermit2BadSpenderReverts() public {
@@ -474,7 +588,7 @@ contract LevyTest is Test {
         );
         vm.prank(s);
         vm.expectRevert(SubscriptionManager.BadPermitSpender.selector);
-        manager.subscribeWithPermit2(planId, s, p, sig);
+        manager.subscribeWithPermit2(planId, p, sig);
     }
 
     function testSubscribeWithPermit2BadTokenReverts() public {
@@ -488,7 +602,7 @@ contract LevyTest is Test {
         );
         vm.prank(s);
         vm.expectRevert(SubscriptionManager.BadPermitToken.selector);
-        manager.subscribeWithPermit2(planId, s, p, sig);
+        manager.subscribeWithPermit2(planId, p, sig);
     }
 
     function testSubscribeWithPermit2BadSignatureReverts() public {
@@ -504,7 +618,7 @@ contract LevyTest is Test {
         bytes memory badSig = abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), uint8(27));
         vm.prank(s);
         vm.expectRevert(MockPermit2.BadSignature.selector);
-        manager.subscribeWithPermit2(planId, s, p, badSig);
+        manager.subscribeWithPermit2(planId, p, badSig);
     }
 
     function testDirectAllowanceStillTakesPriority() public {
@@ -523,15 +637,15 @@ contract LevyTest is Test {
             block.timestamp + 1 hours
         );
         vm.prank(s);
-        uint256 subId = manager.subscribeWithPermit2(planId, s, p, sig);
+        uint256 subId = manager.subscribeWithPermit2(planId, p, sig);
 
         (, , , uint64 nextCharge, , , , ) = manager.subscriptions(subId);
         vm.warp(nextCharge);
         vm.prank(keeper);
         manager.charge(subId);
 
-        // Direct allowance was consumed, Permit2 untouched.
-        assertEq(usdc.allowance(s, address(manager)), PRICE * 12 - PRICE);
+        // Direct allowance paid both cycles (subscribe + charge), Permit2 untouched.
+        assertEq(usdc.allowance(s, address(manager)), PRICE * 12 - 2 * PRICE);
         assertEq(permit2.allowance(s, address(usdc), address(manager)), PRICE * 12);
     }
 }

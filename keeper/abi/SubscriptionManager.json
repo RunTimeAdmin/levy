@@ -317,11 +317,6 @@
         "internalType": "uint256"
       },
       {
-        "name": "owner",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
         "name": "permitSingle",
         "type": "tuple",
         "internalType": "struct IPermit2.PermitSingle",
@@ -665,6 +660,11 @@
   },
   {
     "type": "error",
+    "name": "DifferentMerchant",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NotChargeable",
     "inputs": []
   },
@@ -676,6 +676,11 @@
   {
     "type": "error",
     "name": "NotSubscriberOrMerchant",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PaymentFailed",
     "inputs": []
   },
   {
