@@ -45,6 +45,8 @@ export interface DbSubscription {
   status: number;
   nextChargeAt: number; // unix seconds
   failedAttempts: number;
+  /** Merchant's reference from subscribe (bytes32 hex), null when none. */
+  ref?: string | null;
 }
 
 export interface DbCharge {
@@ -108,7 +110,8 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   cycleSeconds INTEGER NOT NULL,
   status INTEGER NOT NULL,
   nextChargeAt INTEGER NOT NULL,
-  failedAttempts INTEGER NOT NULL DEFAULT 0
+  failedAttempts INTEGER NOT NULL DEFAULT 0,
+  ref TEXT
 );
 CREATE TABLE IF NOT EXISTS charges (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -213,6 +216,9 @@ export class LevyDb {
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     this.db.exec(SCHEMA);
+    // Databases created before the ref column existed.
+    const cols = this.db.prepare(`PRAGMA table_info(subscriptions)`).all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "ref")) this.db.exec(`ALTER TABLE subscriptions ADD COLUMN ref TEXT`);
     // The API server may hold the same file open; wait instead of failing
     // on a locked database during brief concurrent writes.
     this.db.exec("PRAGMA busy_timeout = 5000");
@@ -231,17 +237,17 @@ export class LevyDb {
     this.db
       .prepare(
         `INSERT INTO subscriptions
-           (subId, subscriber, planId, merchant, price, cycleSeconds, status, nextChargeAt, failedAttempts)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (subId, subscriber, planId, merchant, price, cycleSeconds, status, nextChargeAt, failedAttempts, ref)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (subId) DO UPDATE SET
            planId = excluded.planId, merchant = excluded.merchant,
            price = excluded.price, cycleSeconds = excluded.cycleSeconds,
            status = excluded.status, nextChargeAt = excluded.nextChargeAt,
-           failedAttempts = excluded.failedAttempts`
+           failedAttempts = excluded.failedAttempts, ref = excluded.ref`
       )
       .run(
         s.subId, s.subscriber, s.planId, s.merchant, s.price,
-        s.cycleSeconds, s.status, s.nextChargeAt, s.failedAttempts
+        s.cycleSeconds, s.status, s.nextChargeAt, s.failedAttempts, s.ref ?? null
       );
   }
 
@@ -392,13 +398,15 @@ export class LevyDb {
       .all(staleBefore, limit) as Array<{ subscriber: string }>).map((r) => r.subscriber);
   }
 
-  chargeableSubs(subscriber: string): Array<{ subId: string; merchant: string; price: string; nextChargeAt: number }> {
+  chargeableSubs(
+    subscriber: string
+  ): Array<{ subId: string; merchant: string; price: string; nextChargeAt: number; ref: string | null }> {
     return this.db
       .prepare(
-        `SELECT subId, merchant, price, nextChargeAt FROM subscriptions
+        `SELECT subId, merchant, price, nextChargeAt, ref FROM subscriptions
          WHERE subscriber = ? COLLATE NOCASE AND status IN (${CHARGEABLE.join(",")})`
       )
-      .all(subscriber) as Array<{ subId: string; merchant: string; price: string; nextChargeAt: number }>;
+      .all(subscriber) as Array<{ subId: string; merchant: string; price: string; nextChargeAt: number; ref: string | null }>;
   }
 
   getFunds(subscriber: string): DbFunds | undefined {

@@ -100,6 +100,16 @@ const merchant = () => LevyAuth.address;
 const api = (p, opts) => LevyAuth.api(p, opts);
 
 function pill(text, cls) { return `<span class="pill ${cls || text}">${text}</span>`; }
+// The subscription's merchant reference: readable text when it is ASCII
+// (as the checkout encodes short refs), otherwise shortened hex.
+function refText(ref) {
+  if (!ref) return `<span class="muted">none</span>`;
+  const bytes = ref.slice(2).match(/../g).map((h) => parseInt(h, 16));
+  const end = bytes.findLastIndex((b) => b !== 0) + 1;
+  const text = String.fromCharCode(...bytes.slice(0, end));
+  return end > 0 && /^[\x20-\x7e]+$/.test(text) && bytes.slice(end).every((b) => b === 0)
+    ? text.replace(/[<>&"]/g, "") : short(ref);
+}
 
 function showSession() {
   const m = merchant();
@@ -131,10 +141,10 @@ async function loadSubs(m) {
   const subs = await api(`/api/subscriptions?merchant=${m}`);
   if (!subs.length) { $("subs").innerHTML = `<p class="empty">No subscriptions.</p>`; return; }
   $("subs").innerHTML = `<table><thead><tr>
-    <th>ID</th><th class="addr">Subscriber</th><th>Price</th><th>Status</th>
+    <th>ID</th><th class="addr">Subscriber</th><th class="addr">Ref</th><th>Price</th><th>Status</th>
     <th>Next charge</th><th>Failed</th><th title="Rounds of the subscriber's Levy charges their allowance still covers">Allowance</th></tr></thead><tbody>` +
     subs.map(s => `<tr>
-      <td>${s.subId}</td><td class="addr">${short(s.subscriber)}</td>
+      <td>${s.subId}</td><td class="addr">${short(s.subscriber)}</td><td class="addr">${refText(s.ref)}</td>
       <td>$${s.priceUsdc}/cycle</td><td>${pill(s.statusName)}</td>
       <td>${s.nextChargeAtIso.slice(0, 10)}</td><td>${s.failedAttempts}</td>
       <td>${s.fundsLow === 1 ? pill(`low: ${s.cyclesCovered}`, "past_due")

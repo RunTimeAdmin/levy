@@ -129,6 +129,7 @@ export class Keeper {
         this.webhooks.enqueue("allowance.low", s.merchant, {
           subId: s.subId,
           merchant: s.merchant,
+          ref: s.ref,
           subscriber,
           allowance: allowance.toString(),
           balance: balance.toString(),

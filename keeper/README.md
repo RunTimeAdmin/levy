@@ -34,6 +34,9 @@ The keeper doubles as a webhook dispatcher. Merchants register endpoints
 (either via the API or directly in the `webhooks` table); contract events are
 fanned out per merchant subscription:
 
+Every payload carries `subId`, `merchant` and `ref` (the merchant's reference
+from subscribe, or null), plus the fields of its event:
+
 - `subscription.created`, `subscription.updated` (plan change),
   `charge.succeeded`, `charge.failed`,
   `dunning.started` (first failure), `subscription.paused`,
@@ -66,7 +69,7 @@ its deliveries arrive in order. Failures retry with backoff (1m, 5m, 15m, 1h,
 ## Tests
 
 ```bash
-npm test              # unit + anvil integration (54 tests)
+npm test              # unit + anvil integration (55 tests)
 npm run test:integration
 ```
 

@@ -74,7 +74,7 @@ contract LevyTest is Test {
         vm.prank(alice);
         usdc.approve(address(manager), PRICE * 12);
         vm.prank(alice);
-        uint256 subId = manager.subscribe(planId);
+        uint256 subId = manager.subscribe(planId, bytes32(0));
         (
             address subscriber,
             ,
@@ -94,17 +94,33 @@ contract LevyTest is Test {
         assertEq(usdc.balanceOf(address(router)), PRICE / 100);
     }
 
+    function testSubscribeRecordsMerchantRef() public {
+        bytes32 ref = keccak256("checkout-session-7f3a"); // opaque, as merchants should use
+        vm.prank(alice);
+        usdc.approve(address(manager), PRICE);
+        vm.expectEmit(true, true, true, true, address(manager));
+        emit SubscriptionManager.Subscribed(1, alice, planId, uint64(block.timestamp + CYCLE), ref);
+        vm.prank(alice);
+        uint256 subId = manager.subscribe(planId, ref);
+        assertEq(manager.subscriptionRef(subId), ref);
+    }
+
+    function testSubscribeWithoutRefStoresNothing() public {
+        uint256 subId = _subscribeAndApprove();
+        assertEq(manager.subscriptionRef(subId), bytes32(0));
+    }
+
     function testSubscribeWithoutAllowanceReverts() public {
         vm.prank(alice);
         vm.expectRevert(SubscriptionManager.PaymentFailed.selector);
-        manager.subscribe(planId);
+        manager.subscribe(planId, bytes32(0));
     }
 
     function testSubscribeWithTrial() public {
         vm.prank(merchant);
         uint256 trialPlan = manager.createPlan(PRICE, CYCLE, 7 days, 3 days, 2);
         vm.prank(alice);
-        uint256 subId = manager.subscribe(trialPlan);
+        uint256 subId = manager.subscribe(trialPlan, bytes32(0));
         (, , uint64 start, uint64 nextCharge, , , uint256 chargeCount, SubscriptionManager.Status status) =
             manager.subscriptions(subId);
         assertEq(uint256(status), uint256(SubscriptionManager.Status.TRIAL));
@@ -115,7 +131,7 @@ contract LevyTest is Test {
     function testSubscribeUnknownPlanReverts() public {
         vm.prank(alice);
         vm.expectRevert(SubscriptionManager.UnknownPlan.selector);
-        manager.subscribe(999);
+        manager.subscribe(999, bytes32(0));
     }
 
     // ---- charge ----
@@ -125,7 +141,7 @@ contract LevyTest is Test {
         vm.prank(alice);
         usdc.approve(address(manager), PRICE * 12);
         vm.prank(alice);
-        subId = manager.subscribe(planId);
+        subId = manager.subscribe(planId, bytes32(0));
     }
 
     /// @dev Approves exactly one cycle, so every pull after subscribe fails.
@@ -133,7 +149,7 @@ contract LevyTest is Test {
         vm.prank(alice);
         usdc.approve(address(manager), PRICE);
         vm.prank(alice);
-        subId = manager.subscribe(planId);
+        subId = manager.subscribe(planId, bytes32(0));
     }
 
     function testChargeSplits99And1() public {
@@ -359,7 +375,7 @@ contract LevyTest is Test {
         vm.prank(alice);
         usdc.approve(address(manager), PRICE * 12);
         vm.prank(alice);
-        uint256 subId = manager.subscribe(trialPlan);
+        uint256 subId = manager.subscribe(trialPlan, bytes32(0));
 
         // Unused trial days were never paid for, so they are worth nothing.
         vm.warp(block.timestamp + 1 days);
@@ -406,13 +422,13 @@ contract LevyTest is Test {
         vm.startPrank(attacker);
         uint256 selfPlan = manager.createPlan(1e30, CYCLE, 0, 0, 1);
         vm.expectRevert(SubscriptionManager.PaymentFailed.selector);
-        manager.subscribe(selfPlan); // the 1e30 is now owed up front
+        manager.subscribe(selfPlan, bytes32(0)); // the 1e30 is now owed up front
 
         // Even a genuinely paid self-plan cannot move credit to another merchant.
         uint256 cheapSelfPlan = manager.createPlan(PRICE, CYCLE, 0, 0, 1);
         usdc.mint(attacker, PRICE);
         usdc.approve(address(manager), PRICE);
-        uint256 subId = manager.subscribe(cheapSelfPlan);
+        uint256 subId = manager.subscribe(cheapSelfPlan, bytes32(0));
         vm.expectRevert(SubscriptionManager.DifferentMerchant.selector);
         manager.changePlan(subId, planId);
         vm.stopPrank();
@@ -476,7 +492,7 @@ contract LevyTest is Test {
         vm.prank(alice);
         usdc.approve(address(manager), 199 * 12);
         vm.prank(alice);
-        uint256 subId = manager.subscribe(dustPlan); // cycle 1
+        uint256 subId = manager.subscribe(dustPlan, bytes32(0)); // cycle 1
         (, , , uint64 nextCharge, , , , ) = manager.subscriptions(subId);
         vm.warp(nextCharge);
         vm.prank(keeper);
@@ -589,7 +605,8 @@ contract LevyTest is Test {
             block.timestamp + 1 hours
         );
         vm.prank(s);
-        uint256 subId = manager.subscribeWithPermit2(planId, p, sig);
+        uint256 subId = manager.subscribeWithPermit2(planId, bytes32("cust-42"), p, sig);
+        assertEq(manager.subscriptionRef(subId), bytes32("cust-42"));
 
         (address subscriber, , , uint64 nextCharge, , , , SubscriptionManager.Status status) =
             manager.subscriptions(subId);
@@ -627,7 +644,7 @@ contract LevyTest is Test {
         );
         vm.prank(keeper);
         vm.expectRevert(MockPermit2.BadSignature.selector); // checked against msg.sender
-        manager.subscribeWithPermit2(keeperPlan, p, sig);
+        manager.subscribeWithPermit2(keeperPlan, bytes32(0), p, sig);
         assertEq(usdc.balanceOf(keeper), 0);
     }
 
@@ -642,7 +659,7 @@ contract LevyTest is Test {
         );
         vm.prank(s);
         vm.expectRevert(SubscriptionManager.BadPermitSpender.selector);
-        manager.subscribeWithPermit2(planId, p, sig);
+        manager.subscribeWithPermit2(planId, bytes32(0), p, sig);
     }
 
     function testSubscribeWithPermit2BadTokenReverts() public {
@@ -656,7 +673,7 @@ contract LevyTest is Test {
         );
         vm.prank(s);
         vm.expectRevert(SubscriptionManager.BadPermitToken.selector);
-        manager.subscribeWithPermit2(planId, p, sig);
+        manager.subscribeWithPermit2(planId, bytes32(0), p, sig);
     }
 
     function testSubscribeWithPermit2BadSignatureReverts() public {
@@ -672,7 +689,7 @@ contract LevyTest is Test {
         bytes memory badSig = abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), uint8(27));
         vm.prank(s);
         vm.expectRevert(MockPermit2.BadSignature.selector);
-        manager.subscribeWithPermit2(planId, p, badSig);
+        manager.subscribeWithPermit2(planId, bytes32(0), p, badSig);
     }
 
     function testDirectAllowanceStillTakesPriority() public {
@@ -691,7 +708,7 @@ contract LevyTest is Test {
             block.timestamp + 1 hours
         );
         vm.prank(s);
-        uint256 subId = manager.subscribeWithPermit2(planId, p, sig);
+        uint256 subId = manager.subscribeWithPermit2(planId, bytes32(0), p, sig);
 
         (, , , uint64 nextCharge, , , , ) = manager.subscriptions(subId);
         vm.warp(nextCharge);

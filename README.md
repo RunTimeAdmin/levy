@@ -2,7 +2,7 @@
 
 Pull-based USDC subscription billing for Arc mainnet. Merchants define plans, subscribers approve once, and a keeper triggers per-cycle pulls. The protocol takes a 1% fee on collected payments.
 
-**Status:** M1 (contracts), M2 (keeper + dunning), M3 (webhooks + API + dashboards) complete, plus Permit2 subscribe path. Contracts: 50 tests green (43 unit + 7 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 54 tests green. API: 32 tests green. Not yet deployed. Not audited.
+**Status:** M1 (contracts), M2 (keeper + dunning), M3 (webhooks + API + dashboards) complete, plus Permit2 subscribe path. Contracts: 52 tests green (45 unit + 7 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 55 tests green. API: 32 tests green. Not yet deployed. Not audited.
 
 ## Contracts
 
@@ -14,7 +14,7 @@ Pull-based USDC subscription billing for Arc mainnet. Merchants define plans, su
 ### How charging works
 
 1. Merchant calls `createPlan(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed)`. Price is immutable; repricing means a new plan.
-2. Subscriber calls `subscribe(planId)` after granting a direct ERC-20 `approve` allowance, or `subscribeWithPermit2(planId, ...)` with an off-chain Permit2 signature (one transaction, submitted by the subscriber). Uses Arc's Permit2 at `0x000000000022D473030F116dDEE9F6B43aC78BA3`. Billing is in advance: without a trial, the first cycle is pulled at subscribe, and the subscribe reverts if that pull fails.
+2. Subscriber calls `subscribe(planId, ref)` after granting a direct ERC-20 `approve` allowance, or `subscribeWithPermit2(planId, ref, ...)` with an off-chain Permit2 signature (one transaction, submitted by the subscriber). Uses Arc's Permit2 at `0x000000000022D473030F116dDEE9F6B43aC78BA3`. Billing is in advance: without a trial, the first cycle is pulled at subscribe, and the subscribe reverts if that pull fails. `ref` is the merchant's own reference for the customer (bytes32, zero for none), stored on-chain and carried on every webhook.
 3. Anyone calls `charge(subId)` once `block.timestamp >= nextChargeAt`, paying for the cycle that starts then. The contract pulls via `transferFrom`, routes 99% to the merchant and 1% to the FeeRouter, advances the cycle, and emits `Charged`. The call is permissionless by design: it can only move the subscriber's pre-approved funds to the correct merchant.
 4. Failed pulls never revert. The failure is recorded on-chain (`ChargeFailed`), the subscription goes `PAST_DUE` at `maxFailed` attempts and auto-pauses at `2x`, and the off-chain keeper retries on a dunning schedule (default day 1, 3, 7). Resuming a paused subscription is a fresh start: paused cycles are never billed, billing restarts at the resume if the charge date passed, and the failure count resets.
 

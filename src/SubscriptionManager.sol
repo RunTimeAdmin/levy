@@ -65,9 +65,20 @@ contract SubscriptionManager is ReentrancyGuard {
     uint256 public subCount;
     mapping(uint256 => Plan) public plans;
     mapping(uint256 => Subscription) public subscriptions;
+    /// @notice The merchant's own reference for a subscription, set at
+    ///         subscribe (e.g. their customer or checkout id). Public on-chain,
+    ///         so it must be an opaque token, and chosen by whoever subscribes,
+    ///         so merchants should issue unguessable ones. Zero means none.
+    mapping(uint256 => bytes32) public subscriptionRef;
 
     event PlanCreated(uint256 indexed planId, address indexed merchant, uint256 price, uint256 cycleSeconds);
-    event Subscribed(uint256 indexed subId, address indexed subscriber, uint256 indexed planId, uint64 nextChargeAt);
+    event Subscribed(
+        uint256 indexed subId,
+        address indexed subscriber,
+        uint256 indexed planId,
+        uint64 nextChargeAt,
+        bytes32 ref
+    );
     event Charged(
         uint256 indexed subId,
         uint256 amount,
@@ -133,9 +144,10 @@ contract SubscriptionManager is ReentrancyGuard {
     /// @notice Subscriber starts a subscription. Requires a prior approve() or
     ///         Permit2 allowance covering at least price * expected cycles.
     ///         Without a trial the first cycle is pulled now, and a failed
-    ///         pull reverts the subscribe.
-    function subscribe(uint256 planId) external nonReentrant returns (uint256 subId) {
-        return _subscribe(planId, msg.sender);
+    ///         pull reverts the subscribe. `ref` is the merchant's reference
+    ///         (see subscriptionRef), or zero.
+    function subscribe(uint256 planId, bytes32 ref) external nonReentrant returns (uint256 subId) {
+        return _subscribe(planId, msg.sender, ref);
     }
 
     /// @notice One-transaction subscribe via Uniswap Permit2. The subscriber
@@ -152,16 +164,17 @@ contract SubscriptionManager is ReentrancyGuard {
     ///      fail (and dunning handles it) once it runs out.
     function subscribeWithPermit2(
         uint256 planId,
+        bytes32 ref,
         IPermit2.PermitSingle calldata permitSingle,
         bytes calldata signature
     ) external nonReentrant returns (uint256 subId) {
         if (permitSingle.spender != address(this)) revert BadPermitSpender();
         if (permitSingle.details.token != address(usdc)) revert BadPermitToken();
         permit2.permit(msg.sender, permitSingle, signature);
-        return _subscribe(planId, msg.sender);
+        return _subscribe(planId, msg.sender, ref);
     }
 
-    function _subscribe(uint256 planId, address subscriber) internal returns (uint256 subId) {
+    function _subscribe(uint256 planId, address subscriber, bytes32 ref) internal returns (uint256 subId) {
         Plan memory plan = plans[planId];
         if (!plan.exists) revert UnknownPlan();
 
@@ -181,7 +194,8 @@ contract SubscriptionManager is ReentrancyGuard {
             chargeCount: 0,
             status: plan.trialSeconds > 0 ? Status.TRIAL : Status.ACTIVE
         });
-        emit Subscribed(subId, subscriber, planId, firstCharge);
+        if (ref != bytes32(0)) subscriptionRef[subId] = ref;
+        emit Subscribed(subId, subscriber, planId, firstCharge, ref);
 
         // Advance billing: without a trial the first cycle is paid up front.
         if (plan.trialSeconds == 0 && !_collect(subId, subscriptions[subId], plan)) {

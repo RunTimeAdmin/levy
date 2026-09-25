@@ -7,13 +7,13 @@ const LevyWallet = (() => {
     approve: "0x095ea7b3", // approve(address,uint256)
     allowance: "0xdd62ed3e", // allowance(address,address)
     balanceOf: "0x70a08231", // balanceOf(address)
-    subscribe: "0x0f574ba7", // subscribe(uint256)
+    subscribe: "0x70fb44e1", // subscribe(uint256,bytes32)
     pause: "0x41f23f0a", // pauseSubscription(uint256)
     resume: "0x023a584e", // resumeSubscription(uint256)
     cancel: "0x21235083", // cancelSubscription(uint256)
   };
-  // Subscribed(uint256 indexed subId, address indexed subscriber, uint256 indexed planId, uint64 nextChargeAt)
-  const SUBSCRIBED_TOPIC = "0xdeda80306cf42bcb405d97f58f27bfaa4c960750693c1ada163cd06978d9b804";
+  // Subscribed(uint256 indexed subId, address indexed subscriber, uint256 indexed planId, uint64 nextChargeAt, bytes32 ref)
+  const SUBSCRIBED_TOPIC = "0xbbb3775bdfa80ff891b19dfb5bf5d13313dca41abb169fce37c277a64e390659";
 
   // What a wallet needs to add Arc if it does not know it yet.
   const CHAINS = {
@@ -69,9 +69,12 @@ const LevyWallet = (() => {
   const approve = (from, token, spender, amount) =>
     send(from, token, SEL.approve + addr(spender) + word(amount));
 
-  /** subscribe(planId); returns the new subscription id from the Subscribed event. */
-  async function subscribe(from, manager, planId) {
-    const r = await send(from, manager, SEL.subscribe + word(planId));
+  /**
+   * subscribe(planId, ref); `ref` is a 0x-prefixed bytes32 (the merchant's
+   * reference, or zero). Returns the new subscription id from Subscribed.
+   */
+  async function subscribe(from, manager, planId, ref) {
+    const r = await send(from, manager, SEL.subscribe + word(planId) + ref.replace(/^0x/, ""));
     const log = r.logs.find(
       (l) => l.address.toLowerCase() === manager.toLowerCase() && l.topics[0] === SUBSCRIBED_TOPIC
     );

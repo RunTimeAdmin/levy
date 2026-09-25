@@ -222,9 +222,10 @@ export class Indexer {
     dunningNextRetryAt?: number
   ): void {
     if (!this.onEvent) return;
-    const merchant = this.db.getSubscription(subId)?.merchant;
-    if (!merchant) return;
-    for (const e of buildWebhookEvents(name, args, log, { merchant, dunningNextRetryAt })) {
+    const sub = this.db.getSubscription(subId);
+    if (!sub) return;
+    const merchant = sub.merchant;
+    for (const e of buildWebhookEvents(name, args, log, { merchant, ref: sub.ref ?? null, dunningNextRetryAt })) {
       this.onEvent(e.type, merchant, e.payload, nowSec);
     }
   }
@@ -236,7 +237,10 @@ export class Indexer {
     // Plan: [merchant, price, cycleSeconds, trialSeconds, graceSeconds, maxFailed, exists]
     const sub = (await this.clients.manager.read.subscriptions([BigInt(subId)])) as any[];
     if (sub[0] === "0x0000000000000000000000000000000000000000") return;
-    const plan = (await this.clients.manager.read.plans([sub[1]])) as any[];
+    const [plan, ref] = (await Promise.all([
+      this.clients.manager.read.plans([sub[1]]),
+      this.clients.manager.read.subscriptionRef([BigInt(subId)]),
+    ])) as [any[], `0x${string}`];
     this.upsertPlan((sub[1] as bigint).toString(), plan);
     this.db.upsertSubscription({
       subId,
@@ -248,6 +252,7 @@ export class Indexer {
       status: Number(sub[7]),
       nextChargeAt: Number(sub[3] as bigint),
       failedAttempts: Number(sub[4] as bigint),
+      ref: /^0x0{64}$/.test(ref) ? null : ref,
     });
   }
 

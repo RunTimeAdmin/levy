@@ -37,12 +37,12 @@
 
 **SubscriptionManager** (the pull primitive, open-source):
 - `createPlan(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed) → planId`
-- `subscribe(planId)` — requires allowance; subscriber is `msg.sender`; handles trial → sets first `nextChargeAt`
-- `subscribeWithPermit2(planId, permitSingle, signature)`: one-tx subscribe via Arc Permit2; the permit owner is `msg.sender`
+- `subscribe(planId, ref)` — requires allowance; subscriber is `msg.sender`; handles trial → sets first `nextChargeAt`; `ref` (bytes32) is the merchant's customer reference, stored in `subscriptionRef` and emitted in `Subscribed`
+- `subscribeWithPermit2(planId, ref, permitSingle, signature)`: one-tx subscribe via Arc Permit2; the permit owner is `msg.sender`
 - `charge(subscriptionId)` — permissionless; pull, split, advance, emit
 - `pauseSubscription(subId)` / `resumeSubscription(subId)` / `cancelSubscription(subId)` — subscriber or merchant only. The keeper never calls these for dunning; auto-pause on `2 × maxFailed` failures happens inside `charge()` and emits `AutoPaused`
 - `changePlan(subscriptionId, newPlanId)`: subscriber only, same-merchant plans only; bills the new plan now, less proration credit
-- Events: `PlanCreated`, `Subscribed`, `Charged(subId, amount, fee, invoiceRef, chargeCount)`, `ChargeFailed(subId, attempts)`, `AutoPaused`, `Paused`, `Resumed`, `Cancelled`, `PlanChanged`
+- Events: `PlanCreated`, `Subscribed(subId, subscriber, planId, nextChargeAt, ref)`, `Charged(subId, amount, fee, invoiceRef, chargeCount)`, `ChargeFailed(subId, attempts)`, `AutoPaused`, `Paused`, `Resumed`, `Cancelled`, `PlanChanged`
 
 **FeeRouter:** receives 1% at charge time. Phase 1: forwards to treasury multisig. Phase 2: splits 50% buyback-and-burn LEVY / 50% staking rewards.
 

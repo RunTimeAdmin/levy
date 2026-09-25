@@ -76,11 +76,30 @@ function row(dl, term, value, mono) {
   dl.append(dt, dd);
 }
 
-let cfg, plan, account, approved = false;
+let cfg, plan, account, ref, approved = false;
+
+/**
+ * The merchant's reference from the link (?ref=), as bytes32: either 0x plus
+ * 64 hex digits, or up to 31 printable ASCII characters (left-aligned,
+ * zero-padded). Null when the link has none; undefined when it is invalid.
+ */
+function parseRef(raw) {
+  const ZERO = "0x" + "0".repeat(64);
+  if (raw === null || raw === "") return { hex: ZERO, label: null };
+  if (/^0x[0-9a-fA-F]{64}$/.test(raw)) return { hex: raw.toLowerCase(), label: raw };
+  if (/^[\x20-\x7e]{1,31}$/.test(raw)) {
+    const hex = [...raw].map((c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join("");
+    return { hex: "0x" + hex.padEnd(64, "0"), label: raw };
+  }
+  return undefined;
+}
 
 async function init() {
-  const planId = new URLSearchParams(location.search).get("plan");
+  const params = new URLSearchParams(location.search);
+  const planId = params.get("plan");
   if (!planId || !/^\d+$/.test(planId)) { $("planMsg").textContent = "No plan in the link. Ask the merchant for their checkout link."; return; }
+  ref = parseRef(params.get("ref"));
+  if (!ref) { $("planMsg").textContent = "This checkout link has an invalid reference. Ask the merchant for a new link."; return; }
   const [config, plans] = await Promise.all([
     fetch("/api/config").then((r) => r.json()),
     fetch("/api/plans").then((r) => r.json()),
@@ -100,6 +119,7 @@ async function init() {
   row(dl, "First charge", plan.trialSeconds > 0
     ? `after a ${+trialDays.toFixed(2)}-day free trial` : "today, when you subscribe");
   row(dl, "Merchant", plan.merchant, true);
+  if (ref.label) row(dl, "Reference", ref.label, true);
   row(dl, "Levy contract", cfg.managerAddress, true);
   row(dl, "Network", `chain ${cfg.chainId}`);
   card.append(h, p, dl);
@@ -151,7 +171,7 @@ $("go").onclick = async () => {
       await refreshWallet();
     }
     status("Step 2 of 2: confirm the subscription in your wallet...");
-    const { subId, txHash } = await LevyWallet.subscribe(account, cfg.managerAddress, plan.planId);
+    const { subId, txHash } = await LevyWallet.subscribe(account, cfg.managerAddress, plan.planId, ref.hex);
     const done = document.createElement("span");
     done.textContent = `Subscribed${subId ? `: subscription #${subId}` : ""}. `;
     const portal = document.createElement("a"); portal.href = "/portal.html"; portal.textContent = "Manage it in the portal";

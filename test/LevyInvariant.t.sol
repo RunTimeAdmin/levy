@@ -78,7 +78,7 @@ contract LevyHandler is Test {
         uint256 planId = planIds[planSeed % planIds.length];
         vm.recordLogs();
         vm.prank(sub);
-        try manager.subscribe(planId) returns (uint256 subId) {
+        try manager.subscribe(planId, bytes32(0)) returns (uint256 subId) {
             subIds.push(subId);
         } catch {}
         _recordPaid();

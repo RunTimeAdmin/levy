@@ -106,17 +106,25 @@ describe("nextRetryAt", () => {
 });
 
 describe("buildWebhookEvents", () => {
-  it("maps Subscribed to subscription.created", () => {
+  it("maps Subscribed to subscription.created, with the merchant's ref", () => {
+    const REF = "0x" + "ab".repeat(32);
     const [e] = buildWebhookEvents(
       "Subscribed",
-      { subId: 3n, subscriber: "0xsub", planId: 1n, nextChargeAt: 999n },
+      { subId: 3n, subscriber: "0xsub", planId: 1n, nextChargeAt: 999n, ref: REF },
       LOG,
-      { merchant: MERCHANT }
+      { merchant: MERCHANT, ref: REF }
     );
     assert.equal(e.type, "subscription.created");
     assert.deepEqual(e.payload, {
-      subId: "3", merchant: MERCHANT, subscriber: "0xsub", planId: "1", nextChargeAt: 999,
+      subId: "3", merchant: MERCHANT, ref: REF, subscriber: "0xsub", planId: "1", nextChargeAt: 999,
     });
+  });
+
+  it("carries the ref on every event, null when the subscription has none", () => {
+    const [c] = buildWebhookEvents("Cancelled", { subId: 1n }, LOG, { merchant: MERCHANT, ref: "0xcafe" });
+    assert.equal(c.payload.ref, "0xcafe");
+    const [p] = buildWebhookEvents("Paused", { subId: 1n }, LOG, { merchant: MERCHANT });
+    assert.equal(p.payload.ref, null);
   });
 
   it("maps Charged to charge.succeeded + invoice.ready", () => {
@@ -170,7 +178,7 @@ describe("buildWebhookEvents", () => {
     assert.deepEqual(ev, [{
       type: "subscription.updated",
       payload: {
-        subId: "1", merchant: MERCHANT, oldPlanId: "2", newPlanId: "3", credit: "500",
+        subId: "1", merchant: MERCHANT, ref: null, oldPlanId: "2", newPlanId: "3", credit: "500",
         txHash: "0xtx", blockNumber: 42,
       },
     }]);

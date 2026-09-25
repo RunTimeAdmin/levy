@@ -25,6 +25,7 @@ const SUBSCRIBER = subscriberAcct.address;
 const OTHER = otherAcct.address;
 const MANAGER = "0x14220536ACABfC65543E6129b3d48d2272809CF0";
 const USDC = "0x3600000000000000000000000000000000000000";
+const REF = `0x${"7f3a".repeat(16)}`;
 
 let app: FastifyInstance;
 let base: string;
@@ -38,7 +39,7 @@ function seed(): void {
   db.upsertSubscription({
     subId: "1", subscriber: SUBSCRIBER, planId: "1", merchant: MERCHANT,
     price: "10000000", cycleSeconds: 2592000, status: 1,
-    nextChargeAt: 1700000000, failedAttempts: 0,
+    nextChargeAt: 1700000000, failedAttempts: 0, ref: REF,
   });
   db.upsertSubscription({
     subId: "2", subscriber: SUBSCRIBER, planId: "1", merchant: MERCHANT,
@@ -240,6 +241,7 @@ describe("data is scoped to the signed-in address", () => {
     const r = await get(`/api/subscriptions?merchant=${MERCHANT}`, MERCHANT);
     assert.equal(r.status, 200);
     assert.deepEqual(r.json.map((s: any) => s.subId), ["1", "2"]);
+    assert.deepEqual(r.json.map((s: any) => s.ref), [REF, null]); // the merchant's own reference
 
     const s = await get(`/api/subscriptions?subscriber=${SUBSCRIBER}&status=2`, SUBSCRIBER);
     assert.deepEqual(s.json.map((x: any) => x.subId), ["2"]);

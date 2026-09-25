@@ -16,8 +16,8 @@ npm start              # http://127.0.0.1:3001
 Pages: `/` (merchant dashboard), `/portal.html` (customer portal, where
 subscribers also pause, resume and cancel from their wallet, and top up their
 allowance when it runs low), both signed in
-with a browser wallet, and `/checkout.html?plan=<planId>`, where a customer
-subscribes: it shows the plan, adds 12 cycles (adjustable) to the customer's
+with a browser wallet, and `/checkout.html?plan=<planId>&ref=<reference>`, where a customer
+subscribes (`ref` is optional; see the merchant guide): it shows the plan, adds 12 cycles (adjustable) to the customer's
 USDC allowance for Levy, and calls `subscribe`. It needs `LEVY_MANAGER_ADDRESS`
 and `LEVY_USDC_ADDRESS` set for the API. The pages load no third-party code; their
 contract calls are encoded in `public/wallet.js`, checked against the ABI by

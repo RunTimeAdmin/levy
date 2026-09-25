@@ -163,15 +163,20 @@ A subscriber fixes a failed subscription by topping up USDC or re-granting the a
 
 ## 6. The subscriber flow
 
-The easiest way: send the subscriber your checkout link, `https://<your Levy host>/checkout.html?plan=<planId>`. It shows the plan, connects their wallet, and walks them through the approval and the subscription (two wallet confirmations). Without a trial, the first cycle is charged right away.
+The easiest way: send the subscriber your checkout link, `https://<your Levy host>/checkout.html?plan=<planId>&ref=<reference>`. It shows the plan, connects their wallet, and walks them through the approval and the subscription (two wallet confirmations). Without a trial, the first cycle is charged right away.
+
+`ref` is how you match the subscription to your own customer. It is stored with the subscription on-chain and included in every webhook (`ref` in the payload; `null` when none was given). It can be `0x` plus 64 hex digits, or up to 31 plain ASCII characters. Two rules:
+
+- **It is public.** Anyone can read it on-chain, so never use an email, name or anything personal. Use an opaque id.
+- **Whoever subscribes chooses it.** Someone could subscribe with another customer's reference and then cancel, making that customer look cancelled. Issue an unguessable reference per checkout (for example 32 random bytes you store against the customer), and once `subscription.created` links a reference to a customer, track that subscription by its `subId`.
 
 To build your own flow instead, there are two ways to onboard:
 
 **Direct approve (two transactions).** The subscriber:
 1. Calls `approve` on the USDC contract for the `SubscriptionManager` address, for at least one cycle's price (more for a buffer).
-2. Calls `subscribe(planId)` on the `SubscriptionManager`. Without a trial this charges the first cycle immediately, and fails if it can't.
+2. Calls `subscribe(planId, ref)` on the `SubscriptionManager` (`ref` as above, or zero). Without a trial this charges the first cycle immediately, and fails if it can't.
 
-**Permit2 (one transaction).** The subscriber signs an off-chain EIP-712 Permit2 message authorizing the `SubscriptionManager` to pull USDC (spender = the manager address, token = USDC). The subscriber then submits `subscribeWithPermit2(planId, permitSingle, signature)` from the same wallet. One transaction, atomic. Only the signer can submit it. Uses Arc's Permit2 contract at `0x000000000022D473030F116dDEE9F6B43aC78BA3`.
+**Permit2 (one transaction).** The subscriber signs an off-chain EIP-712 Permit2 message authorizing the `SubscriptionManager` to pull USDC (spender = the manager address, token = USDC). The subscriber then submits `subscribeWithPermit2(planId, ref, permitSingle, signature)` from the same wallet. One transaction, atomic. Only the signer can submit it. Uses Arc's Permit2 contract at `0x000000000022D473030F116dDEE9F6B43aC78BA3`.
 
 ## FAQ
 

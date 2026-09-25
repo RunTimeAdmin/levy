@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   createPublicClient,
   createWalletClient,
+  zeroHash,
   getContract,
   http,
   parseAbi,
@@ -26,6 +27,8 @@ const RPC = `http://127.0.0.1:${PORT}`;
 const CHAIN_ID = 31337;
 
 const PRICE = 10_000_000n; // $10.00
+// A merchant's opaque per-checkout reference (see SubscriptionManager.subscriptionRef).
+const CHECKOUT_REF = `0x${"7f3a".repeat(16)}` as const;
 const CYCLE = 30 * 86_400;
 
 let anvil: ChildProcess;
@@ -194,7 +197,7 @@ describe("keeper integration (anvil)", () => {
       client: { public: publicClient, wallet: aliceWallet },
     });
     await asAliceUsdc.write.approve([manager.address, PRICE * 12n], { account: alice, chain: publicClient.chain });
-    await mined(await asAlice.write.subscribe([1n], { account: alice, chain: publicClient.chain }));
+    await mined(await asAlice.write.subscribe([1n, zeroHash], { account: alice, chain: publicClient.chain }));
 
     await increaseTime(CYCLE + 60);
 
@@ -233,7 +236,7 @@ describe("keeper integration (anvil)", () => {
       client: { public: publicClient, wallet: bobWallet },
     });
     await mined(await asBobUsdc.write.approve([manager.address, PRICE], { account: bob, chain: publicClient.chain }));
-    await mined(await asBob.write.subscribe([1n], { account: bob, chain: publicClient.chain }));
+    await mined(await asBob.write.subscribe([1n, zeroHash], { account: bob, chain: publicClient.chain }));
     await increaseTime(CYCLE + 60);
 
     const report = await keeperSvc.runCycle();
@@ -313,7 +316,8 @@ describe("keeper integration (anvil)", () => {
       await chainTime()
     );
 
-    // Alice opens a second subscription, then it comes due and charges.
+    // Alice opens a second subscription (with a merchant reference), then it
+    // comes due and charges.
     const aliceWallet = createWalletClient({
       account: alice, chain: publicClient.chain, transport: http(RPC),
     });
@@ -321,7 +325,7 @@ describe("keeper integration (anvil)", () => {
       address: manager.address, abi: abi("SubscriptionManager"),
       client: { public: publicClient, wallet: aliceWallet },
     });
-    await mined(await asAlice.write.subscribe([1n], { account: alice, chain: publicClient.chain }));
+    await mined(await asAlice.write.subscribe([1n, CHECKOUT_REF], { account: alice, chain: publicClient.chain }));
     await increaseTime(CYCLE + 60);
     const report = await keeperSvc.runCycle();
     assert.ok(report.charged.some((c) => c.subId === "3"), "expected sub 3 charged");
@@ -339,6 +343,9 @@ describe("keeper integration (anvil)", () => {
       .get() as { payload: string };
     const payload = JSON.parse(created.payload);
     assert.equal(payload.subId, "3");
+    assert.equal(payload.ref, CHECKOUT_REF);
+    assert.equal(db.getSubscription("3")?.ref, CHECKOUT_REF);
+    assert.equal(db.getSubscription("1")?.ref, null); // subscribed with no reference
     assert.equal(payload.merchant.toLowerCase(), keeper.address.toLowerCase());
   });
   it("charging never waits on webhook delivery", async () => {
@@ -367,7 +374,7 @@ describe("keeper integration (anvil)", () => {
         client: { public: publicClient, wallet: aliceWallet },
       });
       await mined(await asAliceUsdc.write.approve([manager.address, PRICE * 100n], { account: alice, chain: publicClient.chain }));
-      await mined(await asAlice.write.subscribe([1n], { account: alice, chain: publicClient.chain }));
+      await mined(await asAlice.write.subscribe([1n, zeroHash], { account: alice, chain: publicClient.chain }));
       await increaseTime(CYCLE + 60);
 
       const report = await keeperSvc.runCycle();
@@ -449,7 +456,7 @@ describe("keeper integration (anvil)", () => {
     // Two cycles approved; subscribing spends one, leaving one: under the
     // two-cycle warning level.
     await mined(await asCarolUsdc.write.approve([manager.address, PRICE * 2n], { account: carol, chain: publicClient.chain }));
-    await mined(await asCarol.write.subscribe([1n], { account: carol, chain: publicClient.chain }));
+    await mined(await asCarol.write.subscribe([1n, zeroHash], { account: carol, chain: publicClient.chain }));
     await keeperSvc.runCycle();
     assert.equal(db.getFunds(carol.address)?.low, 1);
     assert.equal(db.getFunds(carol.address)?.cycles_covered, 1);

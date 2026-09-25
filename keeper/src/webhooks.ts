@@ -193,11 +193,13 @@ export function buildWebhookEvents(
   name: string,
   args: Record<string, unknown>,
   log: ManagerLogRef,
-  ctx: { merchant: string; dunningNextRetryAt?: number }
+  ctx: { merchant: string; ref?: string | null; dunningNextRetryAt?: number }
 ): WebhookEvent[] {
   if (args.subId === undefined) return [];
   const subId = (args.subId as bigint).toString();
-  const base = { subId, merchant: ctx.merchant };
+  // Every event carries the merchant's reference, so any of them can be
+  // matched to the merchant's own customer record.
+  const base = { subId, merchant: ctx.merchant, ref: ctx.ref ?? null };
   const txHash = log.transactionHash;
   const blockNumber = Number(log.blockNumber);
   switch (name) {
