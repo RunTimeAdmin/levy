@@ -46,7 +46,7 @@ contract Deploy is Script {
 
         console.log("FeeRouter:  ", address(router));
         console.log("treasury:   ", treasury);
-        console.log("deploy block (use as the keeper's scan start):", block.number);
+        console.log("deploy block (the keeper must reach back to it; see LEVY_LOOKBACK_BLOCKS):", block.number);
         console.log("");
         console.log("# keeper / ops .env");
         console.log(string.concat("LEVY_CHAIN_ID=", vm.toString(block.chainid)));

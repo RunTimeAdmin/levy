@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "tsx src/index.ts",
-    "once": "tsx src/index.ts --once",
+    "start": "node --env-file-if-exists=.env --import tsx src/index.ts",
+    "once": "node --env-file-if-exists=.env --import tsx src/index.ts --once",
     "test": "node --import tsx --test test/*.test.ts",
     "test:integration": "node --import tsx --test test/integration.test.ts"
   },

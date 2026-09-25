@@ -19,10 +19,15 @@ createPlan(
   price,         // uint256, per-cycle price in 6-decimal USDC units
   cycleSeconds,  // uint256, billing cycle length in seconds
   trialSeconds,  // uint256, trial length in seconds (0 for none)
-  graceSeconds,  // uint256, reserved for future use
+  graceSeconds,  // uint256, informational only (the retry schedule lives in the keeper)
   maxFailed      // uint8, failed pulls before the subscription goes PAST_DUE
 )
 ```
+
+There is no plan-creation page yet: call it from your wallet (for example with
+`cast send` or a block explorer's write tab). Rules the contract enforces:
+`price` above 0, `cycleSeconds` from 1 second up to 10 years, `trialSeconds`
+shorter than `cycleSeconds`, `maxFailed` from 1 to 255.
 
 Common cycle values:
 
@@ -42,7 +47,7 @@ GET /api/plans
 ### Parameters, explained
 
 - `price`: what the subscriber pays each cycle. Fixed at creation.
-- `cycleSeconds`: how often the pull happens. Keep it aligned to the presets above unless you have a reason not to.
+- `cycleSeconds`: how often the pull happens. "Monthly" is a fixed 30 days, so billing dates drift against calendar months.
 - `trialSeconds`: the subscriber is not charged until the trial ends. Set to 0 to skip trials; the first cycle is then charged the moment they subscribe.
 - `maxFailed`: how many failed pulls the subscription tolerates before the contract marks it `PAST_DUE`. At twice this number, the contract pauses the subscription automatically. A value of 2 or 3 fits most businesses.
 
@@ -65,20 +70,26 @@ Content-Type: application/json
 
 The endpoint must be https on the default port (443) at a public address. Levy refuses private, loopback and cloud-metadata addresses, and does not follow redirects, so point it at the final URL. Each merchant can register up to 5 endpoints. Respond within 5 seconds; do slow work after acknowledging.
 
-Available event types:
+Available event types. Every payload carries `subId`, `merchant` and `ref`
+(your reference from subscribe, or `null`), plus:
 
-- `subscription.created`
-- `subscription.updated` (the subscriber changed plan: `oldPlanId`, `newPlanId`, `credit`)
-- `charge.succeeded`
-- `charge.failed`
-- `dunning.started`
-- `subscription.paused`
-- `subscription.resumed`
-- `subscription.cancelled`
-- `invoice.ready`
-- `allowance.low` (the subscriber's USDC allowance for Levy covers fewer than 2 more rounds of their subscriptions: `allowance`, `balance`, `cyclesCovered`, `nextChargeAt`)
+| Event | Extra payload fields |
+|---|---|
+| `subscription.created` | `subscriber`, `planId`, `nextChargeAt` |
+| `subscription.updated` | the subscriber changed plan: `oldPlanId`, `newPlanId`, `credit`, `txHash`, `blockNumber` |
+| `charge.succeeded` | `amount`, `fee` (6-decimal units; `amount` is 0 when proration credit covered the cycle), `invoiceRef`, `chargeCount`, `txHash`, `blockNumber` |
+| `invoice.ready` | same body as `charge.succeeded`, sent alongside it |
+| `charge.failed` | `failedAttempts`, `txHash`, `blockNumber` |
+| `dunning.started` | first failure only: `nextRetryAt` (unix seconds) |
+| `subscription.paused` | `auto`: true when the contract paused it after repeated failures, false when you or the subscriber paused it |
+| `subscription.resumed` | none |
+| `subscription.cancelled` | none |
+| `allowance.low` | `subscriber`, `allowance`, `balance`, `cyclesCovered`, `nextChargeAt` |
 
-`allowance.low` is your cue to email the customer before their payments start failing. The allowance is one pool shared by all of a subscriber's Levy subscriptions, so it runs down with every charge; the warning is sent once, and again only if the subscriber tops up and later runs low again. Customers top up from the portal. Your dashboard's Allowance column shows the same thing. Only direct USDC approvals count, not Permit2 allowances.
+`subscription.resumed` and `subscription.cancelled` have identical bodies, so
+use the `X-Levy-Event` header (or your endpoint URL) to tell events apart.
+
+`allowance.low` is your cue to email the customer before their payments start failing. The allowance is one pool shared by all of a subscriber's Levy subscriptions, so it runs down with every charge; the warning is sent once per subscription, and again only if the subscriber tops up and later runs low again. Customers top up from the portal. Your dashboard's Allowance column shows the same thing. Only direct USDC approvals count, not Permit2 allowances, so a subscriber who used Permit2 is flagged low right after subscribing.
 
 Manage endpoints with the API (same `Authorization` header; you only ever see your own):
 
@@ -89,7 +100,7 @@ PATCH  /api/webhooks/:id        {"active": false}
 GET    /api/deliveries?webhookId=:id&status=failed
 ```
 
-Deliveries retry with exponential backoff and are marked dead after 24 hours of failures. Check `/api/deliveries` for anything stuck.
+Deliveries retry with backoff (1 minute, 5 minutes, 15 minutes, 1 hour, then every 6 hours) and are marked dead after 24 hours of failures. Check `/api/deliveries` for anything stuck. Setting `active: false` is not a pause: deliveries still queued for that endpoint are dead-lettered, and events while it is inactive are not queued, so nothing is replayed when you turn it back on.
 
 ## 3. Verify webhook signatures
 
@@ -138,15 +149,15 @@ Rotate your trust only when the public key endpoint returns a new key. Levy sign
 
 ## 4. Read invoices
 
-Every successful charge is an invoice record: reference, amount, fee, transaction hash, block number, and charge count.
+Every successful charge is an invoice record: reference, amount, fee, transaction hash, block number, and charge count. The dashboard's "Export CSV" downloads them all; from your backend, use the same `Authorization` header as above (you only get your own):
 
 ```
-GET /api/invoices?merchant=0xYourMerchantAddress
+GET /api/invoices
 GET /api/invoices?subscription=3
-GET /api/invoices?merchant=0xYourMerchantAddress&format=csv
+GET /api/invoices?format=csv
 ```
 
-The CSV download has the columns: `id,invoiceRef,subId,subscriber,merchant,amountUsdc,feeUsdc,txHash,blockNumber,chargeCount`. Amounts are in whole USDC.
+The CSV download has the columns: `id,invoiceRef,subId,subscriber,merchant,amountUsdc,feeUsdc,txHash,blockNumber,chargeCount`. Amounts are decimal USDC (for example `10.000000`).
 
 ## 5. Dunning: what happens when a pull fails
 
@@ -155,11 +166,11 @@ A pull fails when the subscriber has insufficient USDC or has revoked the allowa
 1. The keeper retries per failure: after failure 1 it retries in 1 day, after failure 2 in 3 days, after failure 3 and beyond every 7 days (configurable per deployment via `LEVY_DUNNING_DAYS`).
 2. When failures reach your plan's `maxFailed`, the subscription moves to `PAST_DUE`. It is still chargeable; the keeper keeps retrying.
 3. At twice `maxFailed` failures, the contract pauses the subscription automatically. No further pulls happen until someone resumes it. Resuming starts a fresh retry run and bills from the resume date; the overdue cycle is not collected.
-4. A successful pull at any point clears the failure count and the retry schedule.
+4. A successful pull at any point clears the failure count and the retry schedule. The next charge date moves forward one cycle from the missed one, so if more than one cycle was missed, the next charge is collected right away.
 
-You receive `charge.failed` on every failure, `dunning.started` on the first failure, and `subscription.paused` if the contract auto-pauses. Use these to email the subscriber or flag the account in your own system. Levy does not send subscriber emails; that is your layer.
+You receive `charge.failed` on every failure, `dunning.started` on the first failure, and `subscription.paused` if the contract auto-pauses. Use these to email the subscriber or flag the account in your own system; `docs/dunning-copy.md` has suggested wording and which event triggers each notice. Levy does not send subscriber emails; that is your layer.
 
-A subscriber fixes a failed subscription by topping up USDC or re-granting the allowance. The next scheduled retry (or a manual `charge` call) picks it up.
+A subscriber fixes a failed subscription by topping up USDC or approving more in the customer portal. The next scheduled retry (or a manual `charge` call) picks it up.
 
 ## 6. The subscriber flow
 
@@ -176,7 +187,7 @@ To build your own flow instead, there are two ways to onboard:
 1. Calls `approve` on the USDC contract for the `SubscriptionManager` address, for at least one cycle's price (more for a buffer).
 2. Calls `subscribe(planId, ref)` on the `SubscriptionManager` (`ref` as above, or zero). Without a trial this charges the first cycle immediately, and fails if it can't.
 
-**Permit2 (one transaction).** The subscriber signs an off-chain EIP-712 Permit2 message authorizing the `SubscriptionManager` to pull USDC (spender = the manager address, token = USDC). The subscriber then submits `subscribeWithPermit2(planId, ref, permitSingle, signature)` from the same wallet. One transaction, atomic. Only the signer can submit it. Uses Arc's Permit2 contract at `0x000000000022D473030F116dDEE9F6B43aC78BA3`.
+**Permit2 (one transaction, after a one-time setup).** The subscriber must first have approved the Permit2 contract to spend their USDC (a one-time ERC-20 `approve`, shared with every app that uses Permit2). Then they sign an off-chain EIP-712 Permit2 message authorizing the `SubscriptionManager` to pull USDC (spender = the manager address, token = USDC). The subscriber then submits `subscribeWithPermit2(planId, ref, permitSingle, signature)` from the same wallet. One transaction, atomic. Only the signer can submit it. Uses Arc's Permit2 contract at `0x000000000022D473030F116dDEE9F6B43aC78BA3`.
 
 ## FAQ
 
@@ -193,4 +204,4 @@ Call `cancelSubscription(subId)` as the merchant, or have the subscriber do it t
 Each collected payment. The contract sends 99% to the merchant address on the plan and 1% to the FeeRouter in the same transaction. Failed pulls cost nothing.
 
 **Who pays gas for charges?**
-The keeper pays gas for the `charge` calls it submits. On Arc, gas is paid in USDC and costs are small. Charges are permissionless; the keeper is the always-on caller you do not have to run yourself.
+The keeper pays gas for the `charge` calls it submits. On Arc, gas is paid in USDC and costs are small. Charges are permissionless; the deployment's keeper is the always-on caller, so you do not need to run one yourself.

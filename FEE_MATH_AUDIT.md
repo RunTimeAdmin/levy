@@ -1,22 +1,27 @@
 # Levy Fee Math Audit
 
 Self-review of every arithmetic operation in `SubscriptionManager.sol` and
-`FeeRouter.sol`. Integer math only; no floating point anywhere.
+`FeeRouter.sol`. Integer math only; no floating point anywhere. Last revised
+2026-09-25.
 
 ## 1. Protocol fee: `fee = due / FEE_BPS`
 
-Location: `_collect()`, used by `subscribe()`, `charge()` and `changePlan()`. `FEE_BPS = 100` (1%).
+Location: `_collect()`, used by `subscribe()`, `charge()` and `changePlan()`.
+`FEE_BPS = 100`, which gives 1%.
 
-- Solidity integer division rounds **down**. `fee <= due / 100` always.
-- Maximum dust per charge: `due % 100`, i.e. **at most 99 units** ($0.000099 at
-  6 decimals). Dust is not burned or locked: the merchant receives
-  `due - fee`, so dust accrues to the merchant.
-- `due < 100` (sub-cent charges): `fee = 0`. The protocol earns nothing;
-  the merchant keeps everything. No revert, no dust lockup.
-- `due = 0` (full proration-credit coverage): the fee branch is skipped
-  entirely (`if (due > 0)`); `Charged` emits `amount = 0, fee = 0`.
+- `FEE_BPS` is a divisor, not basis points despite its name: 100 means
+  `due / 100`, i.e. 1%. A redeploy that set it to 50 would charge 2%, not 0.5%.
+- Integer division rounds **down**, so the protocol receives
+  `floor(due / 100)`. What it gives up is `(due % 100) / 100`, always **under
+  1 unit** ($0.000001), and it goes to the merchant, who receives `due - fee`.
+  Nothing is burned or locked.
+- `due < 100` units (under $0.0001): `fee = 0`. The merchant keeps everything;
+  no revert.
+- `due = 0` (proration credit covers the whole cycle): the pull and transfers
+  are skipped (the `sub.credit >= plan.price` branch), and `Charged` emits
+  `amount = 0, fee = 0`.
 - The split is exact: `fee + (due - fee) == due`. The manager never retains a
-  remainder (see invariant `managerHoldsNothing`).
+  remainder (invariant `managerHoldsNothing`).
 
 ## 2. Proration: `credit += (oldPlan.price * remaining) / oldPlan.cycleSeconds`
 
@@ -26,29 +31,30 @@ new plan's first cycle immediately via `_collect()`, spending credit first.
 - Credit is only earned while the current cycle is paid: `chargeCount > 0`
   and `nextChargeAt > now`. Before the first charge, `nextChargeAt` marks the
   end of an unpaid trial, so trial time earns nothing. Once anything has been
-  charged, every write to `nextChargeAt` comes from a paid event (subscribe,
-  a successful charge, or a paid plan change).
+  charged, every write to `nextChargeAt` comes from a paid event (subscribe, a
+  successful charge, a paid plan change) or from resume, which only moves a
+  passed date up to now and so never creates credit-earning time.
 - `remaining` is clamped to `oldPlan.cycleSeconds`, so one change adds at most
   `oldPlan.price`: the value of the cycle being abandoned.
 - Credit is **added** to existing credit, not replaced, so credit carried from
   an earlier downgrade is not destroyed. It cannot stack beyond what was paid:
   treat `credit + unused value of the current cycle` as the subscriber's
-  balance. A plan change converts the unused value into credit without
-  growing the balance, and each new cycle is paid from that balance first,
-  then with fresh USDC. So credit never exceeds the USDC the subscription has
-  paid (fuzzed as `invariant_creditBacked`) or the largest plan price
+  balance. A plan change converts the unused value into credit without growing
+  the balance, and each new cycle is paid from that balance first, then with
+  fresh USDC. So credit never exceeds the USDC the subscription has paid
+  (fuzzed as `invariant_creditBacked`) or the largest plan price
   (`invariant_creditBounded`).
 - Plan changes are same-merchant only, so credit is always spent at the
   merchant who received the USDC behind it.
-- Rounding: integer division truncates, so the subscriber's credit is at most
-  **1 unit** ($0.000001) below the exact prorated value. The shortfall stays
-  with the merchant, who already collected the full price.
-- Overflow: `price` is uint256 with no on-chain cap. `price * remaining` overflows
-  only if `price > type(uint256).max / 315_360_000` (MAX_CYCLE = 10 years in
-  seconds), i.e. `price > ~3.6e68` units = $3.6e62. Absurd by ~50 orders of
-  magnitude above any real USDC supply. Solidity 0.8 reverts on overflow rather
-  than wrapping, so even a malicious `price` fails closed (revert, not theft).
-  Realistic bound: $1B = 1e15 units; `1e15 * 3.15e8 = 3.15e23 << 1.15e77`. Safe.
+- Rounding: integer division truncates, so the subscriber's credit is under
+  **1 unit** below the exact prorated value. The shortfall stays with the
+  merchant, who already collected the full price.
+- Overflow: `price` is uint256 with no on-chain cap. `price * remaining`
+  overflows only if `price > type(uint256).max / 315_360_000` (MAX_CYCLE = 10
+  years in seconds), i.e. `price > ~3.67e68` units. That is absurd, and
+  Solidity 0.8 reverts on overflow rather than wrapping, so even a malicious
+  `price` fails closed. Realistic bound: $1B = 1e15 units;
+  `1e15 * 3.15e8 = 3.15e23`, far below `1.15e77`.
 - Credit application in `_collect()`: if `credit >= price`, the whole cycle is
   covered (`due = 0`) and the remainder carries forward; otherwise
   `due = price - credit` and credit zeroes out once the pull succeeds. A large
@@ -63,59 +69,65 @@ themselves. See SECURITY_REVIEW.md §9.
 
 ## 3. Six-decimal USDC: no conversion bugs
 
-- The contracts never call `decimals()`, never multiply/divide by `1e6` or
-  `1e18`, and never handle native ETH. All amounts are raw token units.
-- The 6-decimal convention is documentation-level (README, SPEC, MockUSDC),
-  not enforced on-chain. The math is unit-agnostic: a 1% fee and integer
-  proration behave identically at any decimal count, so deploying against a
-  differently-decimaled token would not break accounting — it would just
-  change what "price = 10_000_000" means. The deployment checklist must still
-  pin the Arc USDC ERC-20 interface (`0x3600...0000`).
-- No 18-decimal native values enter payment logic. The keeper pays gas in
-  USDC natively, but that happens outside these contracts.
+- The contracts never call `decimals()`, never multiply or divide by `1e6` or
+  `1e18`, and never handle native value. All amounts are raw token units.
+- The contracts themselves do not enforce 6 decimals, and the math is
+  unit-agnostic (a 1% fee and integer proration behave the same at any decimal
+  count). `script/Deploy.s.sol` does enforce it: it refuses to deploy unless the
+  USDC address reports 6 decimals.
+- No 18-decimal native values enter payment logic. The keeper pays gas in USDC
+  natively, but that happens outside these contracts.
 
 ## 4. Timestamp arithmetic
 
-- `nextChargeAt`, `start` are uint64. `block.timestamp` (~1.7e9) plus ten
+- `nextChargeAt` and `start` are uint64. `block.timestamp` (~1.8e9) plus ten
   `MAX_CYCLE`s (~3.2e9) is ~5e9, far below uint64 max (~1.8e19). The
   `uint64(...)` casts cannot truncate in practice.
 - `charge()` advances `nextChargeAt` by exactly one `cycleSeconds` per call
   (from the stored value, not `block.timestamp`), so a late keeper does not
-  cause multi-cycle surprise pulls; catching up after missed charges requires
-  one `charge()` per missed cycle. Paused time is the exception: resume moves
-  a passed `nextChargeAt` up to the resume time, so paused cycles are never
-  caught up. `nextChargeAt` never falls below `start` (invariant-tested).
+  cause surprise multi-cycle pulls; catching up after missed charges takes one
+  `charge()` per missed cycle. Two exceptions: resume moves a passed
+  `nextChargeAt` up to the resume time (paused cycles are never caught up), and
+  `changePlan` sets it to `now + newCycle` (the new cycle is paid immediately).
+  `nextChargeAt` never falls below `start` (invariant-tested).
 
 ## 5. Failure counters
 
-- `failedAttempts` is uint64, incremented once per failed `charge()`.
-  `PAST_DUE` at `>= maxFailed`; auto-`PAUSED` at `>= maxFailed * 2`.
-  `maxFailed` is uint8 (max 255), so the pause threshold is at most 510.
-  No overflow: `maxFailed * 2` is computed in uint256 context (Solidity 0.8
-  arithmetic on uint8 promotes safely here; 255*2 = 510 fits).
-- `failedAttempts` resets to 0 on any successful charge, plan change, or resume.
-  A resume therefore starts a full new dunning run instead of re-pausing on
-  the next failure. (Before 2026-09-25 resume kept the count, so
-  `failedAttempts` could pass `2 * maxFailed`; deep fuzzing caught it.)
+- `failedAttempts` is uint64, incremented once per failed `charge()`. PAST_DUE
+  at `>= maxFailed`; auto-PAUSED at `>= 2 × maxFailed`.
+- `maxFailed` is uint8 (1..255), so the pause threshold is at most 510. The
+  multiplication is `uint256(plan.maxFailed) * 2`. It used to be
+  `plan.maxFailed * 2`, which is uint8 arithmetic and overflowed for
+  `maxFailed >= 128`, so every failed pull on such a plan reverted with panic
+  0x11 instead of being recorded. Found 2026-09-25 while checking this
+  document; fixed, with a regression test and the invariant fuzzer now covering
+  the full 1..255 range (it was bounded to 1..10, which is why it never hit
+  this).
+- `failedAttempts` resets to 0 on any successful charge, plan change or resume.
+  A resume therefore starts a full new dunning run instead of re-pausing on the
+  next failure. (Before 2026-09-25 resume kept the count, so `failedAttempts`
+  could pass `2 × maxFailed`; deep fuzzing caught it.)
 
 ## 6. Edge cases
 
 | Case | Behavior |
 |---|---|
 | `price = 1` unit | `fee = 0`; merchant gets 1 unit. No revert. |
-| `due = 0` (credit covers all) | No token movement; cycle advances; `Charged(0,0)`. |
-| `changePlan` while overdue (`nextChargeAt <= now`) | No credit from unused time (none remains); the new plan's cycle is billed now (less any carried credit) and the overdue cycle is forgiven. Economically identical to cancel + resubscribe. |
+| `due = 0` (credit covers all) | No token movement; cycle advances; `Charged(0, 0)`. |
+| `changePlan` while overdue (`nextChargeAt <= now`) | No credit from unused time (none remains); the new plan's cycle is billed now (less any carried credit) and the overdue cycle is forgiven. Economically the same as cancel and resubscribe. |
 | `changePlan` to a cheaper plan mid-cycle | Credit can exceed the new price; the excess covers later cycles. Correct. |
 | `changePlan` during a trial | No credit; the new plan's first cycle is billed in full now. |
 | Resume after `nextChargeAt` passed | `nextChargeAt` = resume time; one charge bills a fresh cycle. Paused cycles are never billed. |
-| Subscriber approves exactly `price`, then price... | Price is immutable per plan; no repricing race. |
-| `permit2.transferFrom` amount | `uint160` cast guarded by `amount > type(uint160).max` check; realistic USDC amounts are ~1e6–1e15. |
+| Merchant wants a higher price after the subscriber approved | Impossible on an existing plan: price is immutable. Repricing means a new plan, which the subscriber must choose via `changePlan`. |
+| `permit2.transferFrom` amount | `uint160` cast guarded by an `amount > type(uint160).max` check; realistic USDC amounts are ~1e6 to 1e15. |
 
 ## 7. Findings
 
-One logic bug was found after this audit and fixed (see the §2 correction).
-One documentation-level note:
+Three arithmetic or logic bugs were found after the first version of this
+audit, all fixed on 2026-09-25: unbacked proration credit (§2 correction),
+resume keeping the failure count (§5), and the `uint8` overflow in the
+auto-pause threshold (§5). One design note:
 
-1. `FEE_BPS = 100` is a constant, not a plan field. Changing the fee requires
-   redeployment. This is intentional (predictability for merchants) and noted
-   in the README's Phase 2 FeeRouter plans.
+1. `FEE_BPS = 100` is a constant, not a plan field, so changing the fee needs a
+   redeploy. This is intentional (predictable for merchants). The planned
+   Phase 2 fee split happens in the FeeRouter, not here (see SPEC.md).

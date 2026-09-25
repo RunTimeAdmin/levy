@@ -1,28 +1,37 @@
-# Levy — Subscription Billing on Arc
+# Levy: Subscription Billing on Arc
 
-Pull-based USDC subscription billing for Arc mainnet. Merchants define plans, subscribers approve once, and a keeper triggers per-cycle pulls. The protocol takes a 1% fee on collected payments.
+Pull-based USDC subscription billing for Arc. Merchants define plans, subscribers approve a USDC allowance and subscribe, and a keeper triggers each cycle's pull. The protocol takes a 1% fee on collected payments.
 
-**Status:** M1 (contracts), M2 (keeper + dunning), M3 (webhooks + API + dashboards) complete, plus Permit2 subscribe path. Contracts: 52 tests green (45 unit + 7 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 55 tests green. API: 32 tests green. Not yet deployed. Not audited.
+**Status:** contracts, keeper (charging, dunning, webhooks, allowance warnings), API with wallet sign-in, merchant dashboard, customer portal and checkout page are built and tested. Contracts: 53 tests green (46 unit + 7 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 55 tests green. API: 32 tests green. **Not yet deployed. Not audited.** Known open issues are listed in `SECURITY_REVIEW.md` §9.
 
-## Contracts
+## What's in the repo
 
-| Contract | Purpose |
+| Path | What it is |
 |---|---|
-| `src/SubscriptionManager.sol` | Plan registry, subscription lifecycle, permissionless `charge()`, proration, on-chain dunning state |
-| `src/FeeRouter.sol` | Collects the 1% fee. Phase 1 forwards to treasury; Phase 2 splits to buyback-and-burn / staking |
+| `src/` | Contracts: `SubscriptionManager.sol` (plans, subscriptions, permissionless `charge()`, proration, on-chain dunning state), `FeeRouter.sol` (holds the 1% fee until anyone calls `sweep()`, which sends it to the treasury), `IPermit2.sol` |
+| `test/` | Foundry unit and invariant tests, plus the deploy script's tests |
+| `script/Deploy.s.sol` | Deploys both contracts to Arc testnet or mainnet, with safety checks |
+| `keeper/` | TypeScript service: indexes events, charges due subscriptions, runs dunning, delivers signed webhooks, warns when allowances run low. See `keeper/README.md` |
+| `api/` | Fastify API plus the merchant dashboard, customer portal and checkout page. See `api/README.md` |
+| `ops/` | Dockerfiles, docker-compose, systemd unit, env example, monitoring runbook, treasury multisig plan |
+| `docs/` | Merchant guide and dunning email copy |
+| `site/` | Static landing page |
+| `SPEC.md`, `SECURITY_REVIEW.md`, `FEE_MATH_AUDIT.md`, `VERIFICATION.md` | Design spec, adversarial self-review, math audit, verified Arc facts |
 
-### How charging works
+## How charging works
 
-1. Merchant calls `createPlan(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed)`. Price is immutable; repricing means a new plan.
-2. Subscriber calls `subscribe(planId, ref)` after granting a direct ERC-20 `approve` allowance, or `subscribeWithPermit2(planId, ref, ...)` with an off-chain Permit2 signature (one transaction, submitted by the subscriber). Uses Arc's Permit2 at `0x000000000022D473030F116dDEE9F6B43aC78BA3`. Billing is in advance: without a trial, the first cycle is pulled at subscribe, and the subscribe reverts if that pull fails. `ref` is the merchant's own reference for the customer (bytes32, zero for none), stored on-chain and carried on every webhook.
-3. Anyone calls `charge(subId)` once `block.timestamp >= nextChargeAt`, paying for the cycle that starts then. The contract pulls via `transferFrom`, routes 99% to the merchant and 1% to the FeeRouter, advances the cycle, and emits `Charged`. The call is permissionless by design: it can only move the subscriber's pre-approved funds to the correct merchant.
-4. Failed pulls never revert. The failure is recorded on-chain (`ChargeFailed`), the subscription goes `PAST_DUE` at `maxFailed` attempts and auto-pauses at `2x`, and the off-chain keeper retries on a dunning schedule (default day 1, 3, 7). Resuming a paused subscription is a fresh start: paused cycles are never billed, billing restarts at the resume if the charge date passed, and the failure count resets.
+1. A merchant calls `createPlan(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed)` from their wallet (there is no plan-creation UI yet). Price is immutable; repricing means a new plan.
+2. A subscriber approves a USDC allowance to the SubscriptionManager and calls `subscribe(planId, ref)`, or calls `subscribeWithPermit2(planId, ref, permit, signature)` with a Permit2 signature (submitted by the subscriber themselves). The checkout page (`/checkout.html?plan=<id>&ref=<ref>`) does the approve-and-subscribe flow for them. Billing is in advance: without a trial, the first cycle is pulled at subscribe, and the subscribe reverts if that pull fails. `ref` is the merchant's own reference for the customer (bytes32, zero for none), stored on-chain and carried on every webhook.
+3. Anyone can call `charge(subId)` once `block.timestamp >= nextChargeAt`; it pays for the cycle that starts then. The contract spends any proration credit first, pulls the rest via `transferFrom`, sends 99% to the merchant and 1% to the FeeRouter, advances the cycle and emits `Charged`. It is permissionless by design: it can only move the subscriber's pre-approved funds to that plan's merchant.
+4. A failed pull does not revert: the contract records it (`ChargeFailed`), marks the subscription `PAST_DUE` at `maxFailed` failures, and auto-pauses it at twice that. The keeper retries 1, 3 and then 7 days after each failure (then every 7 days).
+5. The subscriber or merchant can pause, resume or cancel. Nothing is charged while paused; resuming is a fresh start (paused cycles are never billed, billing restarts at the resume if the charge date passed, and the failure count resets). Cancel is final.
+6. A subscriber can change to another plan from the same merchant: the new plan starts and is billed immediately, less credit for unused paid time on the old plan.
 
 ### Money math
 
 - All amounts are 6-decimal USDC units through the ERC-20 interface (`0x3600...0000`). Native 18-decimal values never enter payment logic.
-- Integer arithmetic only. The fee is `amount / 100`, rounded down; sub-cent dust stays with the merchant.
-- A plan change (same merchant only) starts the new plan now and bills its first cycle now. Unused paid time on the old plan is credited against that bill; trial time earns no credit. Excess credit carries forward, and credit survives failed pulls.
+- Integer arithmetic only. The fee is `amount / 100`, rounded down, so any rounding (under one unit) goes to the merchant.
+- Credit only comes from a paid cycle (trial time earns none), is added to existing credit, and is spent before any pull. Excess carries forward and survives failed pulls.
 
 ### Invariants (fuzz-tested)
 
@@ -31,33 +40,40 @@ Pull-based USDC subscription billing for Arc mainnet. Merchants define plans, su
 - Cancel is terminal: `chargeCount` never moves after cancellation.
 - `nextChargeAt` never falls below the subscription's start. (It can move earlier on a switch to a shorter-cycle plan, which bills the new cycle immediately.)
 - Credit is backed: a subscription never holds more credit than the USDC it has paid.
+- Credit never exceeds the largest plan price.
 - The manager holds no funds at rest: every pull is fully split in the same transaction.
 
-## Keeper
+## Off-chain services
 
-`keeper/` — TypeScript service (viem + SQLite) that runs charge cycles: syncs events, calls `charge()` on due subscriptions, retries failures on the dunning backoff. See `keeper/README.md` for setup and operational notes.
+**Keeper** (`keeper/`, viem + SQLite). Two independent loops: charge cycles (every 30s) and webhook delivery (every 5s), so a slow merchant endpoint can never delay charging. Each charge cycle syncs events (chunked, and only Levy's own logs plus USDC transfers into or out of the manager), charges due subscriptions, runs dunning retries, backs off charges that revert, and checks subscribers' allowance runway. Webhooks are Ed25519-signed over timestamp, delivery id and body, delivered in parallel, retried with backoff and dead-lettered after 24h. Ten event types, including `allowance.low` when a subscriber's allowance covers fewer than 2 more rounds of their subscriptions.
 
-```bash
-cd keeper && npm install && npm test
-```
+**API** (`api/`, Fastify). Merchants and subscribers sign in with their wallet (Sign-In with Ethereum, 24h sessions) and only ever see their own data. It serves:
+
+- the merchant dashboard (`/`): metrics, subscriptions with references and allowance runway, dunning queue, webhooks, invoice CSV;
+- the customer portal (`/portal.html`): subscriptions and invoices, pause, resume and cancel from the wallet, and an allowance top-up when it runs low;
+- the checkout page (`/checkout.html?plan=<id>&ref=<ref>`).
+
+Webhook URLs must be https on port 443 at a public address (checked at registration and again at every delivery). The merchant guide (`docs/merchant-guide.md`) covers plans, webhooks and signature verification, checkout links and references, and dunning.
 
 ## Development
 
-Requires [Foundry](https://getfoundry.sh/) for contracts, Node 24 for the keeper.
+Requires [Foundry](https://getfoundry.sh/) for the contracts and Node 24 for the keeper and API.
 
 ```bash
 forge build
 forge test
-FOUNDRY_PROFILE=ci forge test   # deeper invariant fuzzing, as CI runs it
+FOUNDRY_PROFILE=ci forge test        # deeper invariant fuzzing, as CI runs it
+cd keeper && npm install && npm test # unit tests + anvil integration test (needs anvil on PATH)
+cd api && npm install && npm test
 ```
 
-CI (`.github/workflows/ci.yml`) runs the contract tests, keeper and API typechecks and tests, and fails if `keeper/abi/*.json` no longer matches the contracts. After changing a contract, regenerate with `forge inspect <Contract> abi --json > keeper/abi/<Contract>.json` (and `bytecode` into the `.bin`).
+CI (`.github/workflows/ci.yml`) runs the contract tests, the keeper and API typechecks and tests, fails if `keeper/abi/*.json` no longer matches the contracts, and builds both Docker images, then starts the API container to check that it serves the pages and enforces sign-in. After changing a contract, regenerate with `forge inspect <Contract> abi --json > keeper/abi/<Contract>.json` (and `bytecode` into the `.bin`).
 
 `foundry.toml` pins `evm_version = "paris"`. Arc mainnet runs an Osaka EVM, so this is not required; paris stays as a harmless conservative default (see `VERIFICATION.md` §2).
 
 ## Deploy
 
-`script/Deploy.s.sol` deploys FeeRouter and SubscriptionManager and prints the keeper's `.env` lines. It refuses to deploy unless USDC and Permit2 have code at their addresses and USDC reports 6 decimals, and on mainnet unless the treasury is a contract (the Safe from `ops/treasury-multisig.md`).
+`script/Deploy.s.sol` deploys FeeRouter and SubscriptionManager and prints the `.env` lines the keeper and API need (the API passes the addresses to the checkout page via `/api/config`). It refuses to deploy unless USDC and Permit2 have code at their addresses and USDC reports 6 decimals, and on mainnet unless the treasury is a contract (the Safe from `ops/treasury-multisig.md`).
 
 ```bash
 export DEPLOYER_PRIVATE_KEY=0x...   # pays gas in USDC; testnet USDC from https://faucet.circle.com
@@ -66,22 +82,33 @@ forge script script/Deploy.s.sol --rpc-url arc_testnet             # simulate
 forge script script/Deploy.s.sol --rpc-url arc_testnet --broadcast # deploy
 ```
 
-Use `--rpc-url arc_mainnet` for mainnet, and add `--legacy` if fee estimation fails. `LEVY_USDC` and `LEVY_PERMIT2` override the Arc defaults. A deploy costs about 0.25 USDC of gas (simulated on testnet, 2026-09-25). Broadcast records land in `broadcast/`; commit the testnet and mainnet ones as the deployment record.
+Use `--rpc-url arc_mainnet` for mainnet, and add `--legacy` if fee estimation fails. `LEVY_USDC` and `LEVY_PERMIT2` override the Arc defaults. A deploy costs about 0.25 USDC of gas (simulated on testnet, 2026-09-25). Broadcast records land in `broadcast/`; commit the testnet and mainnet ones as the deployment record. If the keeper first starts more than `LEVY_LOOKBACK_BLOCKS` (default 5000, about 40 minutes) after the deploy, raise it to reach back to the deploy block.
 
-## Deployment notes (Arc mainnet)
+To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --build` (copy `ops/.env.example` first; `LEVY_PUBLIC_ORIGIN` is required). The API is published on the host's loopback only; put a TLS reverse proxy in front. `ops/keeper.service` is the systemd alternative for the keeper.
 
-- Chain ID 5042, RPC `https://rpc.mainnet.arc.io`. USDC is the gas token.
-- **Verified 2026-09-25** (see `VERIFICATION.md`): single-block deterministic finality (~0.5s blocks, Malachite BFT, no reorgs) — the keeper's zero-confirmation design is correct. Transaction memos are **live on mainnet** (Memo contract `0x5294E9927c3306DcBaDb03fe70b92e01cCede505`). Arc runs an Osaka-baseline EVM, so PUSH0 works; `evm_version = "paris"` in foundry.toml stays as a harmless conservative default.
-- Permit2 on Arc mainnet is at the canonical `0x000000000022D473030F116dDEE9F6B43aC78BA3`, the same address as on Ethereum. The contract's `subscribeWithPermit2` uses it.
-- Remaining pre-mainnet items: treasury multisig signers, production fee math sign-off, dunning copy review.
+## Arc facts (verified 2026-09-25, see `VERIFICATION.md`)
+
+- Mainnet chain ID 5042 (`https://rpc.mainnet.arc.io`), testnet 5042002 (`https://rpc.testnet.arc.io`). USDC is the gas token.
+- Single-block deterministic finality (~0.5s blocks, Malachite BFT, no reorgs), so the keeper treats a mined transaction as final.
+- Osaka-baseline EVM (PUSH0 works).
+- Permit2 at the canonical `0x000000000022D473030F116dDEE9F6B43aC78BA3`, same as Ethereum.
+- Transaction memos are live on mainnet (Memo contract `0x5294E9927c3306DcBaDb03fe70b92e01cCede505`); Levy does not use them yet.
+
+## Before mainnet
+
+- Testnet deploy and a soak of at least a week (M4).
+- Treasury multisig signers set (`ops/treasury-multisig.md`).
+- Permit2 end to end against Arc (tested against a mock only so far).
+- Open items in `SECURITY_REVIEW.md` §9, and an external audit.
+- Thin-liquidity note for launch comms.
 
 ## Roadmap
 
-- **M1:** contracts + tests (done)
-- **M2:** keeper service, deduped indexer, dunning engine (done)
-- **M3:** merchant dashboard, customer portal, signed webhooks, invoicing (done)
-- **M4:** testnet soak, mainnet deploy
-- **M5:** LEVY token — fee split to buyback-and-burn / staking, staking fee-tier discounts, premium feature gating
+- **M1:** contracts + tests (done; testnet deploy moves to M4)
+- **M2:** keeper service, indexer, dunning engine (done)
+- **M3:** signed webhooks, API, merchant dashboard, customer portal, checkout, invoicing (done, except a plan-creation UI)
+- **M4:** testnet deploy and soak, then mainnet deploy
+- **M5:** LEVY token: fee split to buyback-and-burn and staking, staking fee-tier discounts, premium feature gating
 
 ## License
 

@@ -1,72 +1,62 @@
-# FeeRouter treasury multisig handoff
+# FeeRouter treasury multisig
 
-The 1% protocol fee accrues in `FeeRouter` and is forwarded to `treasury` by
-the permissionless `sweep()`. At mainnet deploy the treasury will be a hot EOA;
-this plan moves it to a multisig before real fee volume exists.
+The 1% protocol fee accrues in `FeeRouter` and is forwarded to `treasury` by the
+permissionless `sweep()`. On mainnet the treasury is a multisig from the start:
+`script/Deploy.s.sol` refuses to deploy on chain 5042 unless `LEVY_TREASURY` is
+a contract. So the order is: deploy the Safe, then deploy Levy with it.
 
 ## Recommended structure: 2-of-3 Safe
 
-- Deploy a Safe (or equivalent multisig) on Arc mainnet, chain ID 5042.
-- Threshold 2-of-3. Suggested seats (DC's call — placeholders below):
-  1. `SIGNER_1` — DC's primary hardware wallet
-  2. `SIGNER_2` — DC's secondary / paper-backup key, stored offline
-  3. `SIGNER_3` — trusted third party (accountant, counsel, or co-founder)
+- Deploy a Safe (or equivalent multisig) on Arc mainnet, chain ID 5042. Safe
+  v1.4.1 at its canonical addresses on Arc is still unconfirmed (see SPEC.md);
+  check the Safe deployment on Arc first.
+- Threshold 2-of-3. Suggested seats (DC's call; placeholders below):
+  1. `SIGNER_1`: DC's primary hardware wallet
+  2. `SIGNER_2`: DC's secondary or paper-backup key, stored offline
+  3. `SIGNER_3`: a trusted third party (accountant, counsel, or co-founder)
 - A 2-of-3 survives one lost key and one unresponsive signer. Do not use 1-of-N
   (single point of compromise) or 3-of-3 (single point of liveness failure).
 
-## The handoff call
-
-`setTreasury(address)` is guarded: **only the current treasury can call it**
-(`OnlyTreasury`). The handoff transaction must be signed by whatever address
-holds the treasury role at the time (the deploy EOA, unless already moved).
-
-```
-FeeRouter.setTreasury(<SAFE_ADDRESS>)
-```
-
-With cast:
-
-```bash
-cast send <FEEROUTER_ADDRESS> "setTreasury(address)" <SAFE_ADDRESS> \
-  --rpc-url $LEVY_RPC_URL --private-key <CURRENT_TREASURY_KEY>
-```
-
-`TreasuryUpdated(oldTreasury, newTreasury)` is emitted on success.
-
-## Pre-handoff checklist
+## Before the mainnet deploy
 
 - [ ] Safe deployed on Arc mainnet (chain 5042); address recorded.
 - [ ] All three signers confirmed they hold their keys (test-sign a message).
 - [ ] Safe threshold verified on-chain as 2 (read `getThreshold()`).
-- [ ] Current `FeeRouter.treasury()` value read and confirmed as the deploy EOA:
-      `cast call <FEEROUTER> "treasury()(address)" --rpc-url $LEVY_RPC_URL`
-- [ ] Current treasury key available to sign the handoff (one transaction only).
-- [ ] A fresh small fee balance exists in the router (or skip the sweep test).
+- [ ] Safe address set as `LEVY_TREASURY` for `script/Deploy.s.sol`.
 
-## Handoff
+## After the deploy
 
-1. Send `setTreasury(<SAFE_ADDRESS>)` from the current treasury key.
-2. Wait for confirmation; note the tx hash.
+- [ ] `cast call <FEEROUTER> "treasury()(address)" --rpc-url $LEVY_RPC_URL`
+      returns the Safe address.
+- [ ] Sweep test: `cast send <FEEROUTER> "sweep()" --rpc-url ...` (anyone can
+      call it) and confirm the USDC lands in the Safe.
+- [ ] Fee-flow test: run one real `charge()` on a test subscription, sweep, and
+      confirm the 1% arrives at the Safe.
+- [ ] Record the Safe address in the ops runbook (it is not a secret).
 
-## Post-handoff checklist
+## Changing the treasury later
 
-- [ ] `cast call <FEEROUTER> "treasury()(address)"` returns the Safe address.
-- [ ] `TreasuryUpdated` event observed with old = deploy EOA, new = Safe.
-- [ ] Sweep test: `cast send <FEEROUTER> "sweep()" --rpc-url ...` (permissionless,
-      anyone can call) and confirm the USDC lands in the Safe.
-- [ ] Fee-flow test: run one real `charge()` on a test subscription, confirm
-      1% arrives at the Safe via `sweep()`.
-- [ ] Deploy EOA key secured or rotated — it no longer controls the treasury,
-      but it may still be the keeper key or hold other roles; review and
-      minimize its permissions.
-- [ ] Record the Safe address in `ops/.env` notes / runbook (not as a secret).
+`setTreasury(address)` is guarded: **only the current treasury can call it**
+(`OnlyTreasury`), and it emits `TreasuryUpdated(oldTreasury, newTreasury)`.
+
+- **Replacing the Safe:** the Safe itself calls `setTreasury(<NEW_SAFE>)` as a
+  2-of-3 executed transaction.
+- **Testnet, or any deploy that started with a plain key** (allowed off
+  mainnet): the current key sends the call, e.g.
+
+  ```bash
+  cast send <FEEROUTER_ADDRESS> "setTreasury(address)" <SAFE_ADDRESS> \
+    --rpc-url $LEVY_RPC_URL --private-key <CURRENT_TREASURY_KEY>
+  ```
+
+Note that `setTreasury` accepts any non-zero address, including a plain key, so
+the deploy-time check does not stop a later move away from the Safe. Treat any
+`TreasuryUpdated` event as something to verify.
 
 ## Notes
 
-- `sweep()` stays permissionless after the handoff — anyone (including the
-  keeper) can push accrued fees to the Safe at any time. There is nothing to
-  steal by calling it; the destination is fixed.
-- If the Safe ever needs replacing, the same flow repeats: the *Safe itself*
-  (via a 2-of-3 executed transaction) calls `setTreasury(<NEW_SAFE>)`.
+- `sweep()` stays permissionless: anyone (including the keeper) can push accrued
+  fees to the treasury at any time. There is nothing to steal by calling it; the
+  destination is fixed.
 - Phase 2 (LEVY token: 50% buyback-and-burn / 50% staking rewards) changes
-  `sweep()` semantics and lands with the token contracts — out of scope here.
+  `sweep()` and lands with the token contracts; out of scope here.

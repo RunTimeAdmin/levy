@@ -1,41 +1,46 @@
 # Levy keeper as a systemd service (bare-VPS alternative to Docker).
+# Needs Node 24 at /usr/bin/node (the keeper uses the built-in node:sqlite).
 #
 # Install:
 #   1. Copy the repo to /srv/levy (or your preferred path) and update
-#      WorkingDirectory below to <path>/keeper.
-#   2. cd /srv/levy/keeper && npm ci --omit=dev && npx tsc
-#        (builds dist/; the unit runs `node dist/index.js`, no tsx at runtime)
-#   3. cp /srv/levy/ops/.env.example /etc/levy/keeper.env && fill in secrets.
-#        chmod 600 /etc/levy/keeper.env   (root-owned, levy-readable)
+#      WorkingDirectory and ReadWritePaths below.
+#   2. cd /srv/levy/keeper && npm ci && npx tsc && npm prune --omit=dev
+#        (tsc is a dev dependency: build first, then drop dev packages;
+#        the unit runs `node dist/index.js`, no tsx at runtime)
+#   3. useradd -r -s /usr/sbin/nologin levy   (if not present)
 #   4. mkdir -p /var/lib/levy && chown levy:levy /var/lib/levy
 #        (SQLite DB + webhook signing key live here; survives redeploys)
-#   5. useradd -r -s /usr/sbin/nologin levy   (if not present)
+#   5. mkdir -p /etc/levy && cp /srv/levy/ops/.env.example /etc/levy/keeper.env
+#      Fill in the secrets, then chmod 600 /etc/levy/keeper.env
+#        (root-owned is fine: systemd reads it as root before switching user)
 #   6. cp ops/keeper.service /etc/systemd/system/levy-keeper.service
 #      systemctl daemon-reload && systemctl enable --now levy-keeper
 #
 # Logs: journalctl -u levy-keeper -f
-# The API can run the same way (port 3001); see api/README or use Docker.
+# The API is not packaged for systemd; run it with Docker (ops/docker-compose.yml),
+# pointing it at the same DB and signing key.
 
 [Unit]
 Description=Levy keeper - pull-based USDC subscription charges on Arc
 After=network-online.target
 Wants=network-online.target
+# Backstop: after 5 failed starts within 5 minutes, stop restarting.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
 User=levy
 Group=levy
 WorkingDirectory=/srv/levy/keeper
-EnvironmentFile=/etc/levy/keeper.env
-# DB + signing key on persistent state dir (overrides any .env values).
+# Defaults for the persistent state dir. EnvironmentFile wins if keeper.env sets
+# the same variables, so keep these paths there too (ops/.env.example does).
 Environment=LEVY_DB_PATH=/var/lib/levy/levy.db
 Environment=LEVY_WEBHOOK_KEY_PATH=/var/lib/levy/webhook-signing-key.pem
+EnvironmentFile=/etc/levy/keeper.env
 ExecStart=/usr/bin/node dist/index.js
 Restart=on-failure
 RestartSec=10s
-# Backstop: if it crash-loops, stop trying after 5 min of failures.
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 # Logging to journald.
 StandardOutput=journal

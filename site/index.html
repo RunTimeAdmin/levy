@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Levy: Recurring USDC billing on Arc</title>
-<meta name="description" content="Levy is pull-based USDC subscription billing on Arc. Merchants define plans, subscribers approve once, and payments are pulled every cycle.">
+<meta name="description" content="Levy is pull-based USDC subscription billing on Arc. Merchants define plans, subscribers approve a USDC allowance, and payments are pulled every cycle.">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -27,7 +27,7 @@
     <div class="wrap">
       <p class="kicker">Pull-based subscription billing on Arc</p>
       <h1>Recurring revenue, collected in USDC.</h1>
-      <p class="lede">Levy pulls subscription payments in USDC every billing cycle. Your customers approve once. You collect on schedule, without chasing invoices or retrying cards by hand.</p>
+      <p class="lede">Levy pulls subscription payments in USDC every billing cycle. Your customers approve an allowance up front instead of paying each invoice. You collect on schedule, without chasing invoices or retrying cards by hand.</p>
       <p class="hero-note">Built for Arc. Settled in USDC. Open contracts.</p>
     </div>
   </section>
@@ -39,17 +39,17 @@
         <li>
           <span class="step-num">1</span>
           <h3>You create a plan</h3>
-          <p>Set a price and a billing cycle on-chain: weekly, monthly, quarterly, yearly. The price is fixed at creation. To reprice, create a new plan.</p>
+          <p>Set a price and a billing cycle of any length on-chain, with an optional free trial. The price is fixed at creation. To reprice, create a new plan.</p>
         </li>
         <li>
           <span class="step-num">2</span>
-          <h3>Subscriber approves once</h3>
-          <p>The customer grants the contract a USDC allowance in a single transaction. No recurring signatures, no card on file, no account to bill.</p>
+          <h3>Subscriber checks out</h3>
+          <p>From your checkout link, the customer approves a USDC allowance for a number of cycles and subscribes: two wallet confirmations. Without a free trial, the first cycle is charged right away. No card on file, and no signature each cycle.</p>
         </li>
         <li>
           <span class="step-num">3</span>
           <h3>The keeper pulls every cycle</h3>
-          <p>When a billing date arrives, the charge function accepts calls from any address. Levy runs the keeper for you: it pulls the payment, sends 99% to you and 1% to the protocol, and advances the cycle.</p>
+          <p>When a billing date arrives, the charge function accepts calls from any address. Levy's keeper calls it on schedule: the contract pulls the payment, sends 99% to you and 1% to the protocol, and advances the cycle.</p>
         </li>
       </ol>
     </div>
@@ -73,11 +73,15 @@
         </div>
         <div class="card">
           <h3>Webhooks</h3>
-          <p>Every billing event reaches your endpoint: subscription created, charge succeeded, charge failed, dunning started, paused, resumed, cancelled. Each payload carries an Ed25519 signature for verification.</p>
+          <p>Every billing event reaches your endpoint: subscription created or changed, charge succeeded or failed, dunning started, paused, resumed, cancelled, and an early warning when a customer's allowance is running low. Each delivery carries an Ed25519 signature for verification.</p>
         </div>
         <div class="card">
           <h3>Invoicing</h3>
           <p>Every charge is an invoice record with a reference, transaction hash, and block number. Export the full history as CSV for your books.</p>
+        </div>
+        <div class="card">
+          <h3>Checkout and portal</h3>
+          <p>A checkout link per plan, carrying your own customer reference. Customers see their subscriptions and pause, cancel or top up their allowance from their wallet.</p>
         </div>
       </div>
     </div>
@@ -88,12 +92,12 @@
       <h2>Roadmap</h2>
       <dl class="roadmap">
         <div>
-          <dt>Live</dt>
-          <dd>Subscription contracts, the keeper service, dunning engine, signed webhooks, API, merchant dashboard, customer portal.</dd>
+          <dt>Built</dt>
+          <dd>Subscription contracts, the keeper service, dunning engine, signed webhooks, API, merchant dashboard, customer portal and checkout. Not deployed yet.</dd>
         </div>
         <div>
           <dt>Next</dt>
-          <dd>Testnet soak: run real billing cycles end to end and clear the pre-mainnet verification list.</dd>
+          <dd>Testnet deploy and soak: run real billing cycles end to end and clear the pre-mainnet verification list.</dd>
         </div>
         <div>
           <dt>After that</dt>

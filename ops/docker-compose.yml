@@ -1,12 +1,14 @@
-# Levy production stack: keeper (charge scheduler + webhooks) + API (REST + dashboards).
+# Levy production stack: keeper (charging, dunning, webhook delivery) + API
+# (REST, dashboard, portal, checkout).
 #
 # Usage:
 #   cp ops/.env.example ops/.env   # fill in secrets + addresses (NEVER commit ops/.env)
 #   docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --build
 #
-# Both services share one SQLite DB via the levy-data volume. The keeper is the
-# writer; the API is read-mostly (webhook registration writes). SQLite handles
-# this fine on a single host (busy_timeout is set by both).
+# Both services share one SQLite DB and the webhook signing key via the
+# levy-data volume. The keeper does most of the writing; the API writes webhook
+# registrations and sign-in challenges and sessions. SQLite in WAL mode handles
+# this fine on a single host (both set busy_timeout).
 
 services:
   keeper:
