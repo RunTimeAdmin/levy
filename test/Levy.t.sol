@@ -62,6 +62,17 @@ contract LevyTest is Test {
         manager.createPlan(0, CYCLE, 0, 3 days, 2);
     }
 
+    function testCreatePlanRequiresOneDayCycle() public {
+        // A shorter cycle would let a self-paying subscription cost the keeper
+        // gas every few seconds, and a mistaken approval drain that fast.
+        vm.prank(merchant);
+        vm.expectRevert(SubscriptionManager.BadPlanParams.selector);
+        manager.createPlan(PRICE, 1 days - 1, 0, 0, 2);
+        vm.prank(merchant);
+        manager.createPlan(PRICE, 1 days, 0, 0, 2);
+        assertEq(manager.MIN_CYCLE(), 1 days);
+    }
+
     function testCreatePlanRevertsOnTrialLongerThanCycle() public {
         vm.prank(merchant);
         vm.expectRevert(SubscriptionManager.BadPlanParams.selector);

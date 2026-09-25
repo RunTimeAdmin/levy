@@ -26,7 +26,7 @@ createPlan(
 
 There is no plan-creation page yet: call it from your wallet (for example with
 `cast send` or a block explorer's write tab). Rules the contract enforces:
-`price` above 0, `cycleSeconds` from 1 second up to 10 years, `trialSeconds`
+`price` above 0, `cycleSeconds` from 1 day (86400) up to 10 years, `trialSeconds`
 shorter than `cycleSeconds`, `maxFailed` from 1 to 255.
 
 Common cycle values:

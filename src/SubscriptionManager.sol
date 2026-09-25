@@ -22,6 +22,10 @@ contract SubscriptionManager is ReentrancyGuard {
 
     uint256 public constant FEE_BPS = 100; // 1%
     uint256 public constant MAX_CYCLE = 365 days * 10;
+    /// @notice Shortest billing cycle. Bounds how often the keeper pays gas to
+    ///         charge a subscription (a self-paying one never fails, so never
+    ///         auto-pauses) and how fast a mistaken approval can be drained.
+    uint256 public constant MIN_CYCLE = 1 days;
 
     enum Status {
         TRIAL,
@@ -123,7 +127,7 @@ contract SubscriptionManager is ReentrancyGuard {
         uint256 graceSeconds,
         uint8 maxFailed
     ) external returns (uint256 planId) {
-        if (price == 0 || cycleSeconds == 0 || cycleSeconds > MAX_CYCLE || maxFailed == 0) {
+        if (price == 0 || cycleSeconds < MIN_CYCLE || cycleSeconds > MAX_CYCLE || maxFailed == 0) {
             revert BadPlanParams();
         }
         if (trialSeconds >= cycleSeconds) revert BadPlanParams();

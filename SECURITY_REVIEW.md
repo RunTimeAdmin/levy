@@ -50,14 +50,16 @@ there is no repricing or merchant-swap attack.
   attacker) buys another round, spread over the dunning schedule (days).
 - Allowance front-running (revoke just before the keeper's `charge()`): the
   charge fails gracefully and dunning handles it. No theft; same bound.
-- **Open: self-funded spam subscriptions.** Anyone can create a plan priced at
-  1 unit with a 1-second cycle and subscribe to it themselves. The attacker
-  pays themselves (fee 0), so those charges never fail and never auto-pause,
-  and the keeper pays gas to charge the subscription every cycle, forever. The
-  keeper has no minimum cycle, merchant allowlist or gas-versus-fee check.
-  Options: a minimum cycle length in the contract, and/or a keeper policy
-  (skip subscriptions whose fee does not cover gas, or charge only listed
-  merchants). Needs a decision before the API is public.
+- **Mitigated: self-funded spam subscriptions.** Anyone can create a plan
+  priced at 1 unit and subscribe to it themselves. The attacker pays themselves
+  (fee 0), so those charges never fail and never auto-pause, and the keeper
+  pays gas for every one. With no minimum cycle that was a charge every keeper
+  cycle (30s) per subscription. Since 2026-09-25 the contract enforces
+  `MIN_CYCLE = 1 days`, so each such subscription costs the keeper at most one
+  charge a day. It is still unbounded across many subscriptions and over time
+  (each costs the attacker one subscribe transaction). Watch keeper gas spend
+  (`ops/monitoring.md` alert 6); if it grows, add a keeper policy (skip
+  subscriptions whose fee does not cover gas, or charge only listed merchants).
 
 ## 4. `charge()` permissionless safety: can it steal or misroute?
 
@@ -102,7 +104,8 @@ nothing.
   earlier version took an explicit `owner` so the keeper could relay; anyone
   holding the signature (a relayer, or anyone reading it from the mempool)
   could then subscribe the owner to a plan of their own and, with a 1-second
-  cycle or the up-front first charge, drain the permit amount almost at once.
+  cycle (allowed then) or the up-front first charge, drain the permit amount
+  almost at once.
   Removed 2026-09-25. Relaying could come back only with a second signature
   that binds the plan.
 - Open, low: anyone who sees the signed permit in the mempool can submit it to
@@ -158,7 +161,7 @@ nothing.
   paid cycle, same-merchant plan changes only. Regression tests and
   `invariant_creditBacked` cover it.
 - **Relayed Permit2 subscribe.** Rated low here originally, but a 1-second cycle
-  turned a copied permit into a near-instant drain. Fixed by making
+  (allowed then) turned a copied permit into a near-instant drain. Fixed by making
   `msg.sender` the permit owner (§6).
 - **Resume billed paused cycles and kept the failure count.** Resuming after a
   long pause let anyone charge every paused cycle at once, and a resumed
@@ -169,11 +172,15 @@ nothing.
   every failed pull reverted with panic 0x11 instead of being recorded, so the
   subscription never went PAST_DUE or auto-paused. Now `uint256(maxFailed) * 2`;
   the invariant fuzzer covers the full 1..255 range.
+- **No minimum cycle length.** A 1-second plan let a self-paying subscription
+  cost the keeper gas every cycle and let a mistaken approval be drained within
+  seconds. `createPlan` now requires `cycleSeconds >= MIN_CYCLE` (1 day).
 
 **Open** (for the paid audit and M4):
 
-1. Self-funded spam subscriptions cost the keeper gas indefinitely (§3). Needs
-   a decision.
+1. Self-funded spam subscriptions still cost the keeper one charge a day each,
+   unbounded in number and time (§3). Watch keeper gas; add a keeper policy if
+   it grows.
 2. CEI inverted in `_collect` callers, and unguarded pause/resume/cancel (§2).
    Safe with USDC; flag for the auditor.
 3. `changePlan` and resume both forgive an overdue cycle (economically the same

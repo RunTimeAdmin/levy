@@ -15,7 +15,7 @@
 
 **Actors:** Merchant (creates plans, receives USDC minus the 1% fee), Subscriber (approves a USDC allowance, gets charged per cycle), Keeper (off-chain service that triggers the pulls).
 
-**Plan** (on-chain, immutable): merchant, price per cycle (6-decimal USDC units), cycle length (seconds, up to 10 years), trial (seconds, shorter than the cycle, optional), graceSeconds (informational only; the retry schedule lives in the keeper), maxFailed (PAST_DUE at that many failures, auto-pause at twice that). There is no plan name on-chain.
+**Plan** (on-chain, immutable): merchant, price per cycle (6-decimal USDC units), cycle length (seconds, 1 day to 10 years), trial (seconds, shorter than the cycle, optional), graceSeconds (informational only; the retry schedule lives in the keeper), maxFailed (PAST_DUE at that many failures, auto-pause at twice that). There is no plan name on-chain.
 
 **Subscription:** links a subscriber to a plan. States: TRIAL, ACTIVE, PAST_DUE, PAUSED, CANCELLED. Fields: subscriber, planId, start, nextChargeAt, failedAttempts, credit, chargeCount, status; plus the merchant's reference in `subscriptionRef`.
 
@@ -123,7 +123,7 @@ Open issues and the self-review are in `SECURITY_REVIEW.md`; the math audit is i
 levy/
 ├── src/                # Foundry: SubscriptionManager, FeeRouter, IPermit2
 ├── script/             # Deploy.s.sol (Arc testnet / mainnet)
-├── test/               # 53 tests: 46 unit (incl. deploy script), 7 invariants
+├── test/               # 54 tests: 47 unit (incl. deploy script), 7 invariants
 ├── foundry.toml
 ├── FEE_MATH_AUDIT.md   # fee + proration math audit
 ├── SECURITY_REVIEW.md  # adversarial self-review and open issues
