@@ -10,3 +10,15 @@ evm_version = "paris"
 [invariant]
 runs = 256
 depth = 15
+
+# CI fuzzes deeper: the resume bug only showed up past depth 15.
+[profile.ci.invariant]
+runs = 1000
+depth = 40
+
+# Arc: USDC is the gas token. If `forge script` fails at fee estimation, retry
+# with --legacy. Do not add [etherscan] entries for 5042 / 5042002 until Foundry
+# ships Arc chain metadata; unknown chain IDs break `forge script`.
+[rpc_endpoints]
+arc_testnet = "https://rpc.testnet.arc.io"
+arc_mainnet = "https://rpc.mainnet.arc.io"

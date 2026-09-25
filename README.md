@@ -2,7 +2,7 @@
 
 Pull-based USDC subscription billing for Arc mainnet. Merchants define plans, subscribers approve once, and a keeper triggers per-cycle pulls. The protocol takes a 1% fee on collected payments.
 
-**Status:** M1 (contracts), M2 (keeper + dunning), M3 (webhooks + API + dashboards) complete, plus Permit2 subscribe path. Contracts: 44 tests green (37 unit + 7 invariants, 256 runs each). Keeper: 34 tests green. API: 12 tests green. Not yet deployed. Not audited.
+**Status:** M1 (contracts), M2 (keeper + dunning), M3 (webhooks + API + dashboards) complete, plus Permit2 subscribe path. Contracts: 50 tests green (43 unit + 7 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 34 tests green. API: 12 tests green. Not yet deployed. Not audited.
 
 ## Contracts
 
@@ -48,9 +48,25 @@ Requires [Foundry](https://getfoundry.sh/) for contracts, Node 24 for the keeper
 ```bash
 forge build
 forge test
+FOUNDRY_PROFILE=ci forge test   # deeper invariant fuzzing, as CI runs it
 ```
 
+CI (`.github/workflows/ci.yml`) runs the contract tests, keeper and API typechecks and tests, and fails if `keeper/abi/*.json` no longer matches the contracts. After changing a contract, regenerate with `forge inspect <Contract> abi --json > keeper/abi/<Contract>.json` (and `bytecode` into the `.bin`).
+
 `foundry.toml` pins `evm_version = "paris"`. Arc mainnet runs an Osaka EVM, so this is not required; paris stays as a harmless conservative default (see `VERIFICATION.md` §2).
+
+## Deploy
+
+`script/Deploy.s.sol` deploys FeeRouter and SubscriptionManager and prints the keeper's `.env` lines. It refuses to deploy unless USDC and Permit2 have code at their addresses and USDC reports 6 decimals, and on mainnet unless the treasury is a contract (the Safe from `ops/treasury-multisig.md`).
+
+```bash
+export DEPLOYER_PRIVATE_KEY=0x...   # pays gas in USDC; testnet USDC from https://faucet.circle.com
+export LEVY_TREASURY=0x...          # FeeRouter treasury
+forge script script/Deploy.s.sol --rpc-url arc_testnet             # simulate
+forge script script/Deploy.s.sol --rpc-url arc_testnet --broadcast # deploy
+```
+
+Use `--rpc-url arc_mainnet` for mainnet, and add `--legacy` if fee estimation fails. `LEVY_USDC` and `LEVY_PERMIT2` override the Arc defaults. A deploy costs about 0.25 USDC of gas (simulated on testnet, 2026-09-25). Broadcast records land in `broadcast/`; commit the testnet and mainnet ones as the deployment record.
 
 ## Deployment notes (Arc mainnet)
 

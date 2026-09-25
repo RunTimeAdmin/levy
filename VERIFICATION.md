@@ -96,4 +96,4 @@ Sources:
 
 ## Follow-ups for the Permit2 build (done 2026-09-25)
 
-`subscribeWithPermit2` is implemented and tested against a mock Permit2 on anvil, using `0x000000000022D473030F116dDEE9F6B43aC78BA3` as the Permit2 address on both Arc mainnet and testnet. Before mainnet, verify the address with an `eth_getCode` call and run the end-to-end flow against Arc mainnet.
+`subscribeWithPermit2` is implemented and tested against a mock Permit2 on anvil, using `0x000000000022D473030F116dDEE9F6B43aC78BA3` as the Permit2 address on both Arc mainnet and testnet. `eth_getCode` confirmed on 2026-09-25: Permit2 has code at that address on both Arc testnet and mainnet, and USDC at `0x3600...0000` has code and reports 6 decimals on both (`script/Deploy.s.sol` re-checks all of this before deploying). Still to do before mainnet: run the end-to-end Permit2 flow against Arc.

@@ -116,7 +116,8 @@ This is not a security product, but it holds other people's money rails. Non-neg
 ```
 levy/
 ├── src/                # Foundry: SubscriptionManager, FeeRouter, IPermit2
-├── test/               # unit + invariant tests (44)
+├── script/             # Deploy.s.sol (Arc testnet / mainnet)
+├── test/               # unit + invariant tests (50)
 ├── foundry.toml
 ├── FEE_MATH_AUDIT.md   # fee + proration math audit
 ├── SECURITY_REVIEW.md  # adversarial pre-audit self-review
