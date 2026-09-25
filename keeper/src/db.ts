@@ -43,6 +43,31 @@ export interface DunningRow {
   updatedAt: number;
 }
 
+export interface WebhookRow {
+  id: number;
+  merchant: string;
+  url: string;
+  /** JSON array of subscribed event types. */
+  events: string;
+  active: number; // 0 | 1
+  created_at: number;
+}
+
+export type DeliveryStatus = "pending" | "sent" | "failed" | "dead";
+
+export interface DeliveryRow {
+  id: number;
+  webhook_id: number;
+  event_type: string;
+  /** Canonical JSON payload that was (or will be) POSTed. */
+  payload: string;
+  status: DeliveryStatus;
+  attempts: number;
+  next_retry_at: number; // unix seconds
+  created_at: number; // unix seconds
+  last_error: string | null;
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS subscriptions (
   subId TEXT PRIMARY KEY,
@@ -98,6 +123,32 @@ CREATE TABLE IF NOT EXISTS sync_state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+-- Merchant webhook endpoints. "events" is a JSON array of subscribed event
+-- types (see WEBHOOK_EVENTS in webhooks.ts).
+CREATE TABLE IF NOT EXISTS webhooks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  merchant TEXT NOT NULL,
+  url TEXT NOT NULL,
+  events TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL
+);
+-- Outbound webhook delivery attempts. A delivery starts pending, moves to
+-- sent on HTTP 2xx, failed while retries remain, and dead after 24h of
+-- failures (dead-letter). "payload" is the exact canonical JSON that is POSTed.
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  webhook_id INTEGER NOT NULL, -- webhooks(id); no FK so deliveries survive webhook deletion (they dead-letter)
+  event_type TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_retry_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  last_error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_deliveries_due
+  ON webhook_deliveries (status, next_retry_at);
 `;
 
 export class LevyDb {
@@ -106,6 +157,9 @@ export class LevyDb {
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     this.db.exec(SCHEMA);
+    // The API server may hold the same file open; wait instead of failing
+    // on a locked database during brief concurrent writes.
+    this.db.exec("PRAGMA busy_timeout = 5000");
   }
 
   close(): void {
@@ -199,6 +253,178 @@ export class LevyDb {
     return this.db
       .prepare(`SELECT * FROM dunning WHERE nextRetryAt <= ? ORDER BY nextRetryAt ASC`)
       .all(nowSec) as unknown as DunningRow[];
+  }
+
+  getDunning(subId: string): DunningRow | undefined {
+    return this.db
+      .prepare(`SELECT * FROM dunning WHERE subId = ?`)
+      .get(subId) as DunningRow | undefined;
+  }
+
+  /** Dunning queue with subscription context, for the API dashboard. */
+  listDunning(merchant?: string): Array<DunningRow & {
+    subscriber: string; planId: string; price: string; status: number;
+  }> {
+    const where = merchant ? `WHERE s.merchant = ? COLLATE NOCASE` : "";
+    const params: Array<string | number | null> = merchant ? [merchant] : [];
+    return this.db
+      .prepare(
+        `SELECT d.*, s.subscriber, s.planId, s.price, s.status
+         FROM dunning d JOIN subscriptions s ON s.subId = d.subId
+         ${where} ORDER BY d.nextRetryAt ASC`
+      )
+      .all(...params) as unknown as Array<DunningRow & {
+      subscriber: string; planId: string; price: string; status: number;
+    }>;
+  }
+
+  // ---- charges (read side for the API) ----
+
+  listCharges(filter: { subId?: string; merchant?: string } = {}): Array<DbCharge & {
+    subscriber: string; merchant: string; id: number;
+  }> {
+    const clauses: string[] = [];
+    const params: Array<string | number | null> = [];
+    if (filter.subId) { clauses.push(`c.subId = ?`); params.push(filter.subId); }
+    if (filter.merchant) { clauses.push(`s.merchant = ? COLLATE NOCASE`); params.push(filter.merchant); }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return this.db
+      .prepare(
+        `SELECT c.id, c.subId, c.amount, c.fee, c.invoiceRef, c.txHash,
+                c.blockNumber, c.chargeCount, s.subscriber, s.merchant
+         FROM charges c LEFT JOIN subscriptions s ON s.subId = c.subId
+         ${where} ORDER BY c.id DESC`
+      )
+      .all(...params) as unknown as Array<DbCharge & {
+      subscriber: string; merchant: string; id: number;
+    }>;
+  }
+
+  listSubscriptions(filter: { merchant?: string; subscriber?: string } = {}): DbSubscription[] {
+    const clauses: string[] = [];
+    const params: Array<string | number | null> = [];
+    if (filter.merchant) { clauses.push(`merchant = ? COLLATE NOCASE`); params.push(filter.merchant); }
+    if (filter.subscriber) { clauses.push(`subscriber = ? COLLATE NOCASE`); params.push(filter.subscriber); }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return this.db
+      .prepare(`SELECT * FROM subscriptions ${where} ORDER BY CAST(subId AS INTEGER) ASC`)
+      .all(...params) as unknown as DbSubscription[];
+  }
+
+  /** Distinct plans seen in the indexed subscriptions (on-chain plan registry mirror). */
+  listPlans(): Array<{ planId: string; merchant: string; price: string; cycleSeconds: number }> {
+    return this.db
+      .prepare(
+        `SELECT planId, merchant, price, cycleSeconds FROM subscriptions
+         GROUP BY planId ORDER BY CAST(planId AS INTEGER) ASC`
+      )
+      .all() as unknown as Array<{ planId: string; merchant: string; price: string; cycleSeconds: number }>;
+  }
+
+  chargeStats(merchant?: string): { charges: number; failures: number } {
+    const m = merchant ? `AND s.merchant = ? COLLATE NOCASE` : "";
+    const params: Array<string | number | null> = merchant ? [merchant] : [];
+    const c = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM charges c LEFT JOIN subscriptions s ON s.subId = c.subId WHERE 1=1 ${m}`)
+      .get(...params) as { n: number };
+    const f = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM charge_failures f LEFT JOIN subscriptions s ON s.subId = f.subId WHERE 1=1 ${m}`)
+      .get(...params) as { n: number };
+    return { charges: Number(c.n), failures: Number(f.n) };
+  }
+
+  // ---- webhooks ----
+
+  registerWebhook(merchant: string, url: string, events: string[], createdAt: number): number {
+    const r = this.db
+      .prepare(
+        `INSERT INTO webhooks (merchant, url, events, active, created_at)
+         VALUES (?, ?, ?, 1, ?)`
+      )
+      .run(merchant, url, JSON.stringify(events), createdAt);
+    return Number(r.lastInsertRowid);
+  }
+
+  listWebhooks(merchant?: string): WebhookRow[] {
+    const where = merchant ? `WHERE merchant = ? COLLATE NOCASE` : "";
+    const params: Array<string | number | null> = merchant ? [merchant] : [];
+    return this.db
+      .prepare(`SELECT * FROM webhooks ${where} ORDER BY id ASC`)
+      .all(...params) as unknown as WebhookRow[];
+  }
+
+  getWebhook(id: number): WebhookRow | undefined {
+    return this.db
+      .prepare(`SELECT * FROM webhooks WHERE id = ?`)
+      .get(id) as WebhookRow | undefined;
+  }
+
+  deleteWebhook(id: number): void {
+    this.db.prepare(`DELETE FROM webhooks WHERE id = ?`).run(id);
+  }
+
+  setWebhookActive(id: number, active: boolean): void {
+    this.db.prepare(`UPDATE webhooks SET active = ? WHERE id = ?`).run(active ? 1 : 0, id);
+  }
+
+  // ---- webhook deliveries ----
+
+  enqueueDelivery(webhookId: number, eventType: string, payload: string, nowSec: number): number {
+    const r = this.db
+      .prepare(
+        `INSERT INTO webhook_deliveries
+           (webhook_id, event_type, payload, status, attempts, next_retry_at, created_at)
+         VALUES (?, ?, ?, 'pending', 0, ?, ?)`
+      )
+      .run(webhookId, eventType, payload, nowSec, nowSec);
+    return Number(r.lastInsertRowid);
+  }
+
+  dueDeliveries(nowSec: number): DeliveryRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM webhook_deliveries
+         WHERE status IN ('pending', 'failed') AND next_retry_at <= ?
+         ORDER BY next_retry_at ASC`
+      )
+      .all(nowSec) as unknown as DeliveryRow[];
+  }
+
+  listDeliveries(filter: { webhookId?: number; status?: string; limit?: number } = {}): DeliveryRow[] {
+    const clauses: string[] = [];
+    const params: Array<string | number | null> = [];
+    if (filter.webhookId !== undefined) { clauses.push(`webhook_id = ?`); params.push(filter.webhookId); }
+    if (filter.status) { clauses.push(`status = ?`); params.push(filter.status); }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const limit = Math.min(filter.limit ?? 100, 500);
+    return this.db
+      .prepare(`SELECT * FROM webhook_deliveries ${where} ORDER BY id DESC LIMIT ${limit}`)
+      .all(...params) as unknown as DeliveryRow[];
+  }
+
+  markDeliverySent(id: number): void {
+    this.db
+      .prepare(`UPDATE webhook_deliveries SET status = 'sent', last_error = NULL WHERE id = ?`)
+      .run(id);
+  }
+
+  markDeliveryFailed(id: number, nextRetryAt: number, lastError: string): void {
+    this.db
+      .prepare(
+        `UPDATE webhook_deliveries
+         SET status = 'failed', attempts = attempts + 1,
+             next_retry_at = ?, last_error = ? WHERE id = ?`
+      )
+      .run(nextRetryAt, lastError, id);
+  }
+
+  markDeliveryDead(id: number, lastError: string): void {
+    this.db
+      .prepare(
+        `UPDATE webhook_deliveries
+         SET status = 'dead', attempts = attempts + 1, last_error = ? WHERE id = ?`
+      )
+      .run(lastError, id);
   }
 
   // ---- transfers (EIP-7708 dedup) ----

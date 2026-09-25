@@ -1,0 +1,338 @@
+import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
+import { readFile } from "node:fs/promises";
+import { dirname, join, normalize, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { LevyDb, Status } from "../../keeper/src/db.js";
+import {
+  WEBHOOK_EVENTS,
+  isWebhookEventType,
+  loadSigningKey,
+  publicKeyPem,
+} from "../../keeper/src/webhooks.js";
+
+const API_DIR = dirname(fileURLToPath(import.meta.url));
+const PUBLIC_DIR = join(API_DIR, "..", "public");
+
+export interface ApiOptions {
+  /** Path to the keeper's SQLite file. */
+  dbPath: string;
+  /** Path of the Ed25519 webhook signing key (for the public-key endpoint). */
+  webhookKeyPath: string;
+  webhookKey?: string;
+}
+
+export function apiOptionsFromEnv(): ApiOptions {
+  return {
+    dbPath:
+      process.env.LEVY_DB_PATH ?? join(API_DIR, "..", "..", "keeper", "levy.db"),
+    webhookKeyPath:
+      process.env.LEVY_WEBHOOK_KEY_PATH ??
+      join(API_DIR, "..", "..", "keeper", "webhook-signing-key.pem"),
+    webhookKey: process.env.LEVY_WEBHOOK_KEY,
+  };
+}
+
+const STATUS_NAMES: Record<number, string> = {
+  [Status.TRIAL]: "trial",
+  [Status.ACTIVE]: "active",
+  [Status.PAST_DUE]: "past_due",
+  [Status.PAUSED]: "paused",
+  [Status.CANCELLED]: "cancelled",
+};
+
+/** 6-decimal USDC units -> "123.456789". */
+export function formatUsdc(amount: string): string {
+  const v = BigInt(amount);
+  const neg = v < 0n;
+  const abs = neg ? -v : v;
+  const whole = abs / 1_000_000n;
+  const frac = (abs % 1_000_000n).toString().padStart(6, "0");
+  return `${neg ? "-" : ""}${whole}.${frac}`;
+}
+
+function isAddress(v: unknown): v is string {
+  return typeof v === "string" && /^0x[0-9a-fA-F]{40}$/.test(v);
+}
+
+function isHttpUrl(v: unknown): v is string {
+  if (typeof v !== "string") return false;
+  try {
+    const u = new URL(v);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+export function buildServer(opts: ApiOptions): FastifyInstance {
+  const db = new LevyDb(opts.dbPath);
+  const app = Fastify({ logger: false });
+
+  app.addHook("onClose", async () => {
+    db.close();
+  });
+
+  // ---- health ----
+
+  app.get("/api/health", async () => ({ ok: true, service: "levy-api", version: "0.1.0" }));
+
+  // ---- plans (read-only mirror of the on-chain plan registry) ----
+
+  app.get("/api/plans", async () => {
+    return db.listPlans().map((p) => ({
+      ...p,
+      priceUsdc: formatUsdc(p.price),
+      cycleDays: p.cycleSeconds / 86_400,
+    }));
+  });
+
+  // ---- subscriptions ----
+
+  app.get("/api/subscriptions", async (req) => {
+    const q = req.query as { merchant?: string; subscriber?: string; status?: string };
+    const filter: { merchant?: string; subscriber?: string } = {};
+    if (q.merchant) {
+      if (!isAddress(q.merchant)) return bad(400, "invalid merchant address");
+      filter.merchant = q.merchant;
+    }
+    if (q.subscriber) {
+      if (!isAddress(q.subscriber)) return bad(400, "invalid subscriber address");
+      filter.subscriber = q.subscriber;
+    }
+    let subs = db.listSubscriptions(filter);
+    if (q.status !== undefined) {
+      const n = Number(q.status);
+      subs = subs.filter((s) => s.status === n);
+    }
+    return subs.map((s) => ({
+      ...s,
+      statusName: STATUS_NAMES[s.status] ?? "unknown",
+      priceUsdc: formatUsdc(s.price),
+      nextChargeAtIso: new Date(s.nextChargeAt * 1000).toISOString(),
+    }));
+  });
+
+  app.get("/api/subscriptions/:id", async (req) => {
+    const { id } = req.params as { id: string };
+    const sub = db.getSubscription(id);
+    if (!sub) return bad(404, "subscription not found");
+    return {
+      ...sub,
+      statusName: STATUS_NAMES[sub.status] ?? "unknown",
+      priceUsdc: formatUsdc(sub.price),
+      nextChargeAtIso: new Date(sub.nextChargeAt * 1000).toISOString(),
+      charges: db.listCharges({ subId: id }).map((c) => ({
+        ...c,
+        amountUsdc: formatUsdc(c.amount),
+        feeUsdc: formatUsdc(c.fee),
+      })),
+      dunning: db.getDunning(id) ?? null,
+    };
+  });
+
+  // ---- metrics ----
+
+  app.get("/api/metrics", async (req) => {
+    const q = req.query as { merchant?: string };
+    const merchant = q.merchant;
+    if (merchant !== undefined && !isAddress(merchant)) return bad(400, "invalid merchant address");
+
+    const subs = db.listSubscriptions(merchant ? { merchant } : {});
+    const mrrSubs = subs.filter((s) => s.status === Status.TRIAL || s.status === Status.ACTIVE);
+    const mrr = mrrSubs.reduce((acc, s) => acc + BigInt(s.price), 0n).toString();
+
+    const count = (st: number) => subs.filter((s) => s.status === st).length;
+    const { charges, failures } = db.chargeStats(merchant);
+    const attempts = charges + failures;
+
+    // Totals in raw units across the filtered set.
+    const chargeList = db.listCharges(merchant ? { merchant } : {});
+    const totalCharged = chargeList.reduce((acc, c) => acc + BigInt(c.amount), 0n).toString();
+    const totalFees = chargeList.reduce((acc, c) => acc + BigInt(c.fee), 0n).toString();
+
+    return {
+      merchant: merchant ?? null,
+      mrr,
+      mrrUsdc: formatUsdc(mrr),
+      totalSubs: subs.length,
+      activeSubs: count(Status.ACTIVE),
+      trialSubs: count(Status.TRIAL),
+      pastDueSubs: count(Status.PAST_DUE),
+      pausedSubs: count(Status.PAUSED),
+      cancelledSubs: count(Status.CANCELLED),
+      totalCharged,
+      totalChargedUsdc: formatUsdc(totalCharged),
+      totalFees,
+      totalFeesUsdc: formatUsdc(totalFees),
+      chargeCount: charges,
+      failureCount: failures,
+      successRate: attempts ? charges / attempts : null,
+      dunningDepth: db.listDunning(merchant).length,
+    };
+  });
+
+  // ---- dunning queue ----
+
+  app.get("/api/dunning", async (req) => {
+    const q = req.query as { merchant?: string };
+    if (q.merchant !== undefined && !isAddress(q.merchant)) return bad(400, "invalid merchant address");
+    return db.listDunning(q.merchant).map((r) => ({
+      ...r,
+      priceUsdc: formatUsdc(r.price),
+      nextRetryAtIso: new Date(r.nextRetryAt * 1000).toISOString(),
+    }));
+  });
+
+  // ---- charges / invoices (invoices are charge records) ----
+
+  async function chargesHandler(req: any, reply: any) {
+    const q = req.query as { subscription?: string; merchant?: string; format?: string };
+    const filter: { subId?: string; merchant?: string } = {};
+    if (q.subscription) filter.subId = q.subscription;
+    if (q.merchant) {
+      if (!isAddress(q.merchant)) return bad(400, "invalid merchant address");
+      filter.merchant = q.merchant;
+    }
+    const rows = db.listCharges(filter);
+    if (q.format === "csv") {
+      const header = "id,invoiceRef,subId,subscriber,merchant,amountUsdc,feeUsdc,txHash,blockNumber,chargeCount";
+      const lines = rows.map((c) =>
+        [c.id, c.invoiceRef, c.subId, c.subscriber ?? "", c.merchant ?? "",
+         formatUsdc(c.amount), formatUsdc(c.fee), c.txHash, c.blockNumber, c.chargeCount].join(",")
+      );
+      reply.header("content-type", "text/csv");
+      reply.header("content-disposition", 'attachment; filename="levy-invoices.csv"');
+      return [header, ...lines].join("\n") + "\n";
+    }
+    return rows.map((c) => ({ ...c, amountUsdc: formatUsdc(c.amount), feeUsdc: formatUsdc(c.fee) }));
+  }
+
+  app.get("/api/charges", chargesHandler);
+  app.get("/api/invoices", chargesHandler);
+
+  // ---- webhooks ----
+
+  app.get("/api/webhooks", async (req) => {
+    const q = req.query as { merchant?: string };
+    if (q.merchant !== undefined && !isAddress(q.merchant)) return bad(400, "invalid merchant address");
+    return db.listWebhooks(q.merchant).map((w) => ({ ...w, events: JSON.parse(w.events) }));
+  });
+
+  app.post("/api/webhooks", async (req) => {
+    const body = req.body as { merchant?: string; url?: string; events?: string[] };
+    if (!isAddress(body?.merchant)) return bad(400, "merchant must be a 0x address");
+    if (!isHttpUrl(body?.url)) return bad(400, "url must be an http(s) URL");
+    if (!Array.isArray(body?.events) || body.events.length === 0) {
+      return bad(400, "events must be a non-empty array");
+    }
+    for (const e of body.events) {
+      if (!isWebhookEventType(e)) return bad(400, `unknown event type: ${e}`);
+    }
+    const id = db.registerWebhook(
+      body.merchant, body.url, [...new Set(body.events)], Math.floor(Date.now() / 1000)
+    );
+    return { id };
+  });
+
+  app.delete("/api/webhooks/:id", async (req) => {
+    const { id } = req.params as { id: string };
+    const n = Number(id);
+    if (!Number.isInteger(n)) return bad(400, "invalid id");
+    if (!db.getWebhook(n)) return bad(404, "webhook not found");
+    db.deleteWebhook(n);
+    return { ok: true };
+  });
+
+  app.patch("/api/webhooks/:id", async (req) => {
+    const { id } = req.params as { id: string };
+    const body = req.body as { active?: boolean };
+    const n = Number(id);
+    if (!Number.isInteger(n)) return bad(400, "invalid id");
+    if (!db.getWebhook(n)) return bad(404, "webhook not found");
+    if (typeof body?.active !== "boolean") return bad(400, "active must be boolean");
+    db.setWebhookActive(n, body.active);
+    return { ok: true };
+  });
+
+  app.get("/api/webhooks/public-key", async () => {
+    let pem: string;
+    try {
+      pem = publicKeyPem(loadSigningKey(opts.webhookKeyPath, opts.webhookKey));
+    } catch {
+      return bad(503, "signing key not available (keeper has not booted yet)");
+    }
+    return { algorithm: "ed25519", publicKey: pem, events: [...WEBHOOK_EVENTS] };
+  });
+
+  app.get("/api/deliveries", async (req) => {
+    const q = req.query as { webhookId?: string; status?: string; limit?: string };
+    const filter: { webhookId?: number; status?: string; limit?: number } = {};
+    if (q.webhookId !== undefined) {
+      const n = Number(q.webhookId);
+      if (!Number.isInteger(n)) return bad(400, "invalid webhookId");
+      filter.webhookId = n;
+    }
+    if (q.status !== undefined) {
+      if (!["pending", "sent", "failed", "dead"].includes(q.status)) return bad(400, "invalid status");
+      filter.status = q.status;
+    }
+    if (q.limit !== undefined) filter.limit = Number(q.limit) || 100;
+    return db.listDeliveries(filter);
+  });
+
+  // ---- static frontend ----
+
+  app.get("/", async (_req, reply) => sendFile(reply, "index.html"));
+  app.get("/portal.html", async (_req, reply) => sendFile(reply, "portal.html"));
+  app.get<{ Params: { "*": string } }>("/public/*", async (req, reply) => {
+    return sendFile(reply, (req.params as { "*": string })["*"]);
+  });
+
+  return app;
+}
+
+function bad(status: number, message: string) {
+  const err = new Error(message) as Error & { statusCode: number };
+  err.statusCode = status;
+  throw err;
+}
+
+const MIME: Record<string, string> = {
+  ".html": "text/html",
+  ".js": "text/javascript",
+  ".css": "text/css",
+  ".json": "application/json",
+  ".svg": "image/svg+xml",
+};
+
+async function sendFile(reply: FastifyReply, name: string) {
+  const safe = normalize(name).replace(/^(\.\.(\/|\\|$))+/, "");
+  const full = join(PUBLIC_DIR, safe);
+  if (!full.startsWith(PUBLIC_DIR + sep)) {
+    return reply.code(403).send({ error: "forbidden" });
+  }
+  try {
+    const data = await readFile(full);
+    const ext = safe.slice(safe.lastIndexOf("."));
+    reply.header("content-type", MIME[ext] ?? "application/octet-stream");
+    return reply.send(data);
+  } catch {
+    return reply.code(404).send({ error: "not found" });
+  }
+}
+
+// ---- standalone entrypoint ----
+
+async function main(): Promise<void> {
+  const app = buildServer(apiOptionsFromEnv());
+  const port = Number(process.env.LEVY_API_PORT ?? 3001);
+  await app.listen({ port, host: "127.0.0.1" });
+  console.log(`levy api listening on http://127.0.0.1:${port}`);
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}

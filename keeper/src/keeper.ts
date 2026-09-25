@@ -3,6 +3,7 @@ import type { LevyConfig } from "./config.js";
 import { LevyDb } from "./db.js";
 import { Indexer } from "./indexer.js";
 import { managerAbi } from "./chain.js";
+import { WebhookDispatcher, loadSigningKey } from "./webhooks.js";
 import { decodeEventLog } from "viem";
 
 export interface CycleReport {
@@ -10,6 +11,7 @@ export interface CycleReport {
   charged: Array<{ subId: string; txHash: string }>;
   retried: Array<{ subId: string; txHash: string }>;
   failed: Array<{ subId: string; error: string }>;
+  webhooks: { sent: number; failed: number; dead: number };
 }
 
 /**
@@ -21,17 +23,19 @@ export interface CycleReport {
  */
 export class Keeper {
   private indexer: Indexer;
+  readonly webhooks: WebhookDispatcher;
 
   constructor(
     private cfg: LevyConfig,
     private clients: ChainClients,
     private db: LevyDb
   ) {
-    this.indexer = new Indexer(cfg, clients, db);
+    this.webhooks = new WebhookDispatcher(db, loadSigningKey(cfg.webhookKeyPath, cfg.webhookKey));
+    this.indexer = new Indexer(cfg, clients, db, this.webhooks.sink());
   }
 
   async runCycle(): Promise<CycleReport> {
-    const report: CycleReport = { syncedLogs: 0, charged: [], retried: [], failed: [] };
+    const report: CycleReport = { syncedLogs: 0, charged: [], retried: [], failed: [], webhooks: { sent: 0, failed: 0, dead: 0 } };
 
     const first = await this.indexer.sync();
     report.syncedLogs = first.logs;
@@ -64,6 +68,10 @@ export class Keeper {
     // Re-sync so this cycle's own receipts land in the DB immediately.
     const second = await this.indexer.sync();
     report.syncedLogs += second.logs;
+
+    // Deliver any due webhook events (contract events enqueued above, plus
+    // retries from earlier cycles).
+    report.webhooks = await this.webhooks.dispatchDue(second.nowSec);
     return report;
   }
 

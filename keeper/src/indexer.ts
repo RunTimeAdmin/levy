@@ -4,6 +4,7 @@ import { managerAbi } from "./chain.js";
 import type { LevyConfig } from "./config.js";
 import { LevyDb } from "./db.js";
 import { clearDunning, recordFailure } from "./dunning.js";
+import { buildWebhookEvents, type WebhookSink } from "./webhooks.js";
 
 const TRANSFER_EVENT = parseAbiItem(
   "event Transfer(address indexed from, address indexed to, uint256 value)"
@@ -38,7 +39,8 @@ export class Indexer {
   constructor(
     private cfg: LevyConfig,
     private clients: ChainClients,
-    private db: LevyDb
+    private db: LevyDb,
+    private onEvent?: WebhookSink
   ) {}
 
   /**
@@ -116,6 +118,7 @@ export class Indexer {
     // Events like PlanCreated carry no subId; they need no indexing work.
     if (args.subId === undefined) return;
     const subId = (args.subId as bigint).toString();
+    let dunningNextRetryAt: number | undefined;
     switch (name) {
       case "Subscribed":
       case "Paused":
@@ -144,8 +147,27 @@ export class Indexer {
         this.db.insertFailure(subId, attempts, log.transactionHash, Number(log.blockNumber), nowSec);
         recordFailure(this.db, this.cfg, subId, attempts, nowSec);
         await this.refreshSubscription(subId);
+        dunningNextRetryAt = this.db.getDunning(subId)?.nextRetryAt;
         break;
       }
+    }
+    this.emitWebhookEvents(name, args, log, subId, nowSec, dunningNextRetryAt);
+  }
+
+  /** Fan contract events out to merchant webhooks (no-op when no sink). */
+  private emitWebhookEvents(
+    name: string,
+    args: Record<string, any>,
+    log: RawLog,
+    subId: string,
+    nowSec: number,
+    dunningNextRetryAt?: number
+  ): void {
+    if (!this.onEvent) return;
+    const merchant = this.db.getSubscription(subId)?.merchant;
+    if (!merchant) return;
+    for (const e of buildWebhookEvents(name, args, log, { merchant, dunningNextRetryAt })) {
+      this.onEvent(e.type, merchant, e.payload, nowSec);
     }
   }
 

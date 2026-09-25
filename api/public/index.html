@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Levy Merchant Dashboard</title>
+<style>
+  :root { --bg: #0f1115; --panel: #171b22; --line: #262c36; --text: #e6e9ee; --muted: #8b94a3; --accent: #4cc38a; --warn: #e5a54b; --bad: #e5604f; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 16px 24px; border-bottom: 1px solid var(--line); display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; }
+  header h1 span { color: var(--accent); }
+  main { max-width: 1200px; margin: 0 auto; padding: 24px; display: grid; gap: 24px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .card .value { font-size: 26px; font-weight: 600; margin-top: 4px; }
+  section.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+  section.panel h2 { margin: 0 0 12px; font-size: 15px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  td.addr, th.addr { font-family: ui-monospace, monospace; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
+  .pill.active, .pill.trial { background: rgba(76,195,138,.15); color: var(--accent); }
+  .pill.past_due { background: rgba(229,165,75,.15); color: var(--warn); }
+  .pill.paused, .pill.cancelled { background: rgba(229,96,79,.15); color: var(--bad); }
+  .pill.sent { background: rgba(76,195,138,.15); color: var(--accent); }
+  .pill.failed, .pill.pending { background: rgba(229,165,75,.15); color: var(--warn); }
+  .pill.dead { background: rgba(229,96,79,.15); color: var(--bad); }
+  input, select, button { font: inherit; }
+  input[type=text], input[type=url] { background: #0f1115; border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 8px 10px; }
+  button { background: var(--accent); color: #0b0e12; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; font-weight: 600; }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+  button.danger { background: transparent; color: var(--bad); border: 1px solid var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .muted { color: var(--muted); }
+  .events { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+  .events label { display: flex; gap: 4px; align-items: center; font-size: 13px; background: #0f1115; border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+  .empty { color: var(--muted); padding: 12px 0; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Levy <span>Merchant</span></h1>
+  <div class="row">
+    <input type="text" id="merchant" size="44" placeholder="merchant 0x address" spellcheck="false">
+    <button id="load">Load</button>
+  </div>
+  <span class="muted" style="margin-left:auto"><a href="/portal.html">customer portal</a></span>
+</header>
+<main>
+  <div class="cards" id="cards"></div>
+
+  <section class="panel">
+    <h2>Subscriptions</h2>
+    <div id="subs"><p class="empty">Enter a merchant address and press Load.</p></div>
+  </section>
+
+  <section class="panel">
+    <h2>Dunning queue</h2>
+    <div id="dunning"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Webhooks</h2>
+    <div id="hooks"></div>
+    <h3 style="font-size:13px;margin:16px 0 8px">Add endpoint</h3>
+    <div class="row">
+      <input type="url" id="hookUrl" size="48" placeholder="https://example.com/levy-hook">
+    </div>
+    <div class="events" id="hookEvents"></div>
+    <button id="addHook">Register webhook</button>
+    <p class="muted" style="font-size:12px">Deliveries are Ed25519-signed (X-Levy-Signature). Verify with the public key at <code>/api/webhooks/public-key</code>.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Invoices</h2>
+    <div class="row" style="margin-bottom:12px">
+      <a id="csvLink" href="#">Export CSV</a>
+    </div>
+    <div id="invoices"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const merchantInput = $("merchant");
+merchantInput.value = localStorage.getItem("levy_merchant") || "";
+
+const EVENTS = ["subscription.created","charge.succeeded","charge.failed","dunning.started","subscription.paused","subscription.resumed","subscription.cancelled","invoice.ready"];
+$("hookEvents").innerHTML = EVENTS.map(e =>
+  `<label><input type="checkbox" value="${e}" checked> ${e}</label>`).join("");
+
+const short = (a) => a ? a.slice(0, 6) + "..." + a.slice(-4) : "";
+const merchant = () => merchantInput.value.trim();
+const api = (p) => fetch(p).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
+
+function pill(text, cls) { return `<span class="pill ${cls || text}">${text}</span>`; }
+
+async function load() {
+  const m = merchant();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(m)) { alert("Enter a valid 0x merchant address"); return; }
+  localStorage.setItem("levy_merchant", m);
+  $("csvLink").href = `/api/invoices?merchant=${m}&format=csv`;
+  await Promise.all([loadMetrics(m), loadSubs(m), loadDunning(m), loadHooks(m), loadInvoices(m)]);
+}
+
+async function loadMetrics(m) {
+  const d = await api(`/api/metrics?merchant=${m}`);
+  const rate = d.successRate === null ? "n/a" : (d.successRate * 100).toFixed(1) + "%";
+  $("cards").innerHTML = `
+    <div class="card"><div class="label">MRR</div><div class="value">$${d.mrrUsdc}</div></div>
+    <div class="card"><div class="label">Active subs</div><div class="value">${d.activeSubs}</div></div>
+    <div class="card"><div class="label">Charge success</div><div class="value">${rate}</div></div>
+    <div class="card"><div class="label">Dunning queue</div><div class="value">${d.dunningDepth}</div></div>
+    <div class="card"><div class="label">Collected (all time)</div><div class="value">$${d.totalChargedUsdc}</div></div>
+    <div class="card"><div class="label">Past due / paused</div><div class="value">${d.pastDueSubs} / ${d.pausedSubs}</div></div>`;
+}
+
+async function loadSubs(m) {
+  const subs = await api(`/api/subscriptions?merchant=${m}`);
+  if (!subs.length) { $("subs").innerHTML = `<p class="empty">No subscriptions.</p>`; return; }
+  $("subs").innerHTML = `<table><thead><tr>
+    <th>ID</th><th class="addr">Subscriber</th><th>Price</th><th>Status</th>
+    <th>Next charge</th><th>Failed</th></tr></thead><tbody>` +
+    subs.map(s => `<tr>
+      <td>${s.subId}</td><td class="addr">${short(s.subscriber)}</td>
+      <td>$${s.priceUsdc}/cycle</td><td>${pill(s.statusName)}</td>
+      <td>${s.nextChargeAtIso.slice(0, 10)}</td><td>${s.failedAttempts}</td></tr>`).join("") +
+    `</tbody></table>`;
+}
+
+async function loadDunning(m) {
+  const rows = await api(`/api/dunning?merchant=${m}`);
+  if (!rows.length) { $("dunning").innerHTML = `<p class="empty">Queue empty.</p>`; return; }
+  $("dunning").innerHTML = `<table><thead><tr>
+    <th>Sub</th><th class="addr">Subscriber</th><th>Attempts</th><th>Next retry</th></tr></thead><tbody>` +
+    rows.map(r => `<tr><td>${r.subId}</td><td class="addr">${short(r.subscriber)}</td>
+      <td>${r.attempts}</td><td>${r.nextRetryAtIso.replace("T", " ").slice(0, 19)}Z</td></tr>`).join("") +
+    `</tbody></table>`;
+}
+
+async function loadHooks(m) {
+  const hooks = await api(`/api/webhooks?merchant=${m}`);
+  if (!hooks.length) { $("hooks").innerHTML = `<p class="empty">No endpoints registered.</p>`; return; }
+  const rows = await Promise.all(hooks.map(async (h) => {
+    const del = await api(`/api/deliveries?webhookId=${h.id}&limit=1`).catch(() => []);
+    const last = del[0];
+    return `<tr><td class="addr">${short(h.url)}</td>
+      <td>${h.events.join(", ")}</td>
+      <td>${h.active ? "on" : "off"}</td>
+      <td>${last ? `${pill(last.status)} ${last.event_type}` : `<span class="muted">none</span>`}</td>
+      <td><button class="ghost" data-toggle="${h.id}" data-active="${h.active}">${h.active ? "Disable" : "Enable"}</button>
+      <button class="danger" data-del="${h.id}">Delete</button></td></tr>`;
+  }));
+  $("hooks").innerHTML = `<table><thead><tr>
+    <th>URL</th><th>Events</th><th>Active</th><th>Last delivery</th><th></th></tr></thead>
+    <tbody>${rows.join("")}</tbody></table>`;
+  $("hooks").querySelectorAll("[data-toggle]").forEach(b => b.onclick = async () => {
+    await fetch(`/api/webhooks/${b.dataset.toggle}`, { method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ active: b.dataset.active !== "1" }) });
+    loadHooks(m);
+  });
+  $("hooks").querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
+    if (!confirm("Delete this webhook?")) return;
+    await fetch(`/api/webhooks/${b.dataset.del}`, { method: "DELETE" });
+    loadHooks(m);
+  });
+}
+
+async function loadInvoices(m) {
+  const rows = await api(`/api/charges?merchant=${m}`);
+  if (!rows.length) { $("invoices").innerHTML = `<p class="empty">No charges yet.</p>`; return; }
+  $("invoices").innerHTML = `<table><thead><tr>
+    <th>Invoice ref</th><th>Sub</th><th>Amount</th><th>Fee</th><th>Tx</th></tr></thead><tbody>` +
+    rows.slice(0, 50).map(c => `<tr><td class="addr">${short(c.invoiceRef)}</td>
+      <td>${c.subId}</td><td>$${c.amountUsdc}</td><td>$${c.feeUsdc}</td>
+      <td class="addr">${short(c.txHash)}</td></tr>`).join("") +
+    `</tbody></table>`;
+}
+
+$("load").onclick = () => load().catch(e => alert("Load failed: " + e.message));
+$("addHook").onclick = async () => {
+  const m = merchant();
+  const url = $("hookUrl").value.trim();
+  const events = [...$("hookEvents").querySelectorAll("input:checked")].map(i => i.value);
+  if (!/^0x[0-9a-fA-F]{40}$/.test(m)) { alert("Enter a valid 0x merchant address first"); return; }
+  if (!url) { alert("Enter an endpoint URL"); return; }
+  const r = await fetch("/api/webhooks", { method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ merchant: m, url, events }) });
+  if (!r.ok) { alert("Register failed: " + (await r.text())); return; }
+  $("hookUrl").value = "";
+  loadHooks(m);
+};
+if (merchantInput.value) load().catch(() => {});
+</script>
+</body>
+</html>

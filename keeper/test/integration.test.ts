@@ -1,7 +1,7 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -155,6 +155,7 @@ before(async () => {
   process.env.LEVY_KEEPER_KEY = KEEPER_KEY;
   process.env.LEVY_DB_PATH = ":memory:";
   process.env.LEVY_LOOKBACK_BLOCKS = "100000"; // anvil: scan from genesis
+  process.env.LEVY_WEBHOOK_KEY_PATH = join(dirname(fileURLToPath(import.meta.url)), "test-webhook-key.pem");
 
   const { loadConfig } = await import("../src/config.js");
   const cfg = loadConfig();
@@ -166,6 +167,7 @@ before(async () => {
 after(() => {
   db?.close();
   anvil?.kill("SIGKILL");
+  try { rmSync(join(dirname(fileURLToPath(import.meta.url)), "test-webhook-key.pem")); } catch { /* ignore */ }
 });
 
 describe("keeper integration (anvil)", () => {
@@ -254,5 +256,44 @@ describe("keeper integration (anvil)", () => {
 
     const rows = db["db"].prepare("SELECT * FROM dunning WHERE subId = '2'").all();
     assert.equal(rows.length, 0); // cleared on success
+  });
+
+  it("enqueues webhook events on Subscribed and Charged", async () => {
+    // Merchant (keeper account) registers for the billing events. The URL is
+    // unreachable on purpose: this test asserts enqueueing, not delivery.
+    keeperSvc.webhooks.register(
+      keeper.address,
+      "http://127.0.0.1:9/unused",
+      ["subscription.created", "charge.succeeded", "charge.failed", "dunning.started", "invoice.ready"],
+      await chainTime()
+    );
+
+    // Alice opens a second subscription, then it comes due and charges.
+    const aliceWallet = createWalletClient({
+      account: alice, chain: publicClient.chain, transport: http(RPC),
+    });
+    const asAlice = getContract({
+      address: manager.address, abi: abi("SubscriptionManager"),
+      client: { public: publicClient, wallet: aliceWallet },
+    });
+    await mined(await asAlice.write.subscribe([1n], { account: alice, chain: publicClient.chain }));
+    await increaseTime(CYCLE + 60);
+    const report = await keeperSvc.runCycle();
+    assert.ok(report.charged.some((c) => c.subId === "3"), "expected sub 3 charged");
+
+    const deliveries = db["db"]
+      .prepare("SELECT event_type, status FROM webhook_deliveries ORDER BY id ASC")
+      .all() as Array<{ event_type: string; status: string }>;
+    const types = deliveries.map((d) => d.event_type);
+    assert.ok(types.includes("subscription.created"), `missing subscription.created in ${types}`);
+    assert.ok(types.includes("charge.succeeded"), `missing charge.succeeded in ${types}`);
+    assert.ok(types.includes("invoice.ready"), `missing invoice.ready in ${types}`);
+    // Payloads are canonical JSON carrying the merchant.
+    const created = db["db"]
+      .prepare("SELECT payload FROM webhook_deliveries WHERE event_type = 'subscription.created'")
+      .get() as { payload: string };
+    const payload = JSON.parse(created.payload);
+    assert.equal(payload.subId, "3");
+    assert.equal(payload.merchant.toLowerCase(), keeper.address.toLowerCase());
   });
 });

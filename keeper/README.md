@@ -28,10 +28,31 @@ Dev (ts-node style, no build):
 npm run dev
 ```
 
+## Webhooks (M3)
+
+The keeper doubles as a webhook dispatcher. Merchants register endpoints
+(either via the API or directly in the `webhooks` table); contract events are
+fanned out per merchant subscription:
+
+- `subscription.created`, `charge.succeeded`, `charge.failed`,
+  `dunning.started` (first failure), `subscription.paused`,
+  `subscription.resumed`, `subscription.cancelled`, `invoice.ready`
+  (emitted alongside every `charge.succeeded`; the invoice is the charge record).
+
+Deliveries are Ed25519-signed (`X-Levy-Signature` over the canonical JSON
+body, plus `X-Levy-Event` / `X-Levy-Delivery` headers). The signing key is
+generated on first boot at `LEVY_WEBHOOK_KEY_PATH` (or inline via
+`LEVY_WEBHOOK_KEY`); the public key is served at
+`GET /api/webhooks/public-key`.
+
+Each keeper cycle dispatches due deliveries with a 10s POST timeout. Failures
+retry with backoff (1m, 5m, 15m, 1h, 6h) and dead-letter after 24h. Delivery
+state lives in `webhook_deliveries` (`pending` / `sent` / `failed` / `dead`).
+
 ## Tests
 
 ```bash
-npm test              # unit + anvil integration (13 tests)
+npm test              # unit + anvil integration (33 tests)
 npm run test:integration
 ```
 
