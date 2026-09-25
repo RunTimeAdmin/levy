@@ -5,19 +5,28 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateKeyPairSync } from "node:crypto";
 import { writeFileSync } from "node:fs";
+import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
+import { parseSiweMessage } from "viem/siwe";
 import { LevyDb } from "../../keeper/src/db.js";
-import { buildServer, formatUsdc } from "../src/server.js";
+import { apiOptionsFromEnv, buildServer, formatUsdc } from "../src/server.js";
 import type { FastifyInstance } from "fastify";
 
 const tmp = mkdtempSync(join(tmpdir(), "levy-api-"));
 const DB = join(tmp, "test.db");
 const KEY = join(tmp, "wh-key.pem");
+const ORIGIN = "https://app.levy.test";
 
-const MERCHANT = "0x1111111111111111111111111111111111111111";
-const SUBSCRIBER = "0x2222222222222222222222222222222222222222";
+// Real keys: sign-in needs genuine signatures.
+const merchantAcct = privateKeyToAccount(`0x${"11".repeat(32)}`);
+const subscriberAcct = privateKeyToAccount(`0x${"22".repeat(32)}`);
+const otherAcct = privateKeyToAccount(`0x${"33".repeat(32)}`); // a second merchant
+const MERCHANT = merchantAcct.address;
+const SUBSCRIBER = subscriberAcct.address;
+const OTHER = otherAcct.address;
 
 let app: FastifyInstance;
 let base: string;
+const tokens: Record<string, string> = {};
 
 function seed(): void {
   const db = new LevyDb(DB);
@@ -31,9 +40,18 @@ function seed(): void {
     price: "10000000", cycleSeconds: 2592000, status: 2,
     nextChargeAt: 1699900000, failedAttempts: 2,
   });
+  db.upsertSubscription({
+    subId: "3", subscriber: SUBSCRIBER, planId: "2", merchant: OTHER,
+    price: "5000000", cycleSeconds: 2592000, status: 1,
+    nextChargeAt: 1700000000, failedAttempts: 0,
+  });
   db.insertCharge({
     subId: "1", amount: "10000000", fee: "100000", invoiceRef: "inv-aaa",
     txHash: "0xtx1", blockNumber: 10, chargeCount: 1,
+  });
+  db.insertCharge({
+    subId: "3", amount: "5000000", fee: "50000", invoiceRef: "inv-other",
+    txHash: "0xtx3", blockNumber: 12, chargeCount: 1,
   });
   db.insertFailure("2", 1, "0xtx2", 11, 1699900000);
   db.setDunning({ subId: "2", attempts: 1, nextRetryAt: 1699986400, updatedAt: 1699900000 });
@@ -46,11 +64,15 @@ before(async () => {
   const { privateKey } = generateKeyPairSync("ed25519");
   writeFileSync(KEY, privateKey.export({ format: "pem", type: "pkcs8" }), { mode: 0o600 });
 
-  app = buildServer({ dbPath: DB, webhookKeyPath: KEY });
+  app = buildServer({ dbPath: DB, webhookKeyPath: KEY, origin: ORIGIN, chainId: 5042002 });
   await app.listen({ port: 0, host: "127.0.0.1" });
   const addr = app.server.address();
   if (typeof addr !== "object" || !addr) throw new Error("no address");
   base = `http://127.0.0.1:${addr.port}`;
+
+  for (const acct of [merchantAcct, subscriberAcct, otherAcct]) {
+    tokens[acct.address] = await signIn(acct);
+  }
 });
 
 after(async () => {
@@ -58,12 +80,36 @@ after(async () => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-async function get(path: string) {
-  const r = await fetch(base + path);
-  const body = await r.text();
-  let json: unknown = null;
-  try { json = JSON.parse(body); } catch { /* csv / html */ }
-  return { status: r.status, json, body, headers: r.headers };
+async function call(method: string, path: string, opts: { as?: string; token?: string; body?: unknown } = {}) {
+  const headers: Record<string, string> = {};
+  const token = opts.token ?? (opts.as ? tokens[opts.as] : undefined);
+  if (token) headers.authorization = `Bearer ${token}`;
+  if (opts.body !== undefined) headers["content-type"] = "application/json";
+  const r = await fetch(base + path, {
+    method,
+    headers,
+    body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+  });
+  const text = await r.text();
+  let json: any = null;
+  try { json = JSON.parse(text); } catch { /* csv / html */ }
+  return { status: r.status, json, body: text, headers: r.headers };
+}
+
+const get = (path: string, as?: string) => call("GET", path, { as });
+
+async function challenge(address: string) {
+  const r = await call("POST", "/api/auth/challenge", { body: { address } });
+  assert.equal(r.status, 200);
+  return r.json as { nonce: string; message: string };
+}
+
+async function signIn(acct: PrivateKeyAccount): Promise<string> {
+  const { nonce, message } = await challenge(acct.address);
+  const signature = await acct.signMessage({ message });
+  const r = await call("POST", "/api/auth/verify", { body: { nonce, signature } });
+  assert.equal(r.status, 200, r.body);
+  return r.json.token;
 }
 
 describe("formatUsdc", () => {
@@ -75,56 +121,125 @@ describe("formatUsdc", () => {
   });
 });
 
-describe("read endpoints", () => {
+describe("sign-in", () => {
+  it("issues an EIP-4361 message bound to the configured origin and chain", async () => {
+    const { nonce, message } = await challenge(MERCHANT.toLowerCase());
+    const parsed = parseSiweMessage(message);
+    assert.equal(parsed.domain, "app.levy.test");
+    assert.equal(parsed.uri, ORIGIN);
+    assert.equal(parsed.address, MERCHANT); // checksummed
+    assert.equal(parsed.chainId, 5042002);
+    assert.equal(parsed.nonce, nonce);
+    assert.ok(parsed.expirationTime && parsed.expirationTime > new Date());
+  });
+
+  it("signs in, reports the session, and logs out", async () => {
+    const token = await signIn(merchantAcct);
+    const s = await call("GET", "/api/auth/session", { token });
+    assert.equal(s.status, 200);
+    assert.equal(s.json.address, MERCHANT);
+
+    assert.equal((await call("POST", "/api/auth/logout", { token })).status, 200);
+    assert.equal((await call("GET", "/api/auth/session", { token })).status, 401);
+  });
+
+  it("rejects a reused nonce", async () => {
+    const { nonce, message } = await challenge(MERCHANT);
+    const signature = await merchantAcct.signMessage({ message });
+    assert.equal((await call("POST", "/api/auth/verify", { body: { nonce, signature } })).status, 200);
+    assert.equal((await call("POST", "/api/auth/verify", { body: { nonce, signature } })).status, 401);
+  });
+
+  it("rejects a signature from a different wallet", async () => {
+    const { nonce, message } = await challenge(MERCHANT);
+    const signature = await otherAcct.signMessage({ message });
+    const r = await call("POST", "/api/auth/verify", { body: { nonce, signature } });
+    assert.equal(r.status, 401);
+    // The failed attempt burns the challenge.
+    const retry = await call("POST", "/api/auth/verify", {
+      body: { nonce, signature: await merchantAcct.signMessage({ message }) },
+    });
+    assert.equal(retry.status, 401);
+  });
+
+  it("rejects unknown nonces and malformed input", async () => {
+    const sig = await merchantAcct.signMessage({ message: "anything" });
+    assert.equal((await call("POST", "/api/auth/verify", { body: { nonce: "nope", signature: sig } })).status, 401);
+    assert.equal((await call("POST", "/api/auth/verify", { body: { nonce: "x", signature: "zz" } })).status, 400);
+    assert.equal((await call("POST", "/api/auth/challenge", { body: { address: "nope" } })).status, 400);
+  });
+
+  it("requires a valid session on every private endpoint", async () => {
+    const paths = [
+      ["GET", `/api/subscriptions?merchant=${MERCHANT}`], ["GET", "/api/subscriptions/1"],
+      ["GET", "/api/metrics"], ["GET", "/api/dunning"], ["GET", "/api/charges"],
+      ["GET", "/api/invoices?format=csv"], ["GET", "/api/webhooks"], ["GET", "/api/deliveries"],
+      ["POST", "/api/webhooks"], ["PATCH", "/api/webhooks/1"], ["DELETE", "/api/webhooks/1"],
+    ] as const;
+    for (const [method, path] of paths) {
+      assert.equal((await call(method, path)).status, 401, `${method} ${path} without token`);
+      assert.equal((await call(method, path, { token: "garbage" })).status, 401, `${method} ${path} bad token`);
+    }
+  });
+});
+
+describe("public endpoints", () => {
   it("GET /api/health", async () => {
     const r = await get("/api/health");
     assert.equal(r.status, 200);
-    assert.equal((r.json as { ok: boolean }).ok, true);
+    assert.equal(r.json.ok, true);
   });
 
   it("GET /api/plans", async () => {
     const r = await get("/api/plans");
     assert.equal(r.status, 200);
-    const plans = r.json as Array<{ planId: string; priceUsdc: string }>;
-    assert.equal(plans.length, 1);
-    assert.equal(plans[0].planId, "1");
-    assert.equal(plans[0].priceUsdc, "10.000000");
+    assert.equal(r.json.length, 2);
+    assert.equal(r.json[0].planId, "1");
+    assert.equal(r.json[0].priceUsdc, "10.000000");
   });
 
-  it("GET /api/subscriptions filters by merchant and subscriber", async () => {
-    const r = await get(`/api/subscriptions?merchant=${MERCHANT}`);
+  it("GET /api/webhooks/public-key serves the SPKI PEM", async () => {
+    const r = await get("/api/webhooks/public-key");
     assert.equal(r.status, 200);
-    assert.equal((r.json as unknown[]).length, 2);
+    assert.equal(r.json.algorithm, "ed25519");
+    assert.ok(r.json.publicKey.includes("BEGIN PUBLIC KEY"));
+    assert.equal(r.json.events.length, 8);
+  });
+});
 
-    const s = await get(`/api/subscriptions?subscriber=${SUBSCRIBER}&status=2`);
-    assert.equal((s.json as unknown[]).length, 1);
+describe("data is scoped to the signed-in address", () => {
+  it("subscriptions: own merchant or subscriber view only", async () => {
+    const r = await get(`/api/subscriptions?merchant=${MERCHANT}`, MERCHANT);
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.map((s: any) => s.subId), ["1", "2"]);
 
-    const bad = await get("/api/subscriptions?merchant=nope");
-    assert.equal(bad.status, 400);
+    const s = await get(`/api/subscriptions?subscriber=${SUBSCRIBER}&status=2`, SUBSCRIBER);
+    assert.deepEqual(s.json.map((x: any) => x.subId), ["2"]);
+
+    assert.equal((await get(`/api/subscriptions?merchant=${OTHER}`, MERCHANT)).status, 403);
+    assert.equal((await get(`/api/subscriptions?subscriber=${SUBSCRIBER}`, MERCHANT)).status, 403);
+    assert.equal((await get("/api/subscriptions?merchant=nope", MERCHANT)).status, 400);
+    assert.equal((await get("/api/subscriptions", MERCHANT)).status, 400);
   });
 
-  it("GET /api/subscriptions/:id includes charges and dunning", async () => {
-    const r = await get("/api/subscriptions/2");
+  it("subscription detail: visible to its subscriber and merchant, 404 to anyone else", async () => {
+    const r = await get("/api/subscriptions/2", SUBSCRIBER);
     assert.equal(r.status, 200);
-    const sub = r.json as { statusName: string; dunning: { attempts: number } | null };
-    assert.equal(sub.statusName, "past_due");
-    assert.equal(sub.dunning?.attempts, 1);
+    assert.equal(r.json.statusName, "past_due");
+    assert.equal(r.json.dunning?.attempts, 1);
 
-    const missing = await get("/api/subscriptions/999");
-    assert.equal(missing.status, 404);
+    assert.equal((await get("/api/subscriptions/2", MERCHANT)).status, 200);
+    assert.equal((await get("/api/subscriptions/2", OTHER)).status, 404);
+    assert.equal((await get("/api/subscriptions/999", MERCHANT)).status, 404);
   });
 
-  it("GET /api/metrics computes MRR and success rate", async () => {
-    const r = await get(`/api/metrics?merchant=${MERCHANT}`);
+  it("metrics are computed for the signed-in merchant", async () => {
+    const r = await get("/api/metrics", MERCHANT);
     assert.equal(r.status, 200);
-    const m = r.json as {
-      mrr: string; mrrUsdc: string; activeSubs: number; pastDueSubs: number;
-      chargeCount: number; failureCount: number; successRate: number; dunningDepth: number;
-      totalChargedUsdc: string;
-    };
+    const m = r.json;
+    assert.equal(m.merchant, MERCHANT);
     // MRR counts trial + active only; sub 2 is past_due.
     assert.equal(m.mrr, "10000000");
-    assert.equal(m.mrrUsdc, "10.000000");
     assert.equal(m.activeSubs, 1);
     assert.equal(m.pastDueSubs, 1);
     assert.equal(m.chargeCount, 1);
@@ -132,99 +247,147 @@ describe("read endpoints", () => {
     assert.equal(m.successRate, 0.5);
     assert.equal(m.dunningDepth, 1);
     assert.equal(m.totalChargedUsdc, "10.000000");
+
+    const other = await get("/api/metrics", OTHER);
+    assert.equal(other.json.totalSubs, 1);
+    assert.equal(other.json.totalChargedUsdc, "5.000000");
+    assert.equal((await get(`/api/metrics?merchant=${MERCHANT}`, OTHER)).status, 403);
   });
 
-  it("GET /api/dunning returns the queue", async () => {
-    const r = await get(`/api/dunning?merchant=${MERCHANT}`);
+  it("dunning queue", async () => {
+    const r = await get("/api/dunning", MERCHANT);
     assert.equal(r.status, 200);
-    const rows = r.json as Array<{ subId: string; nextRetryAtIso: string }>;
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].subId, "2");
-    assert.ok(rows[0].nextRetryAtIso.endsWith("Z"));
+    assert.equal(r.json.length, 1);
+    assert.equal(r.json[0].subId, "2");
+    assert.ok(r.json[0].nextRetryAtIso.endsWith("Z"));
+    assert.equal((await get("/api/dunning", OTHER)).json.length, 0);
   });
 
-  it("GET /api/charges returns JSON and CSV", async () => {
-    const r = await get(`/api/charges?merchant=${MERCHANT}`);
+  it("charges and CSV invoices", async () => {
+    const r = await get("/api/charges", MERCHANT);
     assert.equal(r.status, 200);
-    const rows = r.json as Array<{ invoiceRef: string; amountUsdc: string }>;
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].invoiceRef, "inv-aaa");
-    assert.equal(rows[0].amountUsdc, "10.000000");
+    assert.deepEqual(r.json.map((c: any) => c.invoiceRef), ["inv-aaa"]);
+    assert.equal(r.json[0].amountUsdc, "10.000000");
 
-    const csv = await get(`/api/invoices?merchant=${MERCHANT}&format=csv`);
+    const csv = await get("/api/invoices?format=csv", MERCHANT);
     assert.equal(csv.status, 200);
     assert.ok(csv.headers.get("content-type")?.includes("text/csv"));
     const lines = csv.body.trim().split("\n");
     assert.equal(lines.length, 2);
     assert.ok(lines[0].startsWith("id,invoiceRef,subId"));
     assert.ok(lines[1].includes("inv-aaa"));
+
+    // Another merchant's subscription id does not leak its charges.
+    assert.deepEqual((await get("/api/charges?subscription=3", MERCHANT)).json, []);
   });
 });
 
-describe("webhook config endpoints", () => {
-  it("POST /api/webhooks validates and registers", async () => {
-    const ok = await fetch(base + "/api/webhooks", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        merchant: MERCHANT,
-        url: "https://example.com/hook",
-        events: ["charge.succeeded", "charge.failed"],
-      }),
-    });
-    assert.equal(ok.status, 200);
-    const { id } = (await ok.json()) as { id: number };
-    assert.ok(Number.isInteger(id));
+describe("webhooks", () => {
+  // IP-literal URLs keep these tests off the network (no DNS).
+  const HOOK = "https://8.8.8.8/hook";
 
-    const list = await get(`/api/webhooks?merchant=${MERCHANT}`);
-    assert.equal((list.json as unknown[]).length, 1);
-
-    const badEvent = await fetch(base + "/api/webhooks", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ merchant: MERCHANT, url: "https://example.com/h", events: ["bogus"] }),
+  it("registers, lists, toggles and deletes for the signed-in merchant only", async () => {
+    const ok = await call("POST", "/api/webhooks", {
+      as: MERCHANT, body: { url: HOOK, events: ["charge.succeeded", "charge.failed"] },
     });
-    assert.equal(badEvent.status, 400);
+    assert.equal(ok.status, 200, ok.body);
+    const id = ok.json.id as number;
 
-    const badUrl = await fetch(base + "/api/webhooks", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ merchant: MERCHANT, url: "ftp://example.com/h", events: ["charge.succeeded"] }),
-    });
-    assert.equal(badUrl.status, 400);
+    const mine = await get("/api/webhooks", MERCHANT);
+    assert.equal(mine.json.length, 1);
+    assert.equal(mine.json[0].merchant, MERCHANT);
+    assert.equal((await get("/api/webhooks", OTHER)).json.length, 0);
 
-    // Toggle + delete.
-    const patch = await fetch(base + `/api/webhooks/${id}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ active: false }),
-    });
-    assert.equal(patch.status, 200);
-    const del = await fetch(base + `/api/webhooks/${id}`, { method: "DELETE" });
-    assert.equal(del.status, 200);
-    const gone = await fetch(base + `/api/webhooks/${id}`, { method: "DELETE" });
-    assert.equal(gone.status, 404);
+    // Another merchant cannot see, toggle or delete it.
+    assert.equal((await call("PATCH", `/api/webhooks/${id}`, { as: OTHER, body: { active: false } })).status, 404);
+    assert.equal((await call("DELETE", `/api/webhooks/${id}`, { as: OTHER })).status, 404);
+
+    assert.equal((await call("PATCH", `/api/webhooks/${id}`, { as: MERCHANT, body: { active: false } })).status, 200);
+    assert.equal((await call("DELETE", `/api/webhooks/${id}`, { as: MERCHANT })).status, 200);
+    assert.equal((await call("DELETE", `/api/webhooks/${id}`, { as: MERCHANT })).status, 404);
   });
 
-  it("GET /api/webhooks/public-key serves the SPKI PEM", async () => {
-    const r = await get("/api/webhooks/public-key");
-    assert.equal(r.status, 200);
-    const body = r.json as { algorithm: string; publicKey: string; events: string[] };
-    assert.equal(body.algorithm, "ed25519");
-    assert.ok(body.publicKey.includes("BEGIN PUBLIC KEY"));
-    assert.ok(body.events.includes("charge.succeeded"));
-    assert.equal(body.events.length, 8);
+  it("cannot register for another merchant", async () => {
+    const r = await call("POST", "/api/webhooks", {
+      as: MERCHANT, body: { merchant: OTHER, url: HOOK, events: ["charge.succeeded"] },
+    });
+    assert.equal(r.status, 403);
   });
 
-  it("GET /api/deliveries is empty when nothing enqueued", async () => {
-    const r = await get("/api/deliveries");
+  it("rejects unknown events and unsafe URLs", async () => {
+    const post = (url: string, events = ["charge.succeeded"]) =>
+      call("POST", "/api/webhooks", { as: MERCHANT, body: { url, events } });
+    assert.equal((await post(HOOK, ["bogus"])).status, 400);
+    for (const [url, why] of [
+      ["http://8.8.8.8/hook", "https"],
+      ["ftp://8.8.8.8/hook", "https"],
+      ["https://user:pw@8.8.8.8/hook", "credentials"],
+      ["https://127.0.0.1/hook", "private"],
+      ["https://169.254.169.254/latest/meta-data", "private"],
+      ["https://[::1]/hook", "private"],
+      ["https://localhost/hook", "private"],
+      ["https://8.8.8.8:8080/hook", "443"],
+    ]) {
+      const r = await post(url);
+      assert.equal(r.status, 400, url);
+      assert.ok(r.body.includes(why), `${url}: ${r.body}`);
+    }
+  });
+
+  it("deliveries: only the signed-in merchant's", async () => {
+    const db = new LevyDb(DB);
+    const mine = db.registerWebhook(MERCHANT, HOOK, ["charge.succeeded"], 0);
+    const theirs = db.registerWebhook(OTHER, HOOK, ["charge.succeeded"], 0);
+    db.enqueueDelivery(mine, "charge.succeeded", "{\"subId\":\"1\"}", 0);
+    db.enqueueDelivery(theirs, "charge.succeeded", "{\"subId\":\"3\"}", 0);
+    db.close();
+
+    const r = await get("/api/deliveries", MERCHANT);
     assert.equal(r.status, 200);
-    assert.deepEqual(r.json, []);
+    assert.deepEqual(r.json.map((d: any) => d.webhook_id), [mine]);
+    // Asking for another merchant's webhook id returns nothing.
+    assert.deepEqual((await get(`/api/deliveries?webhookId=${theirs}`, MERCHANT)).json, []);
+    // limit is clamped (SQLite reads a negative LIMIT as "no limit").
+    assert.equal((await get("/api/deliveries?limit=-1", MERCHANT)).json.length, 1);
+    assert.equal((await get("/api/deliveries?limit=1.5", MERCHANT)).status, 200);
+  });
+
+  it("caps webhooks per merchant", async () => {
+    // The subscriber wallet acts as a fresh merchant here.
+    for (let i = 0; i < 5; i++) {
+      const r = await call("POST", "/api/webhooks", {
+        as: SUBSCRIBER, body: { url: `https://8.8.8.8/hook${i}`, events: ["charge.succeeded"] },
+      });
+      assert.equal(r.status, 200, r.body);
+    }
+    const sixth = await call("POST", "/api/webhooks", {
+      as: SUBSCRIBER, body: { url: "https://8.8.8.8/hook6", events: ["charge.succeeded"] },
+    });
+    assert.equal(sixth.status, 400);
+    assert.ok(sixth.body.includes("limit"));
+  });
+});
+
+describe("configuration", () => {
+  it("refuses to start in production without LEVY_PUBLIC_ORIGIN", () => {
+    const saved = { origin: process.env.LEVY_PUBLIC_ORIGIN, env: process.env.NODE_ENV };
+    try {
+      delete process.env.LEVY_PUBLIC_ORIGIN;
+      process.env.NODE_ENV = "production";
+      assert.throws(() => apiOptionsFromEnv(), /LEVY_PUBLIC_ORIGIN/);
+      process.env.LEVY_PUBLIC_ORIGIN = "https://app.levy.test";
+      assert.equal(apiOptionsFromEnv().origin, "https://app.levy.test");
+    } finally {
+      if (saved.origin === undefined) delete process.env.LEVY_PUBLIC_ORIGIN;
+      else process.env.LEVY_PUBLIC_ORIGIN = saved.origin;
+      if (saved.env === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = saved.env;
+    }
   });
 });
 
 describe("static frontend", () => {
-  it("serves the dashboard and portal", async () => {
+  it("serves the dashboard, portal and sign-in script", async () => {
     const dash = await get("/");
     assert.equal(dash.status, 200);
     assert.ok(dash.body.includes("Levy") && dash.body.includes("Merchant"));
@@ -232,5 +395,9 @@ describe("static frontend", () => {
     const portal = await get("/portal.html");
     assert.equal(portal.status, 200);
     assert.ok(portal.body.includes("My Subscriptions"));
+
+    const auth = await get("/public/auth.js");
+    assert.equal(auth.status, 200);
+    assert.ok(auth.headers.get("content-type")?.includes("javascript"));
   });
 });

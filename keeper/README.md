@@ -45,7 +45,12 @@ generated on first boot at `LEVY_WEBHOOK_KEY_PATH` (or inline via
 `LEVY_WEBHOOK_KEY`); the public key is served at
 `GET /api/webhooks/public-key`.
 
-Each keeper cycle dispatches due deliveries with a 10s POST timeout. Failures
+Deliveries only go to https URLs on public addresses. The address is checked
+at connect time (so DNS rebinding after registration does not help), and
+redirects are never followed. `LEVY_WEBHOOK_ALLOW_PRIVATE=1` lifts this for
+local development only; see `src/webhook-url.ts`.
+
+Each keeper cycle dispatches due deliveries with a 5s POST timeout. Failures
 retry with backoff (1m, 5m, 15m, 1h, 6h) and dead-letter after 24h. Delivery
 state lives in `webhook_deliveries` (`pending` / `sent` / `failed` / `dead`).
 

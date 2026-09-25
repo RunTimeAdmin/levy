@@ -47,8 +47,9 @@
 <header>
   <h1>Levy <span>Merchant</span></h1>
   <div class="row">
-    <input type="text" id="merchant" size="44" placeholder="merchant 0x address" spellcheck="false">
-    <button id="load">Load</button>
+    <span id="who" class="muted"></span>
+    <button id="signIn">Sign in with wallet</button>
+    <button id="signOut" class="ghost" hidden>Sign out</button>
   </div>
   <span class="muted" style="margin-left:auto"><a href="/portal.html">customer portal</a></span>
 </header>
@@ -57,7 +58,7 @@
 
   <section class="panel">
     <h2>Subscriptions</h2>
-    <div id="subs"><p class="empty">Enter a merchant address and press Load.</p></div>
+    <div id="subs"><p class="empty">Sign in with the wallet that created your plans.</p></div>
   </section>
 
   <section class="panel">
@@ -86,26 +87,31 @@
   </section>
 </main>
 
+<script src="/public/auth.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
-const merchantInput = $("merchant");
-merchantInput.value = localStorage.getItem("levy_merchant") || "";
 
 const EVENTS = ["subscription.created","charge.succeeded","charge.failed","dunning.started","subscription.paused","subscription.resumed","subscription.cancelled","invoice.ready"];
 $("hookEvents").innerHTML = EVENTS.map(e =>
   `<label><input type="checkbox" value="${e}" checked> ${e}</label>`).join("");
 
 const short = (a) => a ? a.slice(0, 6) + "..." + a.slice(-4) : "";
-const merchant = () => merchantInput.value.trim();
-const api = (p) => fetch(p).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
+const merchant = () => LevyAuth.address;
+const api = (p, opts) => LevyAuth.api(p, opts);
 
 function pill(text, cls) { return `<span class="pill ${cls || text}">${text}</span>`; }
 
-async function load() {
+function showSession() {
   const m = merchant();
-  if (!/^0x[0-9a-fA-F]{40}$/.test(m)) { alert("Enter a valid 0x merchant address"); return; }
-  localStorage.setItem("levy_merchant", m);
-  $("csvLink").href = `/api/invoices?merchant=${m}&format=csv`;
+  $("who").textContent = m ? `signed in as ${short(m)}` : "";
+  $("signIn").hidden = !!m;
+  $("signOut").hidden = !m;
+}
+
+async function load() {
+  showSession();
+  const m = merchant();
+  if (!m) return;
   await Promise.all([loadMetrics(m), loadSubs(m), loadDunning(m), loadHooks(m), loadInvoices(m)]);
 }
 
@@ -161,14 +167,13 @@ async function loadHooks(m) {
     <th>URL</th><th>Events</th><th>Active</th><th>Last delivery</th><th></th></tr></thead>
     <tbody>${rows.join("")}</tbody></table>`;
   $("hooks").querySelectorAll("[data-toggle]").forEach(b => b.onclick = async () => {
-    await fetch(`/api/webhooks/${b.dataset.toggle}`, { method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ active: b.dataset.active !== "1" }) });
+    await api(`/api/webhooks/${b.dataset.toggle}`, { method: "PATCH",
+      body: { active: b.dataset.active !== "1" } }).catch(e => alert(e.message));
     loadHooks(m);
   });
   $("hooks").querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
     if (!confirm("Delete this webhook?")) return;
-    await fetch(`/api/webhooks/${b.dataset.del}`, { method: "DELETE" });
+    await api(`/api/webhooks/${b.dataset.del}`, { method: "DELETE" }).catch(e => alert(e.message));
     loadHooks(m);
   });
 }
@@ -184,21 +189,32 @@ async function loadInvoices(m) {
     `</tbody></table>`;
 }
 
-$("load").onclick = () => load().catch(e => alert("Load failed: " + e.message));
+$("signIn").onclick = () => LevyAuth.signIn().then(load).catch(e => alert("Sign-in failed: " + e.message));
+$("signOut").onclick = () => LevyAuth.signOut().then(() => location.reload());
+// The CSV needs the session header, so it is fetched and saved rather than linked.
+$("csvLink").onclick = async (e) => {
+  e.preventDefault();
+  const csv = await api("/api/invoices?format=csv").catch(err => { alert(err.message); return null; });
+  if (csv === null) return;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  a.download = "levy-invoices.csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
 $("addHook").onclick = async () => {
   const m = merchant();
   const url = $("hookUrl").value.trim();
   const events = [...$("hookEvents").querySelectorAll("input:checked")].map(i => i.value);
-  if (!/^0x[0-9a-fA-F]{40}$/.test(m)) { alert("Enter a valid 0x merchant address first"); return; }
+  if (!m) { alert("Sign in first"); return; }
   if (!url) { alert("Enter an endpoint URL"); return; }
-  const r = await fetch("/api/webhooks", { method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ merchant: m, url, events }) });
-  if (!r.ok) { alert("Register failed: " + (await r.text())); return; }
+  try {
+    await api("/api/webhooks", { method: "POST", body: { url, events } });
+  } catch (e) { alert("Register failed: " + e.message); return; }
   $("hookUrl").value = "";
   loadHooks(m);
 };
-if (merchantInput.value) load().catch(() => {});
+load().catch(e => { showSession(); if (merchant()) alert("Load failed: " + e.message); });
 </script>
 </body>
 </html>

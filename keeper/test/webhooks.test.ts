@@ -17,6 +17,7 @@ import {
   WebhookDispatcher,
   type WebhookEventType,
 } from "../src/webhooks.js";
+import { checkWebhookUrl, isBlockedAddress } from "../src/webhook-url.js";
 
 const tmp = mkdtempSync(join(tmpdir(), "levy-wh-"));
 after(() => rmSync(tmp, { recursive: true, force: true }));
@@ -31,6 +32,9 @@ function testDb(): LevyDb {
 
 const MERCHANT = "0xmerchant000000000000000000000000000000000001";
 const LOG = { transactionHash: "0xtx", blockNumber: 42n };
+// The live-HTTP tests below deliver to a local server, so they opt in to private addresses.
+const LOCAL = { allowPrivate: true };
+const STRICT = { allowPrivate: false };
 
 describe("canonicalJson", () => {
   it("sorts keys recursively and deterministically", () => {
@@ -196,7 +200,7 @@ describe("WebhookDispatcher", () => {
 describe("dispatchDue (live HTTP)", () => {
   let server: Server;
   let port: number;
-  const received: Array<{ headers: Record<string, string | string[] | undefined>; body: string }> = [];
+  const received: Array<{ headers: Record<string, string | string[] | undefined>; body: string; path: string }> = [];
   let failMode = false;
 
   // node:test before() at top level of file would clash; use a local promise.
@@ -205,8 +209,10 @@ describe("dispatchDue (live HTTP)", () => {
       let body = "";
       req.on("data", (c) => { body += c; });
       req.on("end", () => {
-        received.push({ headers: req.headers as Record<string, string>, body });
-        if (failMode) { res.statusCode = 500; res.end("boom"); }
+        received.push({ headers: req.headers as Record<string, string>, body, path: req.url ?? "" });
+        if (req.url === "/redirect") { res.statusCode = 302; res.setHeader("location", "/hook"); res.end(); }
+        else if (req.url === "/trickle") { res.writeHead(200); res.write("never ends"); }
+        else if (failMode) { res.statusCode = 500; res.end("boom"); }
         else { res.statusCode = 200; res.end("ok"); }
       });
     });
@@ -214,14 +220,14 @@ describe("dispatchDue (live HTTP)", () => {
     port = (server.address() as { port: number }).port;
   })();
 
-  after(() => server?.close());
+  after(() => { server?.closeAllConnections(); server?.close(); });
 
   it("delivers with verifiable Ed25519 signature headers", async () => {
     await ready;
     received.length = 0;
     const db = testDb();
     const key = testKey();
-    const d = new WebhookDispatcher(db, key);
+    const d = new WebhookDispatcher(db, key, LOCAL);
     d.register(MERCHANT, `http://127.0.0.1:${port}/hook`, ["charge.succeeded"], 1000);
     d.enqueue("charge.succeeded", MERCHANT, { subId: "9", amount: "500" }, 1000);
 
@@ -247,7 +253,7 @@ describe("dispatchDue (live HTTP)", () => {
     failMode = true;
     try {
       const db = testDb();
-      const d = new WebhookDispatcher(db, testKey());
+      const d = new WebhookDispatcher(db, testKey(), LOCAL);
       d.register(MERCHANT, `http://127.0.0.1:${port}/hook`, ["charge.failed"], 0);
       d.enqueue("charge.failed", MERCHANT, { subId: "1" }, 0);
 
@@ -284,12 +290,119 @@ describe("dispatchDue (live HTTP)", () => {
   it("dead-letters deliveries whose webhook was deleted", async () => {
     await ready;
     const db = testDb();
-    const d = new WebhookDispatcher(db, testKey());
+    const d = new WebhookDispatcher(db, testKey(), LOCAL);
     const id = d.register(MERCHANT, `http://127.0.0.1:${port}/hook`, ["charge.failed"], 0);
     d.enqueue("charge.failed", MERCHANT, { subId: "1" }, 0);
     db.deleteWebhook(id);
     const out = await d.dispatchDue(0);
     assert.deepEqual(out, { sent: 0, failed: 0, dead: 1 });
     db.close();
+  });
+
+  it("does not follow redirects", async () => {
+    await ready;
+    received.length = 0;
+    const db = testDb();
+    const d = new WebhookDispatcher(db, testKey(), LOCAL);
+    d.register(MERCHANT, `http://127.0.0.1:${port}/redirect`, ["charge.failed"], 0);
+    d.enqueue("charge.failed", MERCHANT, { subId: "1" }, 0);
+    const out = await d.dispatchDue(0);
+    assert.deepEqual(out, { sent: 0, failed: 1, dead: 0 });
+    assert.equal(db.listDeliveries()[0].last_error, "HTTP 302");
+    assert.deepEqual(received.map((r) => r.path), ["/redirect"]); // /hook never requested
+    db.close();
+  });
+
+  it("refuses private addresses at delivery time unless allowed", async () => {
+    await ready;
+    received.length = 0;
+    const db = testDb();
+    const d = new WebhookDispatcher(db, testKey(), STRICT);
+    // Registered directly, bypassing the API's registration check: the
+    // dispatcher must still refuse. http is refused outright; https to a
+    // hostname resolving to loopback is refused by the lookup guard, which is
+    // what stops DNS rebinding after registration.
+    d.register(MERCHANT, `http://127.0.0.1:${port}/hook`, ["charge.failed"], 0);
+    d.register(MERCHANT, "https://localhost/hook", ["charge.failed"], 0);
+    d.enqueue("charge.failed", MERCHANT, { subId: "1" }, 0);
+    const out = await d.dispatchDue(0);
+    assert.deepEqual(out, { sent: 0, failed: 2, dead: 0 });
+    const errors = db.listDeliveries().map((r) => r.last_error ?? "");
+    assert.ok(errors.some((e) => e.includes("url must use https")), errors.join(" | "));
+    assert.ok(errors.some((e) => e.includes("resolves to a private or reserved address")), errors.join(" | "));
+    assert.equal(received.length, 0);
+    db.close();
+  });
+
+  it("does not wait on a response body that never ends", async () => {
+    await ready;
+    const db = testDb();
+    const d = new WebhookDispatcher(db, testKey(), LOCAL);
+    d.register(MERCHANT, `http://127.0.0.1:${port}/trickle`, ["charge.failed"], 0);
+    d.enqueue("charge.failed", MERCHANT, { subId: "1" }, 0);
+    const t0 = Date.now();
+    const out = await d.dispatchDue(0);
+    assert.deepEqual(out, { sent: 1, failed: 0, dead: 0 });
+    assert.ok(Date.now() - t0 < 2000, "should return on the status line");
+    db.close();
+  });
+
+  it("records coarse errors, not raw network messages", async () => {
+    const db = testDb();
+    const d = new WebhookDispatcher(db, testKey(), LOCAL);
+    d.register(MERCHANT, "http://127.0.0.1:1/hook", ["charge.failed"], 0); // nothing listens on port 1
+    d.enqueue("charge.failed", MERCHANT, { subId: "1" }, 0);
+    await d.dispatchDue(0);
+    assert.equal(db.listDeliveries()[0].last_error, "connection failed");
+    db.close();
+  });
+});
+
+describe("webhook URL policy", () => {
+  it("classifies addresses", () => {
+    for (const ip of [
+      "127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1",
+      "0.0.0.0", "224.0.0.1", "255.255.255.255", "::1", "::", "fe80::1", "fd00::1",
+      "::ffff:127.0.0.1", "::ffff:169.254.169.254", "not-an-ip",
+      // Forms that embed IPv4 or are special-purpose (security review, 2026-09-25).
+      "::7f00:1", "::ffff:0:7f00:1", "64:ff9b::7f00:1", "64:ff9b:1::1", "2002:7f00:1::1",
+      "2001:0:4136:e378::1", "fec0::1", "2001:db8::1", "192.88.99.1", "::ffff:8.8.8.8",
+    ]) {
+      assert.equal(isBlockedAddress(ip), true, ip);
+    }
+    for (const ip of ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"]) {
+      assert.equal(isBlockedAddress(ip), false, ip);
+    }
+  });
+
+  it("rejects unsafe URLs at registration", async () => {
+    const cases: Array<[string, string]> = [
+      ["http://8.8.8.8/hook", "https"],
+      ["ftp://8.8.8.8/hook", "https"],
+      ["https://user:pw@8.8.8.8/hook", "credentials"],
+      ["https://127.0.0.1/hook", "private"],
+      ["https://169.254.169.254/latest/meta-data", "private"],
+      ["https://[::1]/hook", "private"],
+      ["https://[::ffff:10.0.0.1]/hook", "private"],
+      ["https://localhost/hook", "private"],
+      ["https://no-such-host.invalid/hook", "public address"],
+      ["https://8.8.8.8:8443/hook", "443"],
+      ["not a url", "valid URL"],
+    ];
+    for (const [url, why] of cases) {
+      const r = await checkWebhookUrl(url, STRICT);
+      assert.equal(r.ok, false, url);
+      assert.ok(!r.ok && r.error.includes(why), `${url}: ${!r.ok && r.error}`);
+    }
+  });
+
+  it("accepts public https URLs and normalizes them", async () => {
+    const r = await checkWebhookUrl("https://8.8.8.8/hook?x=<y>", STRICT);
+    assert.deepEqual(r, { ok: true, url: "https://8.8.8.8/hook?x=%3Cy%3E" });
+    const explicitPort = await checkWebhookUrl("https://8.8.8.8:443/hook", STRICT);
+    assert.deepEqual(explicitPort, { ok: true, url: "https://8.8.8.8/hook" });
+    // Local development can opt in to http and private addresses.
+    const local = await checkWebhookUrl("http://127.0.0.1:9/hook", LOCAL);
+    assert.equal(local.ok, true);
   });
 });

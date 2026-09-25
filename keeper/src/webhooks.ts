@@ -7,7 +7,10 @@ import {
   type KeyObject,
 } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
+import http from "node:http";
+import https from "node:https";
 import { LevyDb } from "./db.js";
+import { publicOnlyLookup, webhookUrlProblem, type WebhookUrlPolicy } from "./webhook-url.js";
 
 /** The eight webhook event types merchants can subscribe to. */
 export const WEBHOOK_EVENTS = [
@@ -217,12 +220,24 @@ export type WebhookSink = (
   atSec: number
 ) => void;
 
-const DELIVERY_TIMEOUT_MS = 10_000;
+const DELIVERY_TIMEOUT_MS = 5_000;
+
+/**
+ * What a failed delivery records. Raw network errors would tell a caller which
+ * ports and hosts answer, so only these categories are stored.
+ */
+function deliveryError(e: NodeJS.ErrnoException): string {
+  if (e.code === "EWEBHOOKBLOCKED") return "refused: resolves to a private or reserved address";
+  if (e.code === "ETIMEDOUT") return "timeout after 5s";
+  return "connection failed";
+}
 
 export class WebhookDispatcher {
+  /** allowPrivate: deliver to http and private addresses (local dev and tests only). */
   constructor(
     private db: LevyDb,
-    private privateKey: KeyObject
+    private privateKey: KeyObject,
+    private policy: WebhookUrlPolicy = { allowPrivate: false }
   ) {}
 
   get publicKey(): string {
@@ -287,34 +302,52 @@ export class WebhookDispatcher {
     return out;
   }
 
-  private async post(
+  /**
+   * One signed POST. Uses node:http(s) rather than fetch for two reasons: the
+   * `lookup` hook refuses private addresses at connect time (see
+   * webhook-url.ts), and redirects are never followed (a 3xx is a failure).
+   */
+  private post(
     url: string,
     d: { id: number; event_type: string; payload: string }
   ): Promise<{ ok: true } | { ok: false; error: string }> {
-    const signature = signPayload(this.privateKey, d.payload);
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), DELIVERY_TIMEOUT_MS);
+    let u: URL;
     try {
-      const res = await fetch(url, {
+      u = new URL(url);
+    } catch {
+      return Promise.resolve({ ok: false, error: "invalid url" });
+    }
+    const problem = webhookUrlProblem(u, this.policy);
+    if (problem) return Promise.resolve({ ok: false, error: `refused: ${problem}` });
+
+    const signature = signPayload(this.privateKey, d.payload);
+    const body = Buffer.from(d.payload, "utf-8");
+    return new Promise((resolve) => {
+      const req = (u.protocol === "https:" ? https : http).request(u, {
         method: "POST",
         headers: {
           "content-type": "application/json",
+          "content-length": body.length,
           "X-Levy-Signature": signature,
           "X-Levy-Event": d.event_type,
           "X-Levy-Delivery": String(d.id),
         },
-        body: d.payload,
-        signal: ctrl.signal,
+        lookup: this.policy.allowPrivate ? undefined : (publicOnlyLookup as any),
+      }, (res) => {
+        res.destroy(); // the status is all we need; never wait on a trickled body
+        clearTimeout(timer);
+        const status = res.statusCode ?? 0;
+        resolve(status >= 200 && status < 300 ? { ok: true } : { ok: false, error: `HTTP ${status}` });
       });
-      if (res.ok) return { ok: true };
-      // Drain the body so the socket can be reused.
-      await res.arrayBuffer().catch(() => undefined);
-      return { ok: false, error: `HTTP ${res.status}` };
-    } catch (e: unknown) {
-      const err = e as Error;
-      return { ok: false, error: err?.name === "AbortError" ? "timeout after 10s" : (err?.message ?? String(e)) };
-    } finally {
-      clearTimeout(timer);
-    }
+      const timer = setTimeout(
+        () => req.destroy(Object.assign(new Error("timeout"), { code: "ETIMEDOUT" })),
+        DELIVERY_TIMEOUT_MS
+      );
+      req.on("error", (e) => {
+        clearTimeout(timer);
+        resolve({ ok: false, error: deliveryError(e) });
+      });
+      req.end(body);
+    });
   }
 }

@@ -48,18 +48,22 @@ GET /api/plans
 
 ## 2. Register a webhook endpoint
 
-Levy signs every billing event with Ed25519 and POSTs it to your URL. Register an endpoint:
+Levy signs every billing event with Ed25519 and POSTs it to your URL. The easiest way to register one is the merchant dashboard: sign in with the wallet that created your plans and use "Add endpoint".
+
+From your own backend, sign in first (the API README covers the three calls: challenge, wallet signature, verify), then send the session token:
 
 ```
 POST /api/webhooks
+Authorization: Bearer <token>
 Content-Type: application/json
 
 {
-  "merchant": "0xYourMerchantAddress",
   "url": "https://your-domain.com/hooks/levy",
   "events": ["charge.succeeded", "charge.failed", "dunning.started", "subscription.cancelled"]
 }
 ```
+
+The endpoint must be https on the default port (443) at a public address. Levy refuses private, loopback and cloud-metadata addresses, and does not follow redirects, so point it at the final URL. Each merchant can register up to 5 endpoints. Respond within 5 seconds; do slow work after acknowledging.
 
 Available event types:
 
@@ -72,10 +76,10 @@ Available event types:
 - `subscription.cancelled`
 - `invoice.ready`
 
-Manage endpoints with the API:
+Manage endpoints with the API (same `Authorization` header; you only ever see your own):
 
 ```
-GET    /api/webhooks?merchant=0xYourMerchantAddress
+GET    /api/webhooks
 DELETE /api/webhooks/:id
 PATCH  /api/webhooks/:id        {"active": false}
 GET    /api/deliveries?webhookId=:id&status=failed

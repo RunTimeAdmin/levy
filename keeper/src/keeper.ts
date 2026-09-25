@@ -30,7 +30,9 @@ export class Keeper {
     private clients: ChainClients,
     private db: LevyDb
   ) {
-    this.webhooks = new WebhookDispatcher(db, loadSigningKey(cfg.webhookKeyPath, cfg.webhookKey));
+    this.webhooks = new WebhookDispatcher(db, loadSigningKey(cfg.webhookKeyPath, cfg.webhookKey), {
+      allowPrivate: cfg.webhookAllowPrivate,
+    });
     this.indexer = new Indexer(cfg, clients, db, this.webhooks.sink());
   }
 

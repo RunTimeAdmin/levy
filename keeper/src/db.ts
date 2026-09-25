@@ -149,6 +149,21 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 );
 CREATE INDEX IF NOT EXISTS idx_deliveries_due
   ON webhook_deliveries (status, next_retry_at);
+-- API sign-in: an issued EIP-4361 message awaiting its signature. Single use.
+CREATE TABLE IF NOT EXISTS auth_challenges (
+  nonce TEXT PRIMARY KEY,
+  address TEXT NOT NULL,
+  message TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_auth_challenges_expiry ON auth_challenges (expires_at);
+-- API sessions. Only the SHA-256 of the bearer token is stored.
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  address TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions (expires_at);
 `;
 
 export class LevyDb {
@@ -160,6 +175,9 @@ export class LevyDb {
     // The API server may hold the same file open; wait instead of failing
     // on a locked database during brief concurrent writes.
     this.db.exec("PRAGMA busy_timeout = 5000");
+    // WAL: the API's small writes (sign-in, webhook config) never block the
+    // keeper's reads, and readers never block writers.
+    this.db.exec("PRAGMA journal_mode = WAL");
   }
 
   close(): void {
@@ -390,16 +408,22 @@ export class LevyDb {
       .all(nowSec) as unknown as DeliveryRow[];
   }
 
-  listDeliveries(filter: { webhookId?: number; status?: string; limit?: number } = {}): DeliveryRow[] {
+  /** `merchant` limits to deliveries of that merchant's (existing) webhooks. */
+  listDeliveries(
+    filter: { webhookId?: number; status?: string; limit?: number; merchant?: string } = {}
+  ): DeliveryRow[] {
     const clauses: string[] = [];
     const params: Array<string | number | null> = [];
-    if (filter.webhookId !== undefined) { clauses.push(`webhook_id = ?`); params.push(filter.webhookId); }
-    if (filter.status) { clauses.push(`status = ?`); params.push(filter.status); }
+    if (filter.webhookId !== undefined) { clauses.push(`d.webhook_id = ?`); params.push(filter.webhookId); }
+    if (filter.status) { clauses.push(`d.status = ?`); params.push(filter.status); }
+    if (filter.merchant) { clauses.push(`w.merchant = ? COLLATE NOCASE`); params.push(filter.merchant); }
+    const join = filter.merchant ? `JOIN webhooks w ON w.id = d.webhook_id` : "";
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-    const limit = Math.min(filter.limit ?? 100, 500);
+    // Clamped: SQLite treats a negative LIMIT as "no limit".
+    const limit = Math.max(1, Math.min(Math.trunc(filter.limit ?? 100) || 100, 500));
     return this.db
-      .prepare(`SELECT * FROM webhook_deliveries ${where} ORDER BY id DESC LIMIT ${limit}`)
-      .all(...params) as unknown as DeliveryRow[];
+      .prepare(`SELECT d.* FROM webhook_deliveries d ${join} ${where} ORDER BY d.id DESC LIMIT ?`)
+      .all(...params, limit) as unknown as DeliveryRow[];
   }
 
   markDeliverySent(id: number): void {
@@ -489,5 +513,48 @@ export class LevyDb {
          ON CONFLICT (key) DO UPDATE SET value = excluded.value`
       )
       .run(key, value);
+  }
+
+  // ---- API auth ----
+
+  createChallenge(nonce: string, address: string, message: string, expiresAt: number, nowSec: number): void {
+    this.db.prepare(`DELETE FROM auth_challenges WHERE expires_at <= ?`).run(nowSec);
+    this.db
+      .prepare(`INSERT INTO auth_challenges (nonce, address, message, expires_at) VALUES (?, ?, ?, ?)`)
+      .run(nonce, address, message, expiresAt);
+  }
+
+  pendingChallenges(nowSec: number): number {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM auth_challenges WHERE expires_at > ?`)
+      .get(nowSec) as { n: number };
+    return row.n;
+  }
+
+  /** Consume a challenge: one statement, so a nonce can never be used twice. */
+  takeChallenge(nonce: string, nowSec: number): { address: string; message: string } | undefined {
+    return this.db
+      .prepare(
+        `DELETE FROM auth_challenges WHERE nonce = ? AND expires_at > ?
+         RETURNING address, message`
+      )
+      .get(nonce, nowSec) as { address: string; message: string } | undefined;
+  }
+
+  createSession(tokenHash: string, address: string, expiresAt: number, nowSec: number): void {
+    this.db.prepare(`DELETE FROM sessions WHERE expires_at <= ?`).run(nowSec);
+    this.db
+      .prepare(`INSERT INTO sessions (token_hash, address, expires_at) VALUES (?, ?, ?)`)
+      .run(tokenHash, address, expiresAt);
+  }
+
+  getSession(tokenHash: string, nowSec: number): { address: string; expires_at: number } | undefined {
+    return this.db
+      .prepare(`SELECT address, expires_at FROM sessions WHERE token_hash = ? AND expires_at > ?`)
+      .get(tokenHash, nowSec) as { address: string; expires_at: number } | undefined;
+  }
+
+  deleteSession(tokenHash: string): void {
+    this.db.prepare(`DELETE FROM sessions WHERE token_hash = ?`).run(tokenHash);
   }
 }

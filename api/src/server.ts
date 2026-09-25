@@ -3,12 +3,14 @@ import { readFile } from "node:fs/promises";
 import { dirname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LevyDb, Status } from "../../keeper/src/db.js";
+import { checkWebhookUrl } from "../../keeper/src/webhook-url.js";
 import {
   WEBHOOK_EVENTS,
   isWebhookEventType,
   loadSigningKey,
   publicKeyPem,
 } from "../../keeper/src/webhooks.js";
+import { registerAuthRoutes, requireSession } from "./auth.js";
 
 const API_DIR = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(API_DIR, "..", "public");
@@ -19,9 +21,19 @@ export interface ApiOptions {
   /** Path of the Ed25519 webhook signing key (for the public-key endpoint). */
   webhookKeyPath: string;
   webhookKey?: string;
+  /** Origin the dashboard is served from; sign-in messages are bound to it. */
+  origin: string;
+  chainId: number;
+  /** Allow http and private-address webhook URLs. Local development only. */
+  webhookAllowPrivate?: boolean;
 }
 
 export function apiOptionsFromEnv(): ApiOptions {
+  // Sign-in messages name this origin; a wrong default would teach every
+  // user to click through the wallet's domain-mismatch warning.
+  if (!process.env.LEVY_PUBLIC_ORIGIN && process.env.NODE_ENV === "production") {
+    throw new Error("LEVY_PUBLIC_ORIGIN must be set in production (e.g. https://app.getlevy.xyz)");
+  }
   return {
     dbPath:
       process.env.LEVY_DB_PATH ?? join(API_DIR, "..", "..", "keeper", "levy.db"),
@@ -29,8 +41,14 @@ export function apiOptionsFromEnv(): ApiOptions {
       process.env.LEVY_WEBHOOK_KEY_PATH ??
       join(API_DIR, "..", "..", "keeper", "webhook-signing-key.pem"),
     webhookKey: process.env.LEVY_WEBHOOK_KEY,
+    origin: process.env.LEVY_PUBLIC_ORIGIN ?? `http://localhost:${process.env.LEVY_API_PORT ?? 3001}`,
+    chainId: Number(process.env.LEVY_CHAIN_ID ?? 5042),
+    webhookAllowPrivate: process.env.LEVY_WEBHOOK_ALLOW_PRIVATE === "1",
   };
 }
+
+/** Each webhook costs a delivery per event; keep one merchant from flooding the dispatcher. */
+const MAX_WEBHOOKS_PER_MERCHANT = 5;
 
 const STATUS_NAMES: Record<number, string> = {
   [Status.TRIAL]: "trial",
@@ -54,14 +72,18 @@ function isAddress(v: unknown): v is string {
   return typeof v === "string" && /^0x[0-9a-fA-F]{40}$/.test(v);
 }
 
-function isHttpUrl(v: unknown): v is string {
-  if (typeof v !== "string") return false;
-  try {
-    const u = new URL(v);
-    return u.protocol === "http:" || u.protocol === "https:";
-  } catch {
-    return false;
-  }
+function sameAddress(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * An optional address query/body param must name the signed-in address:
+ * 400 when malformed, 403 when it is someone else.
+ */
+function checkOwnAddress(v: unknown, me: string, what: string): void {
+  if (v === undefined) return;
+  if (!isAddress(v)) bad(400, `invalid ${what} address`);
+  if (!sameAddress(v, me)) bad(403, `${what} must be the signed-in address`);
 }
 
 export function buildServer(opts: ApiOptions): FastifyInstance {
@@ -71,6 +93,11 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   app.addHook("onClose", async () => {
     db.close();
   });
+
+  // Every endpoint below except health, plans and the webhook public key
+  // needs a session, and only returns the signed-in address's own data: as
+  // merchant (dashboard) or as subscriber (portal).
+  registerAuthRoutes(app, db, { origin: opts.origin, chainId: opts.chainId });
 
   // ---- health ----
 
@@ -89,16 +116,16 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   // ---- subscriptions ----
 
   app.get("/api/subscriptions", async (req) => {
+    const me = requireSession(db, req);
     const q = req.query as { merchant?: string; subscriber?: string; status?: string };
+    checkOwnAddress(q.merchant, me, "merchant");
+    checkOwnAddress(q.subscriber, me, "subscriber");
+    if (q.merchant === undefined && q.subscriber === undefined) {
+      return bad(400, "pass merchant or subscriber");
+    }
     const filter: { merchant?: string; subscriber?: string } = {};
-    if (q.merchant) {
-      if (!isAddress(q.merchant)) return bad(400, "invalid merchant address");
-      filter.merchant = q.merchant;
-    }
-    if (q.subscriber) {
-      if (!isAddress(q.subscriber)) return bad(400, "invalid subscriber address");
-      filter.subscriber = q.subscriber;
-    }
+    if (q.merchant !== undefined) filter.merchant = me;
+    if (q.subscriber !== undefined) filter.subscriber = me;
     let subs = db.listSubscriptions(filter);
     if (q.status !== undefined) {
       const n = Number(q.status);
@@ -113,9 +140,13 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   });
 
   app.get("/api/subscriptions/:id", async (req) => {
+    const me = requireSession(db, req);
     const { id } = req.params as { id: string };
     const sub = db.getSubscription(id);
-    if (!sub) return bad(404, "subscription not found");
+    // Someone else's subscription looks the same as a missing one.
+    if (!sub || !(sameAddress(sub.subscriber, me) || sameAddress(sub.merchant, me))) {
+      return bad(404, "subscription not found");
+    }
     return {
       ...sub,
       statusName: STATUS_NAMES[sub.status] ?? "unknown",
@@ -133,11 +164,12 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   // ---- metrics ----
 
   app.get("/api/metrics", async (req) => {
+    const me = requireSession(db, req);
     const q = req.query as { merchant?: string };
-    const merchant = q.merchant;
-    if (merchant !== undefined && !isAddress(merchant)) return bad(400, "invalid merchant address");
+    checkOwnAddress(q.merchant, me, "merchant");
+    const merchant = me;
 
-    const subs = db.listSubscriptions(merchant ? { merchant } : {});
+    const subs = db.listSubscriptions({ merchant });
     const mrrSubs = subs.filter((s) => s.status === Status.TRIAL || s.status === Status.ACTIVE);
     const mrr = mrrSubs.reduce((acc, s) => acc + BigInt(s.price), 0n).toString();
 
@@ -146,12 +178,12 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
     const attempts = charges + failures;
 
     // Totals in raw units across the filtered set.
-    const chargeList = db.listCharges(merchant ? { merchant } : {});
+    const chargeList = db.listCharges({ merchant });
     const totalCharged = chargeList.reduce((acc, c) => acc + BigInt(c.amount), 0n).toString();
     const totalFees = chargeList.reduce((acc, c) => acc + BigInt(c.fee), 0n).toString();
 
     return {
-      merchant: merchant ?? null,
+      merchant,
       mrr,
       mrrUsdc: formatUsdc(mrr),
       totalSubs: subs.length,
@@ -174,9 +206,10 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   // ---- dunning queue ----
 
   app.get("/api/dunning", async (req) => {
+    const me = requireSession(db, req);
     const q = req.query as { merchant?: string };
-    if (q.merchant !== undefined && !isAddress(q.merchant)) return bad(400, "invalid merchant address");
-    return db.listDunning(q.merchant).map((r) => ({
+    checkOwnAddress(q.merchant, me, "merchant");
+    return db.listDunning(me).map((r) => ({
       ...r,
       priceUsdc: formatUsdc(r.price),
       nextRetryAtIso: new Date(r.nextRetryAt * 1000).toISOString(),
@@ -186,13 +219,11 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   // ---- charges / invoices (invoices are charge records) ----
 
   async function chargesHandler(req: any, reply: any) {
+    const me = requireSession(db, req);
     const q = req.query as { subscription?: string; merchant?: string; format?: string };
-    const filter: { subId?: string; merchant?: string } = {};
+    checkOwnAddress(q.merchant, me, "merchant");
+    const filter: { subId?: string; merchant?: string } = { merchant: me };
     if (q.subscription) filter.subId = q.subscription;
-    if (q.merchant) {
-      if (!isAddress(q.merchant)) return bad(400, "invalid merchant address");
-      filter.merchant = q.merchant;
-    }
     const rows = db.listCharges(filter);
     if (q.format === "csv") {
       const header = "id,invoiceRef,subId,subscriber,merchant,amountUsdc,feeUsdc,txHash,blockNumber,chargeCount";
@@ -213,42 +244,48 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   // ---- webhooks ----
 
   app.get("/api/webhooks", async (req) => {
+    const me = requireSession(db, req);
     const q = req.query as { merchant?: string };
-    if (q.merchant !== undefined && !isAddress(q.merchant)) return bad(400, "invalid merchant address");
-    return db.listWebhooks(q.merchant).map((w) => ({ ...w, events: JSON.parse(w.events) }));
+    checkOwnAddress(q.merchant, me, "merchant");
+    return db.listWebhooks(me).map((w) => ({ ...w, events: JSON.parse(w.events) }));
   });
 
   app.post("/api/webhooks", async (req) => {
+    const me = requireSession(db, req);
     const body = req.body as { merchant?: string; url?: string; events?: string[] };
-    if (!isAddress(body?.merchant)) return bad(400, "merchant must be a 0x address");
-    if (!isHttpUrl(body?.url)) return bad(400, "url must be an http(s) URL");
+    checkOwnAddress(body?.merchant, me, "merchant");
+    if (db.listWebhooks(me).length >= MAX_WEBHOOKS_PER_MERCHANT) {
+      return bad(400, `webhook limit reached (${MAX_WEBHOOKS_PER_MERCHANT} per merchant)`);
+    }
+    const url = await checkWebhookUrl(body?.url, { allowPrivate: opts.webhookAllowPrivate ?? false });
+    if (!url.ok) return bad(400, url.error);
     if (!Array.isArray(body?.events) || body.events.length === 0) {
       return bad(400, "events must be a non-empty array");
     }
     for (const e of body.events) {
       if (!isWebhookEventType(e)) return bad(400, `unknown event type: ${e}`);
     }
-    const id = db.registerWebhook(
-      body.merchant, body.url, [...new Set(body.events)], Math.floor(Date.now() / 1000)
-    );
+    const id = db.registerWebhook(me, url.url, [...new Set(body.events)], Math.floor(Date.now() / 1000));
     return { id };
   });
 
   app.delete("/api/webhooks/:id", async (req) => {
+    const me = requireSession(db, req);
     const { id } = req.params as { id: string };
     const n = Number(id);
     if (!Number.isInteger(n)) return bad(400, "invalid id");
-    if (!db.getWebhook(n)) return bad(404, "webhook not found");
+    if (!ownWebhook(n, me)) return bad(404, "webhook not found");
     db.deleteWebhook(n);
     return { ok: true };
   });
 
   app.patch("/api/webhooks/:id", async (req) => {
+    const me = requireSession(db, req);
     const { id } = req.params as { id: string };
     const body = req.body as { active?: boolean };
     const n = Number(id);
     if (!Number.isInteger(n)) return bad(400, "invalid id");
-    if (!db.getWebhook(n)) return bad(404, "webhook not found");
+    if (!ownWebhook(n, me)) return bad(404, "webhook not found");
     if (typeof body?.active !== "boolean") return bad(400, "active must be boolean");
     db.setWebhookActive(n, body.active);
     return { ok: true };
@@ -265,8 +302,9 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   });
 
   app.get("/api/deliveries", async (req) => {
+    const me = requireSession(db, req);
     const q = req.query as { webhookId?: string; status?: string; limit?: string };
-    const filter: { webhookId?: number; status?: string; limit?: number } = {};
+    const filter: { webhookId?: number; status?: string; limit?: number; merchant: string } = { merchant: me };
     if (q.webhookId !== undefined) {
       const n = Number(q.webhookId);
       if (!Number.isInteger(n)) return bad(400, "invalid webhookId");
@@ -280,6 +318,12 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
     return db.listDeliveries(filter);
   });
 
+  /** Someone else's webhook looks the same as a missing one. */
+  function ownWebhook(id: number, me: string): boolean {
+    const hook = db.getWebhook(id);
+    return hook !== undefined && sameAddress(hook.merchant, me);
+  }
+
   // ---- static frontend ----
 
   app.get("/", async (_req, reply) => sendFile(reply, "index.html"));
@@ -291,7 +335,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   return app;
 }
 
-function bad(status: number, message: string) {
+function bad(status: number, message: string): never {
   const err = new Error(message) as Error & { statusCode: number };
   err.statusCode = status;
   throw err;

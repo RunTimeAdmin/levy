@@ -14,6 +14,8 @@ export interface LevyConfig {
   webhookKeyPath: string;
   /** Optional inline signing key: PEM PKCS#8 or base64 32-byte seed. */
   webhookKey?: string;
+  /** Allow http and private-address webhook URLs. Local development only. */
+  webhookAllowPrivate: boolean;
 }
 
 function required(name: string): string {
@@ -37,5 +39,6 @@ export function loadConfig(): LevyConfig {
     initialLookbackBlocks: Number(process.env.LEVY_LOOKBACK_BLOCKS ?? 5000),
     webhookKeyPath: process.env.LEVY_WEBHOOK_KEY_PATH ?? "./webhook-signing-key.pem",
     webhookKey: process.env.LEVY_WEBHOOK_KEY,
+    webhookAllowPrivate: process.env.LEVY_WEBHOOK_ALLOW_PRIVATE === "1",
   };
 }

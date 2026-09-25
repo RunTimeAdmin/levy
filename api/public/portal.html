@@ -41,31 +41,38 @@
 <header>
   <h1>Levy <span>Subscriptions</span></h1>
   <div class="row">
-    <input type="text" id="subscriber" size="44" placeholder="your wallet 0x address" spellcheck="false">
-    <button id="load">View</button>
+    <span id="who" class="muted"></span>
+    <button id="signIn">Sign in with wallet</button>
+    <button id="signOut" class="ghost" hidden>Sign out</button>
   </div>
   <span class="muted" style="margin-left:auto"><a href="/">merchant dashboard</a></span>
 </header>
 <main id="main">
-  <p class="empty">Enter your wallet address to see your subscriptions and invoices.</p>
+  <p class="empty">Sign in with your wallet to see your subscriptions and invoices.</p>
 </main>
 
+<script src="/public/auth.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
-const input = $("subscriber");
-input.value = localStorage.getItem("levy_subscriber") || "";
 const short = (a) => a ? a.slice(0, 6) + "..." + a.slice(-4) : "";
 const pill = (t) => `<span class="pill ${t}">${t}</span>`;
 
+function showSession() {
+  const s = LevyAuth.address;
+  $("who").textContent = s ? `signed in as ${short(s)}` : "";
+  $("signIn").hidden = !!s;
+  $("signOut").hidden = !s;
+}
+
 async function load() {
-  const s = input.value.trim();
-  if (!/^0x[0-9a-fA-F]{40}$/.test(s)) { alert("Enter a valid 0x address"); return; }
-  localStorage.setItem("levy_subscriber", s);
-  const subs = await fetch(`/api/subscriptions?subscriber=${s}`).then(r => r.json());
+  showSession();
+  const s = LevyAuth.address;
+  if (!s) return;
+  const subs = await LevyAuth.api(`/api/subscriptions?subscriber=${s}`);
   const main = $("main");
   if (!subs.length) { main.innerHTML = `<p class="empty">No subscriptions found for this address.</p>`; return; }
   const cards = await Promise.all(subs.map(async (sub) => {
-    const detail = await fetch(`/api/subscriptions/${sub.subId}`).then(r => r.json());
+    const detail = await LevyAuth.api(`/api/subscriptions/${sub.subId}`);
     const invoices = (detail.charges || []).map(c => `<tr>
       <td class="addr">${short(c.invoiceRef)}</td><td>$${c.amountUsdc}</td>
       <td>$${c.feeUsdc}</td><td class="addr">${short(c.txHash)}</td></tr>`).join("");
@@ -94,8 +101,9 @@ async function load() {
   main.innerHTML = cards.join("");
 }
 
-$("load").onclick = () => load().catch(e => alert("Load failed: " + e.message));
-if (input.value) load().catch(() => {});
+$("signIn").onclick = () => LevyAuth.signIn().then(load).catch(e => alert("Sign-in failed: " + e.message));
+$("signOut").onclick = () => LevyAuth.signOut().then(() => location.reload());
+load().catch(e => { showSession(); if (LevyAuth.address) alert("Load failed: " + e.message); });
 </script>
 </body>
 </html>
