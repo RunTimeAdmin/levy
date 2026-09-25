@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Levy Merchant Dashboard</title>
+<link rel="icon" href="/public/favicon.svg" type="image/svg+xml">
 <style>
   :root { --bg: #0f1115; --panel: #171b22; --line: #262c36; --text: #e6e9ee; --muted: #8b94a3; --accent: #4cc38a; --warn: #e5a54b; --bad: #e5604f; }
   * { box-sizing: border-box; }
@@ -96,6 +97,9 @@ $("hookEvents").innerHTML = EVENTS.map(e =>
   `<label><input type="checkbox" value="${e}" checked> ${e}</label>`).join("");
 
 const short = (a) => a ? a.slice(0, 6) + "..." + a.slice(-4) : "";
+// USDC amounts arrive as 6-decimal strings ("29.000000"). Show cents, and
+// further digits only when they are not zero, so no amount is misstated.
+const usd = (s) => "$" + s.replace(/(\.\d\d\d*?)0+$/, "$1");
 const merchant = () => LevyAuth.address;
 const api = (p, opts) => LevyAuth.api(p, opts);
 
@@ -129,11 +133,11 @@ async function loadMetrics(m) {
   const d = await api(`/api/metrics?merchant=${m}`);
   const rate = d.successRate === null ? "n/a" : (d.successRate * 100).toFixed(1) + "%";
   $("cards").innerHTML = `
-    <div class="card"><div class="label">MRR</div><div class="value">$${d.mrrUsdc}</div></div>
+    <div class="card"><div class="label">MRR</div><div class="value">$${(+d.mrrUsdc).toFixed(2)}</div></div>
     <div class="card"><div class="label">Active subs</div><div class="value">${d.activeSubs}</div></div>
     <div class="card"><div class="label">Charge success</div><div class="value">${rate}</div></div>
     <div class="card"><div class="label">Dunning queue</div><div class="value">${d.dunningDepth}</div></div>
-    <div class="card"><div class="label">Collected (all time)</div><div class="value">$${d.totalChargedUsdc}</div></div>
+    <div class="card"><div class="label">Collected (all time)</div><div class="value">${usd(d.totalChargedUsdc)}</div></div>
     <div class="card"><div class="label">Past due / paused</div><div class="value">${d.pastDueSubs} / ${d.pausedSubs}</div></div>`;
 }
 
@@ -145,7 +149,7 @@ async function loadSubs(m) {
     <th>Next charge</th><th>Failed</th><th title="Rounds of the subscriber's Levy charges their allowance still covers">Allowance</th></tr></thead><tbody>` +
     subs.map(s => `<tr>
       <td>${s.subId}</td><td class="addr">${short(s.subscriber)}</td><td class="addr">${refText(s.ref)}</td>
-      <td>$${s.priceUsdc}/cycle</td><td>${pill(s.statusName)}</td>
+      <td>${usd(s.priceUsdc)}/cycle</td><td>${pill(s.statusName)}</td>
       <td>${s.nextChargeAtIso.slice(0, 10)}</td><td>${s.failedAttempts}</td>
       <td>${s.fundsLow === 1 ? pill(`low: ${s.cyclesCovered}`, "past_due")
            : s.cyclesCovered == null ? `<span class="muted">not checked</span>` : `${s.cyclesCovered} cycles`}</td></tr>`).join("") +
@@ -196,7 +200,7 @@ async function loadInvoices(m) {
   $("invoices").innerHTML = `<table><thead><tr>
     <th>Invoice ref</th><th>Sub</th><th>Amount</th><th>Fee</th><th>Tx</th></tr></thead><tbody>` +
     rows.slice(0, 50).map(c => `<tr><td class="addr">${short(c.invoiceRef)}</td>
-      <td>${c.subId}</td><td>$${c.amountUsdc}</td><td>$${c.feeUsdc}</td>
+      <td>${c.subId}</td><td>${usd(c.amountUsdc)}</td><td>${usd(c.feeUsdc)}</td>
       <td class="addr">${short(c.txHash)}</td></tr>`).join("") +
     `</tbody></table>`;
 }

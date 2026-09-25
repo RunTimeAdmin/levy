@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Levy — My Subscriptions</title>
+<link rel="icon" href="/public/favicon.svg" type="image/svg+xml">
 <style>
   :root { --bg: #0f1115; --panel: #171b22; --line: #262c36; --text: #e6e9ee; --muted: #8b94a3; --accent: #4cc38a; --warn: #e5a54b; --bad: #e5604f; }
   * { box-sizing: border-box; }
@@ -59,6 +60,9 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const short = (a) => a ? a.slice(0, 6) + "..." + a.slice(-4) : "";
+// USDC amounts arrive as 6-decimal strings ("29.000000"). Show cents, and
+// further digits only when they are not zero, so no amount is misstated.
+const usd = (s) => "$" + s.replace(/(\.\d\d\d*?)0+$/, "$1");
 let cfg; // chain id and contract addresses, for the wallet actions
 
 // What the contract allows in each state (SubscriptionManager.sol).
@@ -122,10 +126,10 @@ function fundsBanner(funds) {
   box.className = "banner";
   const lines = [];
   if (funds.low) {
-    lines.push(`Your USDC allowance for Levy covers ${funds.cyclesCovered} more round${funds.cyclesCovered === 1 ? "" : "s"} of your subscriptions ($${funds.perCycleUsdc} per round). Top it up so your next payments do not fail.`);
+    lines.push(`Your USDC allowance for Levy covers ${funds.cyclesCovered} more round${funds.cyclesCovered === 1 ? "" : "s"} of your subscriptions (${usd(funds.perCycleUsdc)} per round). Top it up so your next payments do not fail.`);
   }
   if (BigInt(funds.balance) < BigInt(funds.perCycle)) {
-    lines.push(`Your USDC balance ($${funds.balanceUsdc}) is below one round of your subscriptions ($${funds.perCycleUsdc}).`);
+    lines.push(`Your USDC balance (${usd(funds.balanceUsdc)}) is below one round of your subscriptions (${usd(funds.perCycleUsdc)}).`);
   }
   for (const text of lines) {
     const p = document.createElement("div");
@@ -176,12 +180,12 @@ async function load() {
   const cards = await Promise.all(subs.map(async (sub) => {
     const detail = await LevyAuth.api(`/api/subscriptions/${sub.subId}`);
     const invoices = (detail.charges || []).map(c => `<tr>
-      <td class="addr">${short(c.invoiceRef)}</td><td>$${c.amountUsdc}</td>
-      <td>$${c.feeUsdc}</td><td class="addr">${short(c.txHash)}</td></tr>`).join("");
+      <td class="addr">${short(c.invoiceRef)}</td><td>${usd(c.amountUsdc)}</td>
+      <td>${usd(c.feeUsdc)}</td><td class="addr">${short(c.txHash)}</td></tr>`).join("");
     return `<div class="sub">
       <h2>Subscription #${sub.subId} <span class="pill ${sub.statusName}" data-pill="${sub.subId}">${sub.statusName}</span></h2>
       <div class="grid">
-        <div><div class="label">Price</div><div class="value">$${sub.priceUsdc}</div></div>
+        <div><div class="label">Price</div><div class="value">${usd(sub.priceUsdc)}</div></div>
         <div><div class="label">Next charge</div><div class="value" style="font-size:15px">${sub.nextChargeAtIso.slice(0, 10)}</div></div>
         <div><div class="label">Failed attempts</div><div class="value">${sub.failedAttempts}</div></div>
         <div><div class="label">Merchant</div><div class="value addr" style="font-size:13px">${short(sub.merchant)}</div></div>

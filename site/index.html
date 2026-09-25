@@ -5,19 +5,34 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Levy: Recurring USDC billing on Arc</title>
 <meta name="description" content="Levy is pull-based USDC subscription billing on Arc. Merchants define plans, subscribers approve a USDC allowance, and payments are pulled every cycle.">
+<link rel="canonical" href="https://getlevy.xyz/">
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#0e1116">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Levy">
+<meta property="og:url" content="https://getlevy.xyz/">
+<meta property="og:title" content="Levy: Recurring USDC billing on Arc">
+<meta property="og:description" content="Pull-based subscription billing on Arc. Customers approve a USDC allowance once; Levy collects every cycle. 1% of collected payments.">
+<meta property="og:image" content="https://getlevy.xyz/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The Levy logo and the line: Recurring revenue, collected in USDC.">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
 <header class="site-header">
   <div class="wrap">
-    <span class="wordmark">Levy</span>
+    <a class="brand" href="#top" aria-label="Levy home"><img src="logo.svg" alt="" width="22" height="24"><span class="wordmark">levy</span></a>
     <nav>
       <a href="#how">How it works</a>
+      <a href="#customers">For customers</a>
       <a href="#fee">Fee</a>
-      <a href="#features">Features</a>
       <a href="#roadmap">Roadmap</a>
-      <a href="#developers">Developers</a>
+      <a class="btn btn-small" href="#access">Get early access</a>
     </nav>
   </div>
 </header>
@@ -28,7 +43,15 @@
       <p class="kicker">Pull-based subscription billing on Arc</p>
       <h1>Recurring revenue, collected in USDC.</h1>
       <p class="lede">Levy pulls subscription payments in USDC every billing cycle. Your customers approve an allowance up front instead of paying each invoice. You collect on schedule, without chasing invoices or retrying cards by hand.</p>
-      <p class="hero-note">Built for Arc. Settled in USDC. Open contracts.</p>
+      <p class="hero-actions">
+        <a class="btn btn-primary" href="mailto:hello@getlevy.xyz?subject=Levy%20early%20access">Get early access</a>
+        <a class="link-quiet" href="#how">See how it works</a>
+      </p>
+      <p class="hero-note">Built for Arc. Settled in USDC. Open-source contracts at launch.</p>
+      <figure class="shot">
+        <a href="screenshot-dashboard.png"><img src="screenshot-dashboard.png" width="960" height="856" alt="The Levy merchant dashboard: MRR, active subscriptions, charge success rate and dunning queue, a table of subscriptions with customer references, status and allowance runway, and the dunning queue."></a>
+        <figcaption>The merchant dashboard: revenue, every subscription with your own customer reference, how many cycles each customer's allowance still covers, and the dunning queue. Demo data on a local test chain.</figcaption>
+      </figure>
     </div>
   </section>
 
@@ -55,7 +78,36 @@
     </div>
   </section>
 
-  <section id="fee" class="section alt">
+  <section id="customers" class="section alt">
+    <div class="wrap">
+      <h2>Your customers stay in control</h2>
+      <p class="section-lede">Pull payments ask customers for trust. The contract limits what can be pulled, and customers can stop paying on their own, without asking you.</p>
+      <div class="cards">
+        <div class="card">
+          <h3>They set the cap</h3>
+          <p>The customer approves a USDC allowance for the number of cycles they choose. Levy can never pull more than that.</p>
+        </div>
+        <div class="card">
+          <h3>Only the price, only when due</h3>
+          <p>Each cycle the contract can pull the plan's price once, only to that plan's merchant, and never before the billing date. Prices are fixed, so they can't be raised on an existing subscription.</p>
+        </div>
+        <div class="card">
+          <h3>Stop any time</h3>
+          <p>Customers pause, resume or cancel in the customer portal with their own wallet. They can also revoke the allowance directly, and nothing more is pulled.</p>
+        </div>
+        <div class="card">
+          <h3>Every payment on record</h3>
+          <p>Each charge is an on-chain transaction with an invoice reference, listed in the portal and visible on the block explorer.</p>
+        </div>
+      </div>
+      <figure class="shot shot-narrow">
+        <a href="screenshot-checkout.png"><img src="screenshot-checkout.png" width="560" height="671" loading="lazy" alt="The Levy checkout: a $29 monthly plan, the merchant and contract addresses, a field for how many cycles to approve with the total in USDC, the customer's balance and current allowance, and a note that Levy can only pull the plan's price each cycle."></a>
+        <figcaption>Checkout: the customer chooses how many cycles to approve, sees their balance and current allowance, and is told exactly what Levy can pull. Demo data on a local test chain.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="fee" class="section">
     <div class="wrap">
       <h2>The fee</h2>
       <p class="big-stat">1%</p>
@@ -63,7 +115,7 @@
     </div>
   </section>
 
-  <section id="features" class="section">
+  <section id="features" class="section alt">
     <div class="wrap">
       <h2>What comes with it</h2>
       <div class="cards">
@@ -87,7 +139,7 @@
     </div>
   </section>
 
-  <section id="roadmap" class="section alt">
+  <section id="roadmap" class="section">
     <div class="wrap">
       <h2>Roadmap</h2>
       <dl class="roadmap">
@@ -107,20 +159,20 @@
     </div>
   </section>
 
-  <section id="developers" class="section">
+  <section id="access" class="section alt">
     <div class="wrap">
-      <h2>For developers</h2>
-      <p>The contracts are open source. The keeper, API, and dashboards are in the same repository.</p>
-      <p><a class="btn" href="https://github.com/RunTimeAdmin/levy">github.com/RunTimeAdmin/levy</a></p>
-      <p class="fine">The repository is private during development and will open as the project approaches mainnet. Contract addresses will be published at deployment.</p>
+      <h2>Get early access</h2>
+      <p>Levy is heading into its testnet soak and is looking for its first merchants. If you run subscriptions and want to collect them in USDC, get in touch.</p>
+      <p><a class="btn btn-primary" href="mailto:hello@getlevy.xyz?subject=Levy%20early%20access">Email hello@getlevy.xyz</a></p>
+      <p class="fine">For developers: the contracts will be open source, with the keeper, API and dashboards in the same repository. It opens as Levy approaches mainnet, and contract addresses are published at deployment.</p>
     </div>
   </section>
 </main>
 
 <footer class="site-footer">
   <div class="wrap">
-    <span>Levy &copy; 2026</span>
-    <span class="fine">Not financial advice. Levy is subscription billing software. Payment failures are a normal part of recurring billing.</span>
+    <span>Levy &copy; 2026 &middot; <a href="mailto:hello@getlevy.xyz">hello@getlevy.xyz</a></span>
+    <span class="fine">Pre-release software. The contracts are not yet deployed or audited.</span>
   </div>
 </footer>
 
