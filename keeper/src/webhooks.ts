@@ -24,6 +24,7 @@ export const WEBHOOK_EVENTS = [
   "subscription.resumed",
   "subscription.cancelled",
   "invoice.ready",
+  "allowance.low",
 ] as const;
 
 export type WebhookEventType = (typeof WEBHOOK_EVENTS)[number];

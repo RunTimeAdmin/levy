@@ -2,7 +2,8 @@ import type { ChainClients } from "./chain.js";
 import type { LevyConfig } from "./config.js";
 import { LevyDb } from "./db.js";
 import { Indexer } from "./indexer.js";
-import { managerAbi } from "./chain.js";
+import { managerAbi, usdcAbi } from "./chain.js";
+import { FUNDS_CHECKS_PER_CYCLE, FUNDS_RECHECK_SEC, fundsStatus } from "./funds.js";
 import { WebhookDispatcher, loadSigningKey } from "./webhooks.js";
 import { decodeEventLog } from "viem";
 
@@ -85,7 +86,57 @@ export class Keeper {
     // (index.ts): charging never waits on a merchant's endpoint.
     const second = await this.indexer.sync();
     report.syncedLogs += second.logs;
+    await this.checkFunds(second.nowSec);
     return report;
+  }
+
+  /**
+   * Allowance runway, a bounded batch per cycle (see funds.ts). When a
+   * subscriber's allowance drops below the warning level, each merchant they
+   * pay gets one allowance.low webhook per affected subscription; the warning
+   * repeats only after the allowance recovers and runs low again. Counts the
+   * direct ERC-20 allowance only, not Permit2 allowances.
+   */
+  private async checkFunds(nowSec: number): Promise<void> {
+    const usdc = { address: this.cfg.usdcAddress, abi: usdcAbi } as const;
+    for (const subscriber of this.db.fundsCandidates(nowSec - FUNDS_RECHECK_SEC, FUNDS_CHECKS_PER_CYCLE)) {
+      const subs = this.db.chargeableSubs(subscriber);
+      let allowance: bigint;
+      let balance: bigint;
+      try {
+        [allowance, balance] = (await Promise.all([
+          this.clients.public.readContract({ ...usdc, functionName: "allowance", args: [subscriber, this.cfg.managerAddress] }),
+          this.clients.public.readContract({ ...usdc, functionName: "balanceOf", args: [subscriber] }),
+        ])) as [bigint, bigint];
+      } catch {
+        continue; // RPC trouble: the subscriber stays a candidate for the next cycle
+      }
+      const perCycle = subs.reduce((acc, s) => acc + BigInt(s.price), 0n);
+      const { cyclesCovered, low } = fundsStatus(allowance, perCycle);
+      const covered = Number(cyclesCovered > 1_000_000n ? 1_000_000n : cyclesCovered); // unlimited approvals
+      const wasLow = this.db.getFunds(subscriber)?.low === 1;
+      this.db.upsertFunds({
+        subscriber,
+        allowance: allowance.toString(),
+        balance: balance.toString(),
+        per_cycle: perCycle.toString(),
+        cycles_covered: covered,
+        low: low ? 1 : 0,
+        checked_at: nowSec,
+      });
+      if (!low || wasLow) continue;
+      for (const s of subs) {
+        this.webhooks.enqueue("allowance.low", s.merchant, {
+          subId: s.subId,
+          merchant: s.merchant,
+          subscriber,
+          allowance: allowance.toString(),
+          balance: balance.toString(),
+          cyclesCovered: covered,
+          nextChargeAt: s.nextChargeAt,
+        }, nowSec);
+      }
+    }
   }
 
   private backedOff(subId: string, nowSec: number): boolean {

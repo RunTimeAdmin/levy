@@ -13,6 +13,8 @@ export const Status = {
  *  excluded: once a charge fails, retries go through the dunning schedule,
  *  not the every-cycle due sweep. */
 export const DUE_CHARGEABLE = [Status.TRIAL, Status.ACTIVE];
+/** States the contract will charge in; PAST_DUE retries are driven by dunning. */
+export const CHARGEABLE = [Status.TRIAL, Status.ACTIVE, Status.PAST_DUE];
 
 export interface DbPlan {
   planId: string;
@@ -21,6 +23,16 @@ export interface DbPlan {
   cycleSeconds: number;
   trialSeconds: number;
   maxFailed: number;
+}
+
+export interface DbFunds {
+  subscriber: string;
+  allowance: string; // USDC units approved to the manager
+  balance: string; // USDC units held
+  per_cycle: string; // one charge of each chargeable subscription, summed
+  cycles_covered: number;
+  low: number; // 1 while the allowance covers too few rounds (see funds.ts)
+  checked_at: number; // chain time; 0 = recheck next cycle
 }
 
 export interface DbSubscription {
@@ -167,6 +179,17 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 );
 CREATE INDEX IF NOT EXISTS idx_deliveries_due
   ON webhook_deliveries (status, next_retry_at);
+-- Allowance runway per subscriber (the allowance is shared by all their
+-- subscriptions). Written by the keeper's funds check.
+CREATE TABLE IF NOT EXISTS subscriber_funds (
+  subscriber TEXT PRIMARY KEY COLLATE NOCASE,
+  allowance TEXT NOT NULL,
+  balance TEXT NOT NULL,
+  per_cycle TEXT NOT NULL,
+  cycles_covered INTEGER NOT NULL,
+  low INTEGER NOT NULL,
+  checked_at INTEGER NOT NULL
+);
 -- API sign-in: an issued EIP-4361 message awaiting its signature. Single use.
 CREATE TABLE IF NOT EXISTS auth_challenges (
   nonce TEXT PRIMARY KEY,
@@ -336,15 +359,71 @@ export class LevyDb {
     }>;
   }
 
-  listSubscriptions(filter: { merchant?: string; subscriber?: string } = {}): DbSubscription[] {
+  /** With the subscriber's allowance runway (null until the keeper has checked it). */
+  listSubscriptions(
+    filter: { merchant?: string; subscriber?: string } = {}
+  ): Array<DbSubscription & { fundsLow: number | null; cyclesCovered: number | null }> {
     const clauses: string[] = [];
     const params: Array<string | number | null> = [];
-    if (filter.merchant) { clauses.push(`merchant = ? COLLATE NOCASE`); params.push(filter.merchant); }
-    if (filter.subscriber) { clauses.push(`subscriber = ? COLLATE NOCASE`); params.push(filter.subscriber); }
+    if (filter.merchant) { clauses.push(`s.merchant = ? COLLATE NOCASE`); params.push(filter.merchant); }
+    if (filter.subscriber) { clauses.push(`s.subscriber = ? COLLATE NOCASE`); params.push(filter.subscriber); }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
     return this.db
-      .prepare(`SELECT * FROM subscriptions ${where} ORDER BY CAST(subId AS INTEGER) ASC`)
-      .all(...params) as unknown as DbSubscription[];
+      .prepare(
+        `SELECT s.*, f.low AS fundsLow, f.cycles_covered AS cyclesCovered
+         FROM subscriptions s LEFT JOIN subscriber_funds f ON f.subscriber = s.subscriber
+         ${where} ORDER BY CAST(s.subId AS INTEGER) ASC`
+      )
+      .all(...params) as unknown as Array<DbSubscription & { fundsLow: number | null; cyclesCovered: number | null }>;
+  }
+
+  // ---- allowance runway (see funds.ts) ----
+
+  /** Subscribers with chargeable subscriptions whose funds were never checked or are stale. */
+  fundsCandidates(staleBefore: number, limit: number): string[] {
+    return (this.db
+      .prepare(
+        `SELECT DISTINCT s.subscriber FROM subscriptions s
+         LEFT JOIN subscriber_funds f ON f.subscriber = s.subscriber
+         WHERE s.status IN (${CHARGEABLE.join(",")})
+           AND (f.subscriber IS NULL OR f.checked_at <= ?)
+         LIMIT ?`
+      )
+      .all(staleBefore, limit) as Array<{ subscriber: string }>).map((r) => r.subscriber);
+  }
+
+  chargeableSubs(subscriber: string): Array<{ subId: string; merchant: string; price: string; nextChargeAt: number }> {
+    return this.db
+      .prepare(
+        `SELECT subId, merchant, price, nextChargeAt FROM subscriptions
+         WHERE subscriber = ? COLLATE NOCASE AND status IN (${CHARGEABLE.join(",")})`
+      )
+      .all(subscriber) as Array<{ subId: string; merchant: string; price: string; nextChargeAt: number }>;
+  }
+
+  getFunds(subscriber: string): DbFunds | undefined {
+    return this.db
+      .prepare(`SELECT * FROM subscriber_funds WHERE subscriber = ?`)
+      .get(subscriber) as DbFunds | undefined;
+  }
+
+  upsertFunds(f: DbFunds): void {
+    this.db
+      .prepare(
+        `INSERT INTO subscriber_funds
+           (subscriber, allowance, balance, per_cycle, cycles_covered, low, checked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (subscriber) DO UPDATE SET
+           allowance = excluded.allowance, balance = excluded.balance,
+           per_cycle = excluded.per_cycle, cycles_covered = excluded.cycles_covered,
+           low = excluded.low, checked_at = excluded.checked_at`
+      )
+      .run(f.subscriber, f.allowance, f.balance, f.per_cycle, f.cycles_covered, f.low, f.checked_at);
+  }
+
+  /** Recheck on the next keeper cycle (after a charge or a new approval). */
+  markFundsStale(subscriber: string): void {
+    this.db.prepare(`UPDATE subscriber_funds SET checked_at = 0 WHERE subscriber = ?`).run(subscriber);
   }
 
   /** Plans are immutable on-chain, so an upsert only ever fills a row in. */

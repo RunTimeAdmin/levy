@@ -31,6 +31,8 @@
   button:disabled { opacity: .45; cursor: default; }
   button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
   button.ghost.danger { color: var(--bad); border-color: var(--bad); }
+  .banner { background: rgba(229,165,75,.1); border: 1px solid var(--warn); border-radius: 8px; padding: 12px 16px; display: grid; gap: 8px; }
+  .banner button { justify-self: start; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .muted { color: var(--muted); }
   .note { background: #0f1115; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; font-size: 13px; color: var(--muted); }
@@ -112,13 +114,61 @@ function showSession() {
   $("signOut").hidden = !s;
 }
 
+// Shown while the allowance (shared by all the subscriber's Levy
+// subscriptions) or the balance will not last. Values are as of the keeper's
+// last check.
+function fundsBanner(funds) {
+  const box = document.createElement("div");
+  box.className = "banner";
+  const lines = [];
+  if (funds.low) {
+    lines.push(`Your USDC allowance for Levy covers ${funds.cyclesCovered} more round${funds.cyclesCovered === 1 ? "" : "s"} of your subscriptions ($${funds.perCycleUsdc} per round). Top it up so your next payments do not fail.`);
+  }
+  if (BigInt(funds.balance) < BigInt(funds.perCycle)) {
+    lines.push(`Your USDC balance ($${funds.balanceUsdc}) is below one round of your subscriptions ($${funds.perCycleUsdc}).`);
+  }
+  for (const text of lines) {
+    const p = document.createElement("div");
+    p.textContent = text;
+    box.append(p);
+  }
+  const status = document.createElement("div");
+  status.className = "muted";
+  if (funds.low && cfg.managerAddress) {
+    const b = document.createElement("button");
+    b.textContent = "Top up allowance (12 rounds)";
+    b.onclick = async () => {
+      b.disabled = true;
+      try {
+        status.textContent = "Confirm in your wallet...";
+        const account = await LevyWallet.connect(cfg.chainId);
+        if (account.toLowerCase() !== LevyAuth.address.toLowerCase()) {
+          throw new Error(`Your wallet is on ${short(account)}; switch it to ${short(LevyAuth.address)}, the account you signed in with.`);
+        }
+        const now = await LevyWallet.allowance(cfg.usdcAddress, account, cfg.managerAddress);
+        const total = now + BigInt(funds.perCycle) * 12n;
+        await LevyWallet.approve(account, cfg.usdcAddress, cfg.managerAddress, total);
+        status.textContent = `Done: your allowance is now $${(total / 1_000_000n).toString()}.${(total % 1_000_000n).toString().padStart(6, "0").slice(0, 2)}. This notice clears at the next check.`;
+        b.remove();
+      } catch (e) {
+        status.textContent = e.message || String(e);
+        b.disabled = false;
+      }
+    };
+    box.append(b);
+  }
+  box.append(status);
+  return box;
+}
+
 async function load() {
   showSession();
   const s = LevyAuth.address;
   if (!s) return;
-  const [subs, config] = await Promise.all([
+  const [subs, config, funds] = await Promise.all([
     LevyAuth.api(`/api/subscriptions?subscriber=${s}`),
     fetch("/api/config").then((r) => r.json()),
+    LevyAuth.api("/api/funds"),
   ]);
   cfg = config;
   const main = $("main");
@@ -145,6 +195,7 @@ async function load() {
   }));
   main.innerHTML = cards.join("");
   if (cfg.managerAddress) subs.forEach((sub) => renderActions(sub.subId, sub.statusName));
+  if (funds.checked && (funds.low || BigInt(funds.balance) < BigInt(funds.perCycle))) main.prepend(fundsBanner(funds));
 }
 
 $("signIn").onclick = () => LevyAuth.signIn().then(load).catch(e => alert("Sign-in failed: " + e.message));

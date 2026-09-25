@@ -156,6 +156,24 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
     }));
   });
 
+  // The signed-in subscriber's allowance runway, as of the keeper's last check.
+  app.get("/api/funds", async (req) => {
+    const me = requireSession(db, req);
+    const f = db.getFunds(me);
+    if (!f) return { checked: false };
+    return {
+      checked: true,
+      allowance: f.allowance,
+      allowanceUsdc: formatUsdc(f.allowance),
+      balance: f.balance,
+      balanceUsdc: formatUsdc(f.balance),
+      perCycle: f.per_cycle,
+      perCycleUsdc: formatUsdc(f.per_cycle),
+      cyclesCovered: f.cycles_covered,
+      low: f.low === 1,
+    };
+  });
+
   app.get("/api/subscriptions/:id", async (req) => {
     const me = requireSession(db, req);
     const { id } = req.params as { id: string };

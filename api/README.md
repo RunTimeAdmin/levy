@@ -14,7 +14,8 @@ npm start              # http://127.0.0.1:3001
 ```
 
 Pages: `/` (merchant dashboard), `/portal.html` (customer portal, where
-subscribers also pause, resume and cancel from their wallet), both signed in
+subscribers also pause, resume and cancel from their wallet, and top up their
+allowance when it runs low), both signed in
 with a browser wallet, and `/checkout.html?plan=<planId>`, where a customer
 subscribes: it shows the plan, adds 12 cycles (adjustable) to the customer's
 USDC allowance for Levy, and calls `subscribe`. It needs `LEVY_MANAGER_ADDRESS`
@@ -56,6 +57,7 @@ merchant's webhook or subscription id gets 404.
 | POST | `/api/auth/challenge`, `/api/auth/verify` | public | sign-in (above) |
 | GET | `/api/subscriptions?merchant=\|subscriber=&status=` | session | one of merchant/subscriber, equal to the session |
 | GET | `/api/subscriptions/:id` | session | + charges, dunning row; subscriber or merchant only |
+| GET | `/api/funds` | session | the subscriber's allowance runway as of the keeper's last check (`low`, `cyclesCovered`, allowance, balance) |
 | GET | `/api/metrics` | session | MRR (trial+active, per 30 days whatever the cycle), success rate, churn counts, totals |
 | GET | `/api/dunning` | session | retry queue with nextRetryAt |
 | GET | `/api/charges?subscription=` | session | charge records |
@@ -111,5 +113,5 @@ checks; the merchant guide has a standalone example.
 ## Tests
 
 ```bash
-npm test   # 31 tests, seeded temp DB, ephemeral port, real wallet signatures
+npm test   # 32 tests, seeded temp DB, ephemeral port, real wallet signatures
 ```

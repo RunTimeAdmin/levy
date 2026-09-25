@@ -76,6 +76,9 @@ Available event types:
 - `subscription.resumed`
 - `subscription.cancelled`
 - `invoice.ready`
+- `allowance.low` (the subscriber's USDC allowance for Levy covers fewer than 2 more rounds of their subscriptions: `allowance`, `balance`, `cyclesCovered`, `nextChargeAt`)
+
+`allowance.low` is your cue to email the customer before their payments start failing. The allowance is one pool shared by all of a subscriber's Levy subscriptions, so it runs down with every charge; the warning is sent once, and again only if the subscriber tops up and later runs low again. Customers top up from the portal. Your dashboard's Allowance column shows the same thing. Only direct USDC approvals count, not Permit2 allowances.
 
 Manage endpoints with the API (same `Authorization` header; you only ever see your own):
 

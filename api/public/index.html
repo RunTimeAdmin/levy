@@ -91,7 +91,7 @@
 <script>
 const $ = (id) => document.getElementById(id);
 
-const EVENTS = ["subscription.created","subscription.updated","charge.succeeded","charge.failed","dunning.started","subscription.paused","subscription.resumed","subscription.cancelled","invoice.ready"];
+const EVENTS = ["subscription.created","subscription.updated","charge.succeeded","charge.failed","dunning.started","subscription.paused","subscription.resumed","subscription.cancelled","invoice.ready","allowance.low"];
 $("hookEvents").innerHTML = EVENTS.map(e =>
   `<label><input type="checkbox" value="${e}" checked> ${e}</label>`).join("");
 
@@ -132,11 +132,13 @@ async function loadSubs(m) {
   if (!subs.length) { $("subs").innerHTML = `<p class="empty">No subscriptions.</p>`; return; }
   $("subs").innerHTML = `<table><thead><tr>
     <th>ID</th><th class="addr">Subscriber</th><th>Price</th><th>Status</th>
-    <th>Next charge</th><th>Failed</th></tr></thead><tbody>` +
+    <th>Next charge</th><th>Failed</th><th title="Rounds of the subscriber's Levy charges their allowance still covers">Allowance</th></tr></thead><tbody>` +
     subs.map(s => `<tr>
       <td>${s.subId}</td><td class="addr">${short(s.subscriber)}</td>
       <td>$${s.priceUsdc}/cycle</td><td>${pill(s.statusName)}</td>
-      <td>${s.nextChargeAtIso.slice(0, 10)}</td><td>${s.failedAttempts}</td></tr>`).join("") +
+      <td>${s.nextChargeAtIso.slice(0, 10)}</td><td>${s.failedAttempts}</td>
+      <td>${s.fundsLow === 1 ? pill(`low: ${s.cyclesCovered}`, "past_due")
+           : s.cyclesCovered == null ? `<span class="muted">not checked</span>` : `${s.cyclesCovered} cycles`}</td></tr>`).join("") +
     `</tbody></table>`;
 }
 

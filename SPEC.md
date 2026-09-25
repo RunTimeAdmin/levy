@@ -52,7 +52,7 @@
 
 - **Keeper:** watches `nextChargeAt` across subscriptions, submits `charge()` txs. Pays its own gas in USDC (small per charge; base-fee behavior still unverified). Single binary to start; later: distributed keepers.
 - **Indexer:** tracks subscriptions, charges, invoices. MUST dedupe EIP-7708 double-counting: the USDC precompile emits Transfer events for native movements, so naive ERC-20 log indexing double-counts. Index from the system-emitter stream and dedupe by tx hash.
-- **Webhook dispatcher:** Ed25519-signed payloads to merchant endpoints. Events: subscription.created, subscription.updated, charge.succeeded, charge.failed, dunning.started, subscription.paused, subscription.resumed, subscription.cancelled, invoice.ready. Retry with exponential backoff; dead-letter after 24h.
+- **Webhook dispatcher:** Ed25519-signed payloads to merchant endpoints. Events: subscription.created, subscription.updated, charge.succeeded, charge.failed, dunning.started, subscription.paused, subscription.resumed, subscription.cancelled, invoice.ready, allowance.low (keeper-generated when a subscriber's allowance covers fewer than 2 more rounds). Retry with exponential backoff; dead-letter after 24h.
 - **API + dashboard (merchant):** plan CRUD, subscriber list, MRR/churn metrics, dunning queue, invoice export, webhook config.
 - **Customer portal:** subscriber view — active subscriptions, pause/cancel, update allowance, invoice history. White-label is a Phase 2 premium feature.
 

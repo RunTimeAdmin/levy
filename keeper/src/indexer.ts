@@ -10,6 +10,10 @@ const TRANSFER_EVENT = parseAbiItem(
   "event Transfer(address indexed from, address indexed to, uint256 value)"
 );
 
+const APPROVAL_EVENT = parseAbiItem(
+  "event Approval(address indexed owner, address indexed spender, uint256 value)"
+);
+
 const SYNC_KEY = "manager_events_from_block";
 
 // topic0 -> event name, built once from the contract ABI.
@@ -101,8 +105,15 @@ export class Indexer {
 
   private async handleLog(log: RawLog, nowSec: number): Promise<void> {
     if (log.address.toLowerCase() === this.cfg.usdcAddress.toLowerCase()) {
-      // Only Transfer events; Approval and friends share the address but are
-      // not movements.
+      // A new approval to the manager (a top-up): recheck that subscriber's
+      // allowance runway on the next cycle.
+      if (log.topics[0] === toEventSelector(APPROVAL_EVENT)) {
+        if (BigInt(log.topics[2]) === BigInt(this.cfg.managerAddress)) {
+          this.db.markFundsStale(`0x${log.topics[1].slice(26)}`);
+        }
+        return;
+      }
+      // Otherwise only Transfer events are movements.
       if (log.topics[0] !== toEventSelector(TRANSFER_EVENT)) return;
       // Raw USDC movement. Dedup happens at query time (see db.dedupedTransfers).
       this.db.insertTransfer({
@@ -166,6 +177,9 @@ export class Indexer {
         });
         clearDunning(this.db, subId);
         await this.refreshSubscription(subId);
+        // The charge spent allowance: recheck the runway next cycle.
+        const payer = this.db.getSubscription(subId)?.subscriber;
+        if (payer) this.db.markFundsStale(payer);
         break;
       }
       case "ChargeFailed": {

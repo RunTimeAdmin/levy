@@ -66,6 +66,11 @@ function seed(): void {
   });
   db.insertFailure("2", 1, "0xtx2", 11, 1699900000);
   db.setDunning({ subId: "2", attempts: 1, nextRetryAt: 1699986400, updatedAt: 1699900000 });
+  // The subscriber's allowance covers one more round of their charges: low.
+  db.upsertFunds({
+    subscriber: SUBSCRIBER, allowance: "32000000", balance: "5000000", per_cycle: "32000000",
+    cycles_covered: 1, low: 1, checked_at: 1700000000,
+  });
   db.close();
 }
 
@@ -186,7 +191,7 @@ describe("sign-in", () => {
   it("requires a valid session on every private endpoint", async () => {
     const paths = [
       ["GET", `/api/subscriptions?merchant=${MERCHANT}`], ["GET", "/api/subscriptions/1"],
-      ["GET", "/api/metrics"], ["GET", "/api/dunning"], ["GET", "/api/charges"],
+      ["GET", "/api/metrics"], ["GET", "/api/dunning"], ["GET", "/api/charges"], ["GET", "/api/funds"],
       ["GET", "/api/invoices?format=csv"], ["GET", "/api/webhooks"], ["GET", "/api/deliveries"],
       ["POST", "/api/webhooks"], ["PATCH", "/api/webhooks/1"], ["DELETE", "/api/webhooks/1"],
     ] as const;
@@ -224,7 +229,8 @@ describe("public endpoints", () => {
     assert.equal(r.json.algorithm, "ed25519");
     assert.match(r.json.keyId, /^[0-9a-f]{16}$/);
     assert.ok(r.json.publicKey.includes("BEGIN PUBLIC KEY"));
-    assert.equal(r.json.events.length, 9);
+    assert.equal(r.json.events.length, 10);
+    assert.ok(r.json.events.includes("allowance.low"));
     assert.ok(r.json.events.includes("subscription.updated"));
   });
 });
@@ -242,6 +248,19 @@ describe("data is scoped to the signed-in address", () => {
     assert.equal((await get(`/api/subscriptions?subscriber=${SUBSCRIBER}`, MERCHANT)).status, 403);
     assert.equal((await get("/api/subscriptions?merchant=nope", MERCHANT)).status, 400);
     assert.equal((await get("/api/subscriptions", MERCHANT)).status, 400);
+  });
+
+  it("funds: the signed-in subscriber's allowance runway, and the flag on merchant views", async () => {
+    const f = await get("/api/funds", SUBSCRIBER);
+    assert.equal(f.status, 200);
+    assert.equal(f.json.low, true);
+    assert.equal(f.json.cyclesCovered, 1);
+    assert.equal(f.json.allowanceUsdc, "32.000000");
+    assert.equal(f.json.balanceUsdc, "5.000000");
+    assert.deepEqual((await get("/api/funds", MERCHANT)).json, { checked: false });
+
+    const subs = await get(`/api/subscriptions?merchant=${MERCHANT}`, MERCHANT);
+    assert.ok(subs.json.every((s: any) => s.fundsLow === 1 && s.cyclesCovered === 1));
   });
 
   it("subscription detail: visible to its subscriber and merchant, 404 to anyone else", async () => {

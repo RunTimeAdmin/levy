@@ -32,6 +32,7 @@ let anvil: ChildProcess;
 let keeper: ReturnType<typeof privateKeyToAccount>;
 let alice: ReturnType<typeof privateKeyToAccount>;
 let bob: ReturnType<typeof privateKeyToAccount>;
+let carol: ReturnType<typeof privateKeyToAccount>;
 let merchant: ReturnType<typeof privateKeyToAccount>;
 let publicClient: any;
 let usdc: any;
@@ -80,7 +81,7 @@ before(async () => {
     const timer = setTimeout(() => reject(new Error("anvil keys not printed")), 15000);
     const check = () => {
       const keys = [...out.matchAll(/^\(\d+\)\s+(0x[0-9a-f]{64})/gm)].map((m) => m[1]);
-      if (keys.length >= 3) {
+      if (keys.length >= 4) {
         clearTimeout(timer);
         resolve(keys);
       }
@@ -97,10 +98,12 @@ before(async () => {
   const KEEPER_KEY = keys[0] as `0x${string}`;
   const ALICE_KEY = keys[1] as `0x${string}`;
   const BOB_KEY = keys[2] as `0x${string}`;
+  const CAROL_KEY = keys[3] as `0x${string}`;
 
   keeper = privateKeyToAccount(KEEPER_KEY as `0x${string}`);
   alice = privateKeyToAccount(ALICE_KEY as `0x${string}`);
   bob = privateKeyToAccount(BOB_KEY as `0x${string}`);
+  carol = privateKeyToAccount(CAROL_KEY);
   merchant = keeper; // keeper account doubles as merchant deployer
 
   const chain = {
@@ -423,5 +426,46 @@ describe("keeper integration (anvil)", () => {
     await increaseTime(61);
     assert.ok(attempted(await keeperSvc.runCycle()), "retried after the backoff");
     assert.ok(!attempted(await keeperSvc.runCycle()), "now backing off 5m");
+  });
+
+  it("warns the merchant once when a subscriber's allowance runs low", async () => {
+    keeperSvc.webhooks.register(keeper.address, "http://127.0.0.1:9/funds", ["allowance.low"], await chainTime());
+    await mined(await usdc.write.mint([carol.address, 1_000_000_000n], { account: keeper, chain: publicClient.chain }));
+    const carolWallet = createWalletClient({ account: carol, chain: publicClient.chain, transport: http(RPC) });
+    const asCarol = getContract({
+      address: manager.address, abi: abi("SubscriptionManager"),
+      client: { public: publicClient, wallet: carolWallet },
+    });
+    const asCarolUsdc = getContract({
+      address: usdc.address, abi: usdc.abi,
+      client: { public: publicClient, wallet: carolWallet },
+    });
+    const warnings = () => (db["db"]
+      .prepare("SELECT payload FROM webhook_deliveries WHERE event_type = 'allowance.low'")
+      .all() as Array<{ payload: string }>)
+      .map((r) => JSON.parse(r.payload))
+      .filter((p) => p.subscriber.toLowerCase() === carol.address.toLowerCase());
+
+    // Two cycles approved; subscribing spends one, leaving one: under the
+    // two-cycle warning level.
+    await mined(await asCarolUsdc.write.approve([manager.address, PRICE * 2n], { account: carol, chain: publicClient.chain }));
+    await mined(await asCarol.write.subscribe([1n], { account: carol, chain: publicClient.chain }));
+    await keeperSvc.runCycle();
+    assert.equal(db.getFunds(carol.address)?.low, 1);
+    assert.equal(db.getFunds(carol.address)?.cycles_covered, 1);
+    assert.equal(warnings().length, 1);
+    assert.equal(warnings()[0].cyclesCovered, 1);
+    assert.equal(warnings()[0].allowance, PRICE.toString());
+
+    // Still low at the next check: no second warning.
+    db.markFundsStale(carol.address);
+    await keeperSvc.runCycle();
+    assert.equal(warnings().length, 1);
+
+    // A top-up (an Approval to the manager) triggers a recheck and clears it.
+    await mined(await asCarolUsdc.write.approve([manager.address, PRICE * 12n], { account: carol, chain: publicClient.chain }));
+    await keeperSvc.runCycle();
+    assert.equal(db.getFunds(carol.address)?.low, 0);
+    assert.equal(db.getFunds(carol.address)?.cycles_covered, 12);
   });
 });

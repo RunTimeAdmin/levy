@@ -38,7 +38,8 @@ fanned out per merchant subscription:
   `charge.succeeded`, `charge.failed`,
   `dunning.started` (first failure), `subscription.paused`,
   `subscription.resumed`, `subscription.cancelled`, `invoice.ready`
-  (emitted alongside every `charge.succeeded`; the invoice is the charge record).
+  (emitted alongside every `charge.succeeded`; the invoice is the charge record),
+  and `allowance.low` (from the funds check below, not a contract event).
 
 Deliveries are Ed25519-signed: `X-Levy-Signature` covers
 `{X-Levy-Timestamp}.{X-Levy-Delivery}.{canonical JSON body}`, so receivers can
@@ -65,7 +66,7 @@ its deliveries arrive in order. Failures retry with backoff (1m, 5m, 15m, 1h,
 ## Tests
 
 ```bash
-npm test              # unit + anvil integration (49 tests)
+npm test              # unit + anvil integration (53 tests)
 npm run test:integration
 ```
 
@@ -76,6 +77,7 @@ Integration tests spin up a local `anvil`, deploy `MockUSDC` + `FeeRouter` + `Su
 - **Key safety.** `LEVY_KEEPER_KEY` is a hot EOA that pays gas (USDC on Arc). Fund it minimally, rotate if exposed, never commit it.
 - **Idempotency.** `charge()` is safe to retry; the contract enforces `nextChargeAt` and state. The keeper dedupes within a cycle (a sub is charged once per cycle even if it appears in both the due sweep and the retry queue).
 - **Chain time, not wall time.** All due/dunning math uses the chain-head timestamp, so the keeper behaves correctly across clock skew and test time-warps. (Arc has deterministic finality with no reorgs; this is belt-and-suspenders.)
+- **Allowance runway.** After charging, each cycle reads the USDC allowance and balance of up to 50 subscribers whose last check is over 6h old (see `src/funds.ts`). A charge, or an `Approval` to the manager (a top-up), makes that subscriber due for a recheck on the next cycle. When the allowance covers fewer than 2 rounds of all their chargeable subscriptions, each merchant involved gets one `allowance.low` webhook; it repeats only after the allowance recovers. Permit2 allowances are not counted.
 - **Stuck charges back off.** A charge that fails for any reason other than payment (a revert, an RPC error) re-reads the subscription from chain and is retried after 1m, 5m, 15m, 1h, then every 6h, instead of every cycle. The backoff is in memory, so a restart tries each once more.
 - **Log sync is chunked.** `eth_getLogs` goes out in `LEVY_LOG_CHUNK_BLOCKS` ranges (default 500; dRPC rejects 1,000) and the cursor advances after each, so a keeper that was down for a day catches up in ~350 requests.
 - **Single instance.** Run one keeper per deployment. Two keepers would race `charge()` calls (harmless on-chain — the second reverts or no-ops — but wasteful).
