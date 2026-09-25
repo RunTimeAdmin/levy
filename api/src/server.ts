@@ -7,6 +7,7 @@ import { checkWebhookUrl } from "../../keeper/src/webhook-url.js";
 import {
   WEBHOOK_EVENTS,
   isWebhookEventType,
+  keyId,
   loadSigningKey,
   publicKeyPem,
 } from "../../keeper/src/webhooks.js";
@@ -46,6 +47,9 @@ export function apiOptionsFromEnv(): ApiOptions {
     webhookAllowPrivate: process.env.LEVY_WEBHOOK_ALLOW_PRIVATE === "1",
   };
 }
+
+/** MRR is per 30 days, the length of the "monthly" plan preset. */
+const MONTH_SECONDS = 30n * 86_400n;
 
 /** Each webhook costs a delivery per event; keep one merchant from flooding the dispatcher. */
 const MAX_WEBHOOKS_PER_MERCHANT = 5;
@@ -171,7 +175,11 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
 
     const subs = db.listSubscriptions({ merchant });
     const mrrSubs = subs.filter((s) => s.status === Status.TRIAL || s.status === Status.ACTIVE);
-    const mrr = mrrSubs.reduce((acc, s) => acc + BigInt(s.price), 0n).toString();
+    // Normalized to a month: a weekly $10 plan is ~$42.86 of MRR, a yearly
+    // $120 plan ~$9.86. Integer math, rounded down per subscription.
+    const mrr = mrrSubs
+      .reduce((acc, s) => acc + (BigInt(s.price) * MONTH_SECONDS) / BigInt(s.cycleSeconds), 0n)
+      .toString();
 
     const count = (st: number) => subs.filter((s) => s.status === st).length;
     const { charges, failures } = db.chargeStats(merchant);
@@ -292,13 +300,13 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   });
 
   app.get("/api/webhooks/public-key", async () => {
-    let pem: string;
+    let key;
     try {
-      pem = publicKeyPem(loadSigningKey(opts.webhookKeyPath, opts.webhookKey));
+      key = loadSigningKey(opts.webhookKeyPath, opts.webhookKey);
     } catch {
       return bad(503, "signing key not available (keeper has not booted yet)");
     }
-    return { algorithm: "ed25519", publicKey: pem, events: [...WEBHOOK_EVENTS] };
+    return { algorithm: "ed25519", keyId: keyId(key), publicKey: publicKeyPem(key), events: [...WEBHOOK_EVENTS] };
   });
 
   app.get("/api/deliveries", async (req) => {

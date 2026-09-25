@@ -10,6 +10,8 @@ export interface LevyConfig {
   dbPath: string;
   /** How far back to scan on first run (blocks). */
   initialLookbackBlocks: number;
+  /** Blocks per eth_getLogs request. Arc RPCs cap the range (dRPC under 1,000). */
+  logChunkBlocks: number;
   /** Path of the Ed25519 webhook signing key (generated on first run). */
   webhookKeyPath: string;
   /** Optional inline signing key: PEM PKCS#8 or base64 32-byte seed. */
@@ -39,6 +41,7 @@ export function loadConfig(): LevyConfig {
       .map(Number),
     dbPath: process.env.LEVY_DB_PATH ?? "./levy.db",
     initialLookbackBlocks: Number(process.env.LEVY_LOOKBACK_BLOCKS ?? 5000),
+    logChunkBlocks: Number(process.env.LEVY_LOG_CHUNK_BLOCKS ?? 500),
     webhookKeyPath: process.env.LEVY_WEBHOOK_KEY_PATH ?? "./webhook-signing-key.pem",
     webhookKey: process.env.LEVY_WEBHOOK_KEY,
     webhookAllowPrivate: process.env.LEVY_WEBHOOK_ALLOW_PRIVATE === "1",

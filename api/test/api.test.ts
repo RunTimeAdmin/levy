@@ -30,6 +30,9 @@ const tokens: Record<string, string> = {};
 
 function seed(): void {
   const db = new LevyDb(DB);
+  db.upsertPlan({ planId: "1", merchant: MERCHANT, price: "10000000", cycleSeconds: 2592000, trialSeconds: 0, maxFailed: 2 });
+  db.upsertPlan({ planId: "2", merchant: OTHER, price: "5000000", cycleSeconds: 2592000, trialSeconds: 0, maxFailed: 2 });
+  db.upsertPlan({ planId: "3", merchant: OTHER, price: "7000000", cycleSeconds: 604800, trialSeconds: 0, maxFailed: 2 });
   db.upsertSubscription({
     subId: "1", subscriber: SUBSCRIBER, planId: "1", merchant: MERCHANT,
     price: "10000000", cycleSeconds: 2592000, status: 1,
@@ -43,6 +46,12 @@ function seed(): void {
   db.upsertSubscription({
     subId: "3", subscriber: SUBSCRIBER, planId: "2", merchant: OTHER,
     price: "5000000", cycleSeconds: 2592000, status: 1,
+    nextChargeAt: 1700000000, failedAttempts: 0,
+  });
+  // Weekly $7 on OTHER: $30 of MRR once normalized to a 30-day month.
+  db.upsertSubscription({
+    subId: "4", subscriber: SUBSCRIBER, planId: "3", merchant: OTHER,
+    price: "7000000", cycleSeconds: 604800, status: 1,
     nextChargeAt: 1700000000, failedAttempts: 0,
   });
   db.insertCharge({
@@ -193,7 +202,7 @@ describe("public endpoints", () => {
   it("GET /api/plans", async () => {
     const r = await get("/api/plans");
     assert.equal(r.status, 200);
-    assert.equal(r.json.length, 2);
+    assert.equal(r.json.length, 3);
     assert.equal(r.json[0].planId, "1");
     assert.equal(r.json[0].priceUsdc, "10.000000");
   });
@@ -202,8 +211,10 @@ describe("public endpoints", () => {
     const r = await get("/api/webhooks/public-key");
     assert.equal(r.status, 200);
     assert.equal(r.json.algorithm, "ed25519");
+    assert.match(r.json.keyId, /^[0-9a-f]{16}$/);
     assert.ok(r.json.publicKey.includes("BEGIN PUBLIC KEY"));
-    assert.equal(r.json.events.length, 8);
+    assert.equal(r.json.events.length, 9);
+    assert.ok(r.json.events.includes("subscription.updated"));
   });
 });
 
@@ -249,7 +260,9 @@ describe("data is scoped to the signed-in address", () => {
     assert.equal(m.totalChargedUsdc, "10.000000");
 
     const other = await get("/api/metrics", OTHER);
-    assert.equal(other.json.totalSubs, 1);
+    assert.equal(other.json.totalSubs, 2);
+    // $5 monthly + $7 weekly (x 30/7 = $30) per 30-day month.
+    assert.equal(other.json.mrrUsdc, "35.000000");
     assert.equal(other.json.totalChargedUsdc, "5.000000");
     assert.equal((await get(`/api/metrics?merchant=${MERCHANT}`, OTHER)).status, 403);
   });

@@ -158,6 +158,9 @@ before(async () => {
   process.env.LEVY_DB_PATH = ":memory:";
   process.env.LEVY_LOOKBACK_BLOCKS = "100000"; // anvil: scan from genesis
   process.env.LEVY_WEBHOOK_ALLOW_PRIVATE = "1"; // webhooks below point at local servers
+  // Tiny getLogs chunks, so every sync in this suite crosses many chunk
+  // boundaries (production default is 500).
+  process.env.LEVY_LOG_CHUNK_BLOCKS = "7";
   process.env.LEVY_WEBHOOK_KEY_PATH = join(dirname(fileURLToPath(import.meta.url)), "test-webhook-key.pem");
 
   const { loadConfig } = await import("../src/config.js");
@@ -376,5 +379,49 @@ describe("keeper integration (anvil)", () => {
       hang.closeAllConnections();
       hang.close();
     }
+  });
+
+  it("indexes plans nobody subscribed to, and reports plan changes", async () => {
+    keeperSvc.webhooks.register(keeper.address, "http://127.0.0.1:9/updates", ["subscription.updated"], await chainTime());
+    // Plan 2: same merchant, twice the price, no subscribers yet.
+    await mined(await manager.write.createPlan([PRICE * 2n, CYCLE, 0, 3 * 86_400, 2], { account: keeper, chain: publicClient.chain }));
+    await keeperSvc.runCycle();
+    const plan2 = db.listPlans().find((p) => p.planId === "2");
+    assert.ok(plan2, "plan 2 indexed without subscribers");
+    assert.equal(plan2.price, (PRICE * 2n).toString());
+    assert.equal(plan2.merchant.toLowerCase(), keeper.address.toLowerCase());
+
+    // Alice moves sub 4 to plan 2: the merchant gets subscription.updated.
+    const aliceWallet = createWalletClient({
+      account: alice, chain: publicClient.chain, transport: http(RPC),
+    });
+    const asAlice = getContract({
+      address: manager.address, abi: abi("SubscriptionManager"),
+      client: { public: publicClient, wallet: aliceWallet },
+    });
+    await mined(await asAlice.write.changePlan([4n, 2n], { account: alice, chain: publicClient.chain }));
+    await keeperSvc.runCycle();
+    const row = db["db"]
+      .prepare("SELECT payload FROM webhook_deliveries WHERE event_type = 'subscription.updated'")
+      .get() as { payload: string } | undefined;
+    assert.ok(row, "subscription.updated enqueued");
+    const payload = JSON.parse(row.payload);
+    assert.equal(payload.subId, "4");
+    assert.equal(payload.oldPlanId, "1");
+    assert.equal(payload.newPlanId, "2");
+  });
+
+  it("backs off a charge that reverts instead of retrying every cycle", async () => {
+    // A row the chain does not know: charge() reverts (UnknownSubscription).
+    db.upsertSubscription({
+      subId: "999", subscriber: alice.address, planId: "1", merchant: keeper.address,
+      price: PRICE.toString(), cycleSeconds: CYCLE, status: 1, nextChargeAt: 0, failedAttempts: 0,
+    });
+    const attempted = (r: { failed: Array<{ subId: string }> }) => r.failed.some((f) => f.subId === "999");
+    assert.ok(attempted(await keeperSvc.runCycle()), "first attempt");
+    assert.ok(!attempted(await keeperSvc.runCycle()), "skipped inside the 1m backoff");
+    await increaseTime(61);
+    assert.ok(attempted(await keeperSvc.runCycle()), "retried after the backoff");
+    assert.ok(!attempted(await keeperSvc.runCycle()), "now backing off 5m");
   });
 });

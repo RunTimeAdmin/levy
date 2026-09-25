@@ -91,7 +91,7 @@
 <script>
 const $ = (id) => document.getElementById(id);
 
-const EVENTS = ["subscription.created","charge.succeeded","charge.failed","dunning.started","subscription.paused","subscription.resumed","subscription.cancelled","invoice.ready"];
+const EVENTS = ["subscription.created","subscription.updated","charge.succeeded","charge.failed","dunning.started","subscription.paused","subscription.resumed","subscription.cancelled","invoice.ready"];
 $("hookEvents").innerHTML = EVENTS.map(e =>
   `<label><input type="checkbox" value="${e}" checked> ${e}</label>`).join("");
 

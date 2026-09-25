@@ -68,6 +68,7 @@ The endpoint must be https on the default port (443) at a public address. Levy r
 Available event types:
 
 - `subscription.created`
+- `subscription.updated` (the subscriber changed plan: `oldPlanId`, `newPlanId`, `credit`)
 - `charge.succeeded`
 - `charge.failed`
 - `dunning.started`
@@ -89,11 +90,13 @@ Deliveries retry with exponential backoff and are marked dead after 24 hours of 
 
 ## 3. Verify webhook signatures
 
-Every webhook POST carries three headers:
+Every webhook POST carries these headers:
 
-- `X-Levy-Signature`: base64 Ed25519 signature over the raw request body bytes.
+- `X-Levy-Signature`: base64 Ed25519 signature over `{timestamp}.{deliveryId}.{raw body}`.
+- `X-Levy-Timestamp`: unix seconds when this attempt was signed (retries get a fresh one).
+- `X-Levy-Delivery`: the delivery id. Store it and ignore repeats.
+- `X-Levy-Key-Id`: which signing key was used (matches `keyId` below).
 - `X-Levy-Event`: the event type, e.g. `charge.succeeded`.
-- `X-Levy-Delivery`: the delivery id (for idempotency; store it and ignore repeats).
 
 Fetch the public key:
 
@@ -101,14 +104,14 @@ Fetch the public key:
 GET /api/webhooks/public-key
 ```
 
-The response includes the SPKI PEM public key and the algorithm (`ed25519`).
+The response includes the SPKI PEM public key, its `keyId`, and the algorithm (`ed25519`).
 
 Verification steps:
 
-1. Read the raw request body bytes exactly as received (before JSON parsing).
-2. Base64-decode the `X-Levy-Signature` header.
-3. Verify the Ed25519 signature against the body bytes with the public key.
-4. Reject the request if verification fails.
+1. Read the raw request body exactly as received (before JSON parsing).
+2. Reject the request if `X-Levy-Timestamp` is more than 5 minutes from your clock. A captured delivery then cannot be replayed later.
+3. Build `{X-Levy-Timestamp}.{X-Levy-Delivery}.{raw body}` and verify the base64 `X-Levy-Signature` over it with the public key. Reject on failure.
+4. Drop the request if you already processed that `X-Levy-Delivery` id (the id is signed, so this is safe).
 
 Example in Node.js:
 
@@ -118,10 +121,15 @@ import { createPublicKey, verify } from "node:crypto";
 const { publicKey } = await fetch(API + "/api/webhooks/public-key").then(r => r.json());
 const key = createPublicKey(publicKey);
 
-function isValid(rawBody, signatureB64) {
-  return verify(null, rawBody, key, Buffer.from(signatureB64, "base64"));
+function isValid(rawBody, headers) {
+  const ts = headers["x-levy-timestamp"];
+  if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
+  const signed = Buffer.from(`${ts}.${headers["x-levy-delivery"]}.${rawBody}`, "utf-8");
+  return verify(null, signed, key, Buffer.from(headers["x-levy-signature"], "base64"));
 }
 ```
+
+`verifyDelivery` in `keeper/src/webhooks.ts` does the same checks.
 
 Rotate your trust only when the public key endpoint returns a new key. Levy signs with one key per deployment.
 

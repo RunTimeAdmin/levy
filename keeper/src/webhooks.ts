@@ -1,4 +1,5 @@
 import {
+  createHash,
   createPrivateKey,
   createPublicKey,
   generateKeyPairSync,
@@ -12,9 +13,10 @@ import https from "node:https";
 import { LevyDb, type DeliveryRow } from "./db.js";
 import { publicOnlyLookup, webhookUrlProblem, type WebhookUrlPolicy } from "./webhook-url.js";
 
-/** The eight webhook event types merchants can subscribe to. */
+/** The webhook event types merchants can subscribe to. */
 export const WEBHOOK_EVENTS = [
   "subscription.created",
+  "subscription.updated",
   "charge.succeeded",
   "charge.failed",
   "dunning.started",
@@ -106,6 +108,48 @@ export function verifySignature(
   } catch {
     return false;
   }
+}
+
+/**
+ * What a delivery's X-Levy-Signature covers: `${timestamp}.${deliveryId}.${body}`.
+ * Signing the timestamp lets receivers reject replays of a captured delivery;
+ * signing the delivery id lets them drop duplicates safely. Neither header can
+ * be changed without breaking the signature.
+ */
+export function signedContent(timestamp: number | string, deliveryId: number | string, body: string): string {
+  return `${timestamp}.${deliveryId}.${body}`;
+}
+
+/**
+ * Short id of the signing key (first 16 hex chars of SHA-256 over its SPKI
+ * DER), sent as X-Levy-Key-Id so the key can be rotated without guesswork.
+ */
+export function keyId(key: KeyObject): string {
+  const pub = key.type === "private" ? createPublicKey(key) : key;
+  return createHash("sha256").update(pub.export({ format: "der", type: "spki" })).digest("hex").slice(0, 16);
+}
+
+export const REPLAY_TOLERANCE_SEC = 300;
+
+/**
+ * Receiver-side check of one delivery: the signature matches, and the
+ * timestamp is within `toleranceSec` of now. Pass the raw body as received
+ * and the X-Levy-Timestamp / X-Levy-Delivery / X-Levy-Signature headers.
+ * Receivers should also drop delivery ids they have already processed.
+ */
+export function verifyDelivery(opts: {
+  publicKeyPem: string;
+  body: string;
+  timestamp: string;
+  deliveryId: string;
+  signature: string;
+  nowSec?: number;
+  toleranceSec?: number;
+}): boolean {
+  const ts = Number(opts.timestamp);
+  const now = opts.nowSec ?? Math.floor(Date.now() / 1000);
+  if (!Number.isInteger(ts) || Math.abs(now - ts) > (opts.toleranceSec ?? REPLAY_TOLERANCE_SEC)) return false;
+  return verifySignature(opts.publicKeyPem, signedContent(opts.timestamp, opts.deliveryId, opts.body), opts.signature);
 }
 
 // ---------------------------------------------------------------------------
@@ -204,8 +248,22 @@ export function buildWebhookEvents(
       return [{ type: "subscription.resumed", payload: base }];
     case "Cancelled":
       return [{ type: "subscription.cancelled", payload: base }];
+    case "PlanChanged":
+      // Upgrade or downgrade: the merchant needs to change the customer's
+      // tier. The new plan's first cycle arrives as its own charge.succeeded.
+      return [{
+        type: "subscription.updated",
+        payload: {
+          ...base,
+          oldPlanId: (args.oldPlanId as bigint).toString(),
+          newPlanId: (args.newPlanId as bigint).toString(),
+          credit: (args.credit as bigint).toString(),
+          txHash,
+          blockNumber,
+        },
+      }];
     default:
-      return []; // PlanCreated, PlanChanged: no webhook event
+      return []; // PlanCreated: no webhook event
   }
 }
 
@@ -354,7 +412,9 @@ export class WebhookDispatcher {
     const problem = webhookUrlProblem(u, this.policy);
     if (problem) return Promise.resolve({ ok: false, error: `refused: ${problem}` });
 
-    const signature = signPayload(this.privateKey, d.payload);
+    // Signed at send time, so every retry carries a fresh timestamp.
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signature = signPayload(this.privateKey, signedContent(timestamp, d.id, d.payload));
     const body = Buffer.from(d.payload, "utf-8");
     return new Promise((resolve) => {
       const req = (u.protocol === "https:" ? https : http).request(u, {
@@ -363,6 +423,8 @@ export class WebhookDispatcher {
           "content-type": "application/json",
           "content-length": body.length,
           "X-Levy-Signature": signature,
+          "X-Levy-Timestamp": String(timestamp),
+          "X-Levy-Key-Id": keyId(this.privateKey),
           "X-Levy-Event": d.event_type,
           "X-Levy-Delivery": String(d.id),
         },

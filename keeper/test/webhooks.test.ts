@@ -9,10 +9,12 @@ import { LevyDb } from "../src/db.js";
 import {
   buildWebhookEvents,
   canonicalJson,
+  keyId,
   loadSigningKey,
   nextRetryAt,
   publicKeyPem,
   signPayload,
+  verifyDelivery,
   verifySignature,
   WebhookDispatcher,
   type WebhookEventType,
@@ -157,9 +159,21 @@ describe("buildWebhookEvents", () => {
     assert.equal(c.type, "subscription.cancelled");
   });
 
-  it("emits nothing for plan events", () => {
+  it("maps PlanChanged to subscription.updated, and nothing for PlanCreated", () => {
     assert.deepEqual(buildWebhookEvents("PlanCreated", {}, LOG, { merchant: MERCHANT }), []);
-    assert.deepEqual(buildWebhookEvents("PlanChanged", { subId: 1n }, LOG, { merchant: MERCHANT }), []);
+    const ev = buildWebhookEvents(
+      "PlanChanged",
+      { subId: 1n, oldPlanId: 2n, newPlanId: 3n, credit: 500n },
+      LOG,
+      { merchant: MERCHANT }
+    );
+    assert.deepEqual(ev, [{
+      type: "subscription.updated",
+      payload: {
+        subId: "1", merchant: MERCHANT, oldPlanId: "2", newPlanId: "3", credit: "500",
+        txHash: "0xtx", blockNumber: 42,
+      },
+    }]);
   });
 });
 
@@ -251,10 +265,20 @@ describe("dispatchDue (live HTTP)", () => {
     assert.equal(received.length, 1);
     const [r] = received;
     assert.equal(r.headers["x-levy-event"], "charge.succeeded");
-    assert.ok(r.headers["x-levy-delivery"]);
-    assert.ok(r.headers["x-levy-signature"]);
-    // The posted body must verify against the published public key.
-    assert.ok(verifySignature(publicKeyPem(key), r.body, r.headers["x-levy-signature"] as string));
+    assert.equal(r.headers["x-levy-key-id"], keyId(key));
+    // The delivery must verify against the published public key, and the
+    // signature must cover the timestamp and delivery id, not just the body.
+    const h = (name: string) => r.headers[name] as string;
+    const check = (over: Partial<Parameters<typeof verifyDelivery>[0]> = {}) => verifyDelivery({
+      publicKeyPem: publicKeyPem(key), body: r.body, timestamp: h("x-levy-timestamp"),
+      deliveryId: h("x-levy-delivery"), signature: h("x-levy-signature"), ...over,
+    });
+    assert.ok(check());
+    assert.ok(Math.abs(Number(h("x-levy-timestamp")) - Date.now() / 1000) < 60);
+    assert.equal(check({ deliveryId: "999" }), false, "delivery id is signed");
+    assert.equal(check({ body: r.body + " " }), false, "body is signed");
+    assert.equal(check({ nowSec: Number(h("x-levy-timestamp")) + 301 }), false, "stale replay rejected");
+    assert.equal(check({ publicKeyPem: publicKeyPem(testKey()) }), false, "other key rejected");
     // And the stored payload must be byte-identical to what was posted.
     const [del] = db.listDeliveries();
     assert.equal(del.status, "sent");

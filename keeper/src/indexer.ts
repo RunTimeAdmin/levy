@@ -21,6 +21,19 @@ const NAME_TO_ABI = new Map<string, any>(
   (managerAbi as any[]).filter((e: any) => e.type === "event").map((e: any) => [e.name, e])
 );
 
+/**
+ * Inclusive [from, to] block ranges of at most `size` blocks. RPCs reject large
+ * eth_getLogs ranges, and a keeper that was down for a day is ~170k blocks behind.
+ */
+export function logRanges(from: bigint, to: bigint, size: bigint): Array<[bigint, bigint]> {
+  const out: Array<[bigint, bigint]> = [];
+  for (let start = from; start <= to; start += size) {
+    const end = start + size - 1n < to ? start + size - 1n : to;
+    out.push([start, end]);
+  }
+  return out;
+}
+
 interface RawLog {
   address: string;
   topics: `0x${string}`[];
@@ -68,17 +81,22 @@ export class Indexer {
     const toBlock = latest;
     if (fromBlock > toBlock) return { fromBlock, toBlock, logs: 0, nowSec };
 
-    const logs = (await this.clients.public.getLogs({
-      address: [this.cfg.managerAddress, this.cfg.usdcAddress],
-      fromBlock,
-      toBlock,
-    })) as unknown as RawLog[];
-
-    for (const log of logs) {
-      await this.handleLog(log, nowSec);
+    // Chunked, and the cursor moves after each chunk: a failure part-way
+    // through a long catch-up loses at most one chunk of progress.
+    let count = 0;
+    for (const [from, to] of logRanges(fromBlock, toBlock, BigInt(this.cfg.logChunkBlocks))) {
+      const logs = (await this.clients.public.getLogs({
+        address: [this.cfg.managerAddress, this.cfg.usdcAddress],
+        fromBlock: from,
+        toBlock: to,
+      })) as unknown as RawLog[];
+      for (const log of logs) {
+        await this.handleLog(log, nowSec);
+      }
+      this.db.setSync(SYNC_KEY, (to + 1n).toString());
+      count += logs.length;
     }
-    this.db.setSync(SYNC_KEY, (toBlock + 1n).toString());
-    return { fromBlock, toBlock, logs: logs.length, nowSec };
+    return { fromBlock, toBlock, logs: count, nowSec };
   }
 
   private async handleLog(log: RawLog, nowSec: number): Promise<void> {
@@ -115,7 +133,10 @@ export class Indexer {
     log: RawLog,
     nowSec: number
   ): Promise<void> {
-    // Events like PlanCreated carry no subId; they need no indexing work.
+    if (name === "PlanCreated") {
+      await this.refreshPlan((args.planId as bigint).toString());
+      return;
+    }
     if (args.subId === undefined) return;
     const subId = (args.subId as bigint).toString();
     let dunningNextRetryAt: number | undefined;
@@ -184,6 +205,7 @@ export class Indexer {
     const sub = (await this.clients.manager.read.subscriptions([BigInt(subId)])) as any[];
     if (sub[0] === "0x0000000000000000000000000000000000000000") return;
     const plan = (await this.clients.manager.read.plans([sub[1]])) as any[];
+    this.upsertPlan((sub[1] as bigint).toString(), plan);
     this.db.upsertSubscription({
       subId,
       subscriber: sub[0] as string,
@@ -197,8 +219,30 @@ export class Indexer {
     });
   }
 
-  /** Backfill every known subscription (used on first boot). */
+  /** Re-read one plan from chain into the DB. */
+  async refreshPlan(planId: string): Promise<void> {
+    const plan = (await this.clients.manager.read.plans([BigInt(planId)])) as any[];
+    if (plan[6]) this.upsertPlan(planId, plan); // plan[6] = exists
+  }
+
+  // Plan: [merchant, price, cycleSeconds, trialSeconds, graceSeconds, maxFailed, exists]
+  private upsertPlan(planId: string, plan: any[]): void {
+    this.db.upsertPlan({
+      planId,
+      merchant: plan[0] as string,
+      price: (plan[1] as bigint).toString(),
+      cycleSeconds: Number(plan[2] as bigint),
+      trialSeconds: Number(plan[3] as bigint),
+      maxFailed: Number(plan[5]),
+    });
+  }
+
+  /** Backfill every known plan and subscription (used on first boot). */
   async backfillAll(): Promise<number> {
+    const plans = Number(await this.clients.manager.read.planCount());
+    for (let i = 1; i <= plans; i++) {
+      await this.refreshPlan(String(i));
+    }
     const count = Number(await this.clients.manager.read.subCount());
     for (let i = 1; i <= count; i++) {
       await this.refreshSubscription(String(i));

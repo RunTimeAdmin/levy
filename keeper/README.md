@@ -34,13 +34,16 @@ The keeper doubles as a webhook dispatcher. Merchants register endpoints
 (either via the API or directly in the `webhooks` table); contract events are
 fanned out per merchant subscription:
 
-- `subscription.created`, `charge.succeeded`, `charge.failed`,
+- `subscription.created`, `subscription.updated` (plan change),
+  `charge.succeeded`, `charge.failed`,
   `dunning.started` (first failure), `subscription.paused`,
   `subscription.resumed`, `subscription.cancelled`, `invoice.ready`
   (emitted alongside every `charge.succeeded`; the invoice is the charge record).
 
-Deliveries are Ed25519-signed (`X-Levy-Signature` over the canonical JSON
-body, plus `X-Levy-Event` / `X-Levy-Delivery` headers). The signing key is
+Deliveries are Ed25519-signed: `X-Levy-Signature` covers
+`{X-Levy-Timestamp}.{X-Levy-Delivery}.{canonical JSON body}`, so receivers can
+reject replays and dedupe on the delivery id (`verifyDelivery`). `X-Levy-Key-Id`
+names the key; `X-Levy-Event` the event type. The signing key is
 generated on first boot at `LEVY_WEBHOOK_KEY_PATH` (or inline via
 `LEVY_WEBHOOK_KEY`); the public key is served at
 `GET /api/webhooks/public-key`.
@@ -62,7 +65,7 @@ its deliveries arrive in order. Failures retry with backoff (1m, 5m, 15m, 1h,
 ## Tests
 
 ```bash
-npm test              # unit + anvil integration (45 tests)
+npm test              # unit + anvil integration (49 tests)
 npm run test:integration
 ```
 
@@ -73,6 +76,8 @@ Integration tests spin up a local `anvil`, deploy `MockUSDC` + `FeeRouter` + `Su
 - **Key safety.** `LEVY_KEEPER_KEY` is a hot EOA that pays gas (USDC on Arc). Fund it minimally, rotate if exposed, never commit it.
 - **Idempotency.** `charge()` is safe to retry; the contract enforces `nextChargeAt` and state. The keeper dedupes within a cycle (a sub is charged once per cycle even if it appears in both the due sweep and the retry queue).
 - **Chain time, not wall time.** All due/dunning math uses the chain-head timestamp, so the keeper behaves correctly across clock skew and test time-warps. (Arc has deterministic finality with no reorgs; this is belt-and-suspenders.)
+- **Stuck charges back off.** A charge that fails for any reason other than payment (a revert, an RPC error) re-reads the subscription from chain and is retried after 1m, 5m, 15m, 1h, then every 6h, instead of every cycle. The backoff is in memory, so a restart tries each once more.
+- **Log sync is chunked.** `eth_getLogs` goes out in `LEVY_LOG_CHUNK_BLOCKS` ranges (default 500; dRPC rejects 1,000) and the cursor advances after each, so a keeper that was down for a day catches up in ~350 requests.
 - **Single instance.** Run one keeper per deployment. Two keepers would race `charge()` calls (harmless on-chain — the second reverts or no-ops — but wasteful).
 - **DB is the state.** `levy.db` holds sync cursors, dunning schedules, and charge history. Back it up; deleting it causes a full resync from `LEVY_LOOKBACK_BLOCKS`.
 - **Transfer accounting.** `usdc_transfers` records raw ERC-20 `Transfer` logs for visibility. `dedupedTransfers()` collapses same-tx identical (from,to,amount) rows — see the doc comment in `src/db.ts` for the limitation. Charge truth comes from `Charged`/`ChargeFailed` events, not transfer sums.

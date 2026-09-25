@@ -14,6 +14,15 @@ export const Status = {
  *  not the every-cycle due sweep. */
 export const DUE_CHARGEABLE = [Status.TRIAL, Status.ACTIVE];
 
+export interface DbPlan {
+  planId: string;
+  merchant: string;
+  price: string; // 6-decimal USDC units
+  cycleSeconds: number;
+  trialSeconds: number;
+  maxFailed: number;
+}
+
 export interface DbSubscription {
   subId: string;
   subscriber: string;
@@ -69,6 +78,15 @@ export interface DeliveryRow {
 }
 
 const SCHEMA = `
+-- On-chain plan registry mirror, including plans nobody has subscribed to yet.
+CREATE TABLE IF NOT EXISTS plans (
+  planId TEXT PRIMARY KEY,
+  merchant TEXT NOT NULL,
+  price TEXT NOT NULL,
+  cycleSeconds INTEGER NOT NULL,
+  trialSeconds INTEGER NOT NULL,
+  maxFailed INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS subscriptions (
   subId TEXT PRIMARY KEY,
   subscriber TEXT NOT NULL,
@@ -329,14 +347,22 @@ export class LevyDb {
       .all(...params) as unknown as DbSubscription[];
   }
 
-  /** Distinct plans seen in the indexed subscriptions (on-chain plan registry mirror). */
-  listPlans(): Array<{ planId: string; merchant: string; price: string; cycleSeconds: number }> {
-    return this.db
+  /** Plans are immutable on-chain, so an upsert only ever fills a row in. */
+  upsertPlan(p: DbPlan): void {
+    this.db
       .prepare(
-        `SELECT planId, merchant, price, cycleSeconds FROM subscriptions
-         GROUP BY planId ORDER BY CAST(planId AS INTEGER) ASC`
+        `INSERT INTO plans (planId, merchant, price, cycleSeconds, trialSeconds, maxFailed)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (planId) DO NOTHING`
       )
-      .all() as unknown as Array<{ planId: string; merchant: string; price: string; cycleSeconds: number }>;
+      .run(p.planId, p.merchant, p.price, p.cycleSeconds, p.trialSeconds, p.maxFailed);
+  }
+
+  /** The on-chain plan registry mirror. */
+  listPlans(): DbPlan[] {
+    return this.db
+      .prepare(`SELECT * FROM plans ORDER BY CAST(planId AS INTEGER) ASC`)
+      .all() as unknown as DbPlan[];
   }
 
   chargeStats(merchant?: string): { charges: number; failures: number } {

@@ -49,7 +49,7 @@ merchant's webhook or subscription id gets 404.
 | POST | `/api/auth/challenge`, `/api/auth/verify` | public | sign-in (above) |
 | GET | `/api/subscriptions?merchant=\|subscriber=&status=` | session | one of merchant/subscriber, equal to the session |
 | GET | `/api/subscriptions/:id` | session | + charges, dunning row; subscriber or merchant only |
-| GET | `/api/metrics` | session | MRR (trial+active), success rate, churn counts, totals |
+| GET | `/api/metrics` | session | MRR (trial+active, per 30 days whatever the cycle), success rate, churn counts, totals |
 | GET | `/api/dunning` | session | retry queue with nextRetryAt |
 | GET | `/api/charges?subscription=` | session | charge records |
 | GET | `/api/invoices?format=csv` | session | alias of charges; `format=csv` downloads CSV |
@@ -90,13 +90,16 @@ Amounts are raw 6-decimal USDC strings, with `*Usdc` decimal companions
 
 Every delivery POSTs canonical JSON with headers:
 
-- `X-Levy-Signature`: base64 Ed25519 signature over the raw body bytes
+- `X-Levy-Signature`: base64 Ed25519 signature over `{timestamp}.{deliveryId}.{body}`
+- `X-Levy-Timestamp`: unix seconds when this attempt was signed
+- `X-Levy-Delivery`: delivery id (signed, so safe to dedupe on)
+- `X-Levy-Key-Id`: signing key id, also returned by the public-key endpoint
 - `X-Levy-Event`: event type, e.g. `charge.succeeded`
-- `X-Levy-Delivery`: delivery id
 
-Verify with the public key from `GET /api/webhooks/public-key`. The keeper
-repo has the canonical-JSON + verify helpers in `keeper/src/webhooks.ts`
-(`canonicalJson`, `verifySignature`).
+Verify with the public key from `GET /api/webhooks/public-key`, reject
+timestamps more than 5 minutes off, and drop delivery ids already seen.
+`verifyDelivery` in `keeper/src/webhooks.ts` does the signature and timestamp
+checks; the merchant guide has a standalone example.
 
 ## Tests
 
