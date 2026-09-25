@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {SubscriptionManager} from "../src/SubscriptionManager.sol";
 import {FeeRouter} from "../src/FeeRouter.sol";
 import {MockUSDC} from "./mocks/MockUSDC.sol";
+import {MockPermit2} from "./mocks/MockPermit2.sol";
 
 /// @notice Fuzzing handler: throws random but valid-ish actions at the system.
 ///         Every action is revert-safe so one bad call never kills the run.
@@ -130,7 +131,8 @@ contract LevyInvariantTest is Test {
     function setUp() public {
         usdc = new MockUSDC();
         router = new FeeRouter(address(usdc), treasury);
-        manager = new SubscriptionManager(address(usdc), address(router));
+        MockPermit2 permit2 = new MockPermit2();
+        manager = new SubscriptionManager(address(usdc), address(router), address(permit2));
         handler = new LevyHandler(usdc, router, manager, treasury);
 
         targetContract(address(handler));

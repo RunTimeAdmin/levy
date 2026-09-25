@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {IPermit2} from "./IPermit2.sol";
 
 /// @title Levy SubscriptionManager
 /// @notice Pull-based USDC subscription billing. Merchants define plans, subscribers
@@ -51,6 +52,13 @@ contract SubscriptionManager is ReentrancyGuard {
 
     IERC20 public immutable usdc;
     address public immutable feeRouter;
+    IPermit2 public immutable permit2;
+
+    /// @notice Permit2 on Arc mainnet/testnet. NOTE: this is NOT the Ethereum
+    ///         canonical address (0x0000...c3a50). Arc deploys Permit2 at
+    ///         0x0000...C78BA3; see VERIFICATION.md. Pass a different address
+    ///         at construction for testing.
+    address public constant PERMIT2_ARC = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
 
     uint256 public planCount;
     uint256 public subCount;
@@ -80,10 +88,17 @@ contract SubscriptionManager is ReentrancyGuard {
     error NotSubscriberOrMerchant();
     error NotSubscriber();
     error SamePlan();
+    error BadPermitSpender();
+    error BadPermitToken();
+    error ZeroAddress();
 
-    constructor(address _usdc, address _feeRouter) {
+    constructor(address _usdc, address _feeRouter, address _permit2) {
+        if (_usdc == address(0) || _feeRouter == address(0) || _permit2 == address(0)) {
+            revert ZeroAddress();
+        }
         usdc = IERC20(_usdc);
         feeRouter = _feeRouter;
+        permit2 = IPermit2(_permit2);
     }
 
     /// @notice Merchant creates a billing plan. Price is immutable afterwards.
@@ -115,6 +130,33 @@ contract SubscriptionManager is ReentrancyGuard {
     /// @notice Subscriber starts a subscription. Requires a prior approve() or
     ///         Permit2 allowance covering at least price * expected cycles.
     function subscribe(uint256 planId) external returns (uint256 subId) {
+        return _subscribe(planId, msg.sender);
+    }
+
+    /// @notice One-transaction subscribe via Uniswap Permit2. The subscriber
+    ///         signs a PermitSingle off-chain (EIP-712) authorizing this
+    ///         contract as spender; anyone (the subscriber or the keeper)
+    ///         submits the permit and subscribe atomically.
+    /// @dev The permit's spender must be this contract and the token must be
+    ///      USDC, otherwise the signature authorizes something we cannot use.
+    ///      `owner` is explicit (not msg.sender) so the keeper can submit on
+    ///      the subscriber's behalf; the EIP-712 signature binds the owner,
+    ///      so a submitter cannot impersonate anyone.
+    ///      The signed amount is the subscriber's choice; charges simply fail
+    ///      (and dunning handles it) if it covers fewer than one cycle.
+    function subscribeWithPermit2(
+        uint256 planId,
+        address owner,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata signature
+    ) external returns (uint256 subId) {
+        if (permitSingle.spender != address(this)) revert BadPermitSpender();
+        if (permitSingle.details.token != address(usdc)) revert BadPermitToken();
+        permit2.permit(owner, permitSingle, signature);
+        return _subscribe(planId, owner);
+    }
+
+    function _subscribe(uint256 planId, address subscriber) internal returns (uint256 subId) {
         Plan memory plan = plans[planId];
         if (!plan.exists) revert UnknownPlan();
 
@@ -125,7 +167,7 @@ contract SubscriptionManager is ReentrancyGuard {
             : start + uint64(plan.cycleSeconds);
 
         subscriptions[subId] = Subscription({
-            subscriber: msg.sender,
+            subscriber: subscriber,
             planId: planId,
             start: start,
             nextChargeAt: firstCharge,
@@ -134,7 +176,7 @@ contract SubscriptionManager is ReentrancyGuard {
             chargeCount: 0,
             status: plan.trialSeconds > 0 ? Status.TRIAL : Status.ACTIVE
         });
-        emit Subscribed(subId, msg.sender, planId, firstCharge);
+        emit Subscribed(subId, subscriber, planId, firstCharge);
     }
 
     /// @notice Pull one cycle's payment. Permissionless: the pull can only move
@@ -203,9 +245,16 @@ contract SubscriptionManager is ReentrancyGuard {
 
     /// @notice Attempt the ERC-20 pull. Returns false instead of reverting so the
     ///         keeper's transaction survives and dunning state is recorded.
+    /// @dev Tries a direct transferFrom first (classic approve flow), then falls
+    ///      back to a Permit2 allowance (subscribeWithPermit2 flow). Permit2's
+    ///      amount is uint160; larger pulls are impossible there by construction.
     function _tryPull(address from, uint256 amount) internal returns (bool) {
         try usdc.transferFrom(from, address(this), amount) returns (bool ok) {
-            return ok;
+            if (ok) return true;
+        } catch {}
+        if (amount > type(uint160).max) return false;
+        try permit2.transferFrom(from, address(this), uint160(amount), address(usdc)) {
+            return true;
         } catch {
             return false;
         }

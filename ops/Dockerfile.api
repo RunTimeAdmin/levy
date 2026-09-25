@@ -1,0 +1,21 @@
+# Levy API + dashboards image. Multi-stage: compile TypeScript, ship only dist + prod deps.
+FROM node:24-slim AS build
+WORKDIR /build
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY tsconfig.json ./
+COPY src/ ./src/
+RUN npx tsc
+
+FROM node:24-slim
+WORKDIR /app
+ENV NODE_ENV=production
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+COPY --from=build /build/dist ./dist
+COPY public/ ./public/
+# /data holds the shared SQLite DB (mounted volume, same as the keeper's).
+RUN mkdir -p /data && useradd -m levy && chown -R levy:levy /app /data
+USER levy
+EXPOSE 3001
+CMD ["node", "dist/server.js"]

@@ -5,11 +5,14 @@ import {Test} from "forge-std/Test.sol";
 import {SubscriptionManager} from "../src/SubscriptionManager.sol";
 import {FeeRouter} from "../src/FeeRouter.sol";
 import {MockUSDC} from "./mocks/MockUSDC.sol";
+import {MockPermit2} from "./mocks/MockPermit2.sol";
+import {IPermit2} from "../src/IPermit2.sol";
 
 contract LevyTest is Test {
     MockUSDC usdc;
     FeeRouter router;
     SubscriptionManager manager;
+    MockPermit2 permit2;
 
     address merchant = makeAddr("merchant");
     address alice = makeAddr("alice");
@@ -24,7 +27,8 @@ contract LevyTest is Test {
     function setUp() public {
         usdc = new MockUSDC();
         router = new FeeRouter(address(usdc), treasury);
-        manager = new SubscriptionManager(address(usdc), address(router));
+        permit2 = new MockPermit2();
+        manager = new SubscriptionManager(address(usdc), address(router), address(permit2));
 
         vm.prank(merchant);
         planId = manager.createPlan(PRICE, CYCLE, 0, 3 days, 2);
@@ -325,5 +329,209 @@ contract LevyTest is Test {
         vm.prank(treasury);
         router.setTreasury(bob);
         assertEq(router.treasury(), bob);
+    }
+
+    // ---- permit2 ----
+
+    uint256 constant SIGNER_KEY = 0xB0B5;
+
+    function _signer() internal returns (address s) {
+        s = vm.addr(SIGNER_KEY);
+        if (usdc.balanceOf(s) == 0) usdc.mint(s, 1_000_000_000);
+    }
+
+    function _signPermit(
+        address owner,
+        address token,
+        uint160 amount,
+        address spender,
+        uint256 sigDeadline
+    ) internal view returns (IPermit2.PermitSingle memory p, bytes memory sig) {
+        uint48 nonce = permit2.nonce(owner, token, spender);
+        p = IPermit2.PermitSingle({
+            details: IPermit2.PermitDetails({
+                token: token,
+                amount: amount,
+                expiration: uint48(block.timestamp + 365 days),
+                nonce: nonce
+            }),
+            spender: spender,
+            sigDeadline: sigDeadline
+        });
+        bytes32 detailsHash = keccak256(
+            abi.encode(
+                keccak256("PermitDetails(address token,uint160 amount,uint48 expiration,uint48 nonce)"),
+                token,
+                amount,
+                p.details.expiration,
+                nonce
+            )
+        );
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                permit2.DOMAIN_SEPARATOR(),
+                keccak256(
+                    abi.encode(
+                        keccak256(
+                            "PermitSingle(PermitDetails details,address spender,uint256 sigDeadline)"
+                            "PermitDetails(address token,uint160 amount,uint48 expiration,uint48 nonce)"
+                        ),
+                        detailsHash,
+                        spender,
+                        sigDeadline
+                    )
+                )
+            )
+        );
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_KEY, digest);
+        sig = abi.encodePacked(r, s, v);
+    }
+
+    function testPermit2ArcAddress() public view {
+        // Arc mainnet/testnet Permit2; NOT the Ethereum canonical address.
+        assertEq(
+            manager.PERMIT2_ARC(),
+            0x000000000022D473030F116dDEE9F6B43aC78BA3
+        );
+    }
+
+    function testSubscribeWithPermit2FullFlow() public {
+        address s = _signer();
+        // Mirrors real Permit2: owner approve()s the Permit2 contract once.
+        vm.prank(s);
+        usdc.approve(address(permit2), type(uint256).max);
+
+        (IPermit2.PermitSingle memory p, bytes memory sig) = _signPermit(
+            s,
+            address(usdc),
+            uint160(PRICE * 12),
+            address(manager),
+            block.timestamp + 1 hours
+        );
+        vm.prank(s);
+        uint256 subId = manager.subscribeWithPermit2(planId, s, p, sig);
+
+        (address subscriber, , , uint64 nextCharge, , , , SubscriptionManager.Status status) =
+            manager.subscriptions(subId);
+        assertEq(subscriber, s);
+        assertTrue(status == SubscriptionManager.Status.ACTIVE);
+
+        // No direct ERC-20 allowance; the pull must go through Permit2.
+        assertEq(usdc.allowance(s, address(manager)), 0);
+        vm.warp(nextCharge);
+        vm.prank(keeper);
+        manager.charge(subId);
+
+        uint256 fee = PRICE / 100;
+        assertEq(usdc.balanceOf(merchant), PRICE - fee);
+        assertEq(usdc.balanceOf(address(router)), fee);
+        // Permit2 allowance was spent down by one cycle.
+        assertEq(permit2.allowance(s, address(usdc), address(manager)), PRICE * 12 - PRICE);
+    }
+
+    function testSubscribeWithPermit2KeeperSubmits() public {
+        address s = _signer();
+        vm.prank(s);
+        usdc.approve(address(permit2), type(uint256).max);
+
+        // The keeper cannot forge a permit for someone else: s's signature
+        // does not validate against owner=bob.
+        (IPermit2.PermitSingle memory bad, bytes memory badSig) = _signPermit(
+            s,
+            address(usdc),
+            uint160(PRICE * 12),
+            address(manager),
+            block.timestamp + 1 hours
+        );
+        vm.prank(keeper);
+        vm.expectRevert(MockPermit2.BadSignature.selector);
+        manager.subscribeWithPermit2(planId, bob, bad, badSig); // owner=bob, sig=s's
+
+        // Keeper (not the signer) submits the signed permit for the real owner.
+        (IPermit2.PermitSingle memory p, bytes memory sig) = _signPermit(
+            s,
+            address(usdc),
+            uint160(PRICE * 12),
+            address(manager),
+            block.timestamp + 1 hours
+        );
+        vm.prank(keeper);
+        uint256 subId = manager.subscribeWithPermit2(planId, s, p, sig);
+
+        (address subscriber, , , , , , , ) = manager.subscriptions(subId);
+        assertEq(subscriber, s);
+    }
+
+    function testSubscribeWithPermit2BadSpenderReverts() public {
+        address s = _signer();
+        (IPermit2.PermitSingle memory p, bytes memory sig) = _signPermit(
+            s,
+            address(usdc),
+            uint160(PRICE * 12),
+            address(0xBEEF), // not the manager
+            block.timestamp + 1 hours
+        );
+        vm.prank(s);
+        vm.expectRevert(SubscriptionManager.BadPermitSpender.selector);
+        manager.subscribeWithPermit2(planId, s, p, sig);
+    }
+
+    function testSubscribeWithPermit2BadTokenReverts() public {
+        address s = _signer();
+        (IPermit2.PermitSingle memory p, bytes memory sig) = _signPermit(
+            s,
+            address(0xDEAD), // not USDC
+            uint160(PRICE * 12),
+            address(manager),
+            block.timestamp + 1 hours
+        );
+        vm.prank(s);
+        vm.expectRevert(SubscriptionManager.BadPermitToken.selector);
+        manager.subscribeWithPermit2(planId, s, p, sig);
+    }
+
+    function testSubscribeWithPermit2BadSignatureReverts() public {
+        address s = _signer();
+        (IPermit2.PermitSingle memory p, ) = _signPermit(
+            s,
+            address(usdc),
+            uint160(PRICE * 12),
+            address(manager),
+            block.timestamp + 1 hours
+        );
+        // Signature from a different key.
+        bytes memory badSig = abi.encodePacked(bytes32(uint256(1)), bytes32(uint256(2)), uint8(27));
+        vm.prank(s);
+        vm.expectRevert(MockPermit2.BadSignature.selector);
+        manager.subscribeWithPermit2(planId, s, p, badSig);
+    }
+
+    function testDirectAllowanceStillTakesPriority() public {
+        // Subscriber with BOTH allowances: direct transferFrom wins.
+        address s = _signer();
+        vm.prank(s);
+        usdc.approve(address(permit2), type(uint256).max);
+        vm.prank(s);
+        usdc.approve(address(manager), PRICE * 12);
+
+        (IPermit2.PermitSingle memory p, bytes memory sig) = _signPermit(
+            s,
+            address(usdc),
+            uint160(PRICE * 12),
+            address(manager),
+            block.timestamp + 1 hours
+        );
+        vm.prank(s);
+        uint256 subId = manager.subscribeWithPermit2(planId, s, p, sig);
+
+        (, , , uint64 nextCharge, , , , ) = manager.subscriptions(subId);
+        vm.warp(nextCharge);
+        vm.prank(keeper);
+        manager.charge(subId);
+
+        // Direct allowance was consumed, Permit2 untouched.
+        assertEq(usdc.allowance(s, address(manager)), PRICE * 12 - PRICE);
+        assertEq(permit2.allowance(s, address(usdc), address(manager)), PRICE * 12);
     }
 }

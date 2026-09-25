@@ -126,7 +126,8 @@ before(async () => {
 
   const usdcAddr = await deploy("MockUSDC");
   feeRouterAddr = await deploy("FeeRouter", [usdcAddr, keeper.address]);
-  const managerAddr = await deploy("SubscriptionManager", [usdcAddr, feeRouterAddr]);
+  const permit2Addr = await deploy("MockPermit2");
+  const managerAddr = await deploy("SubscriptionManager", [usdcAddr, feeRouterAddr, permit2Addr]);
 
   const erc20 = parseAbi([
     "function mint(address to, uint256 amount)",

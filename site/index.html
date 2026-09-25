@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Levy: Recurring USDC billing on Arc</title>
+<meta name="description" content="Levy is pull-based USDC subscription billing on Arc. Merchants define plans, subscribers approve once, and payments are pulled every cycle.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap">
+    <span class="wordmark">Levy</span>
+    <nav>
+      <a href="#how">How it works</a>
+      <a href="#fee">Fee</a>
+      <a href="#features">Features</a>
+      <a href="#roadmap">Roadmap</a>
+      <a href="#developers">Developers</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="wrap">
+      <p class="kicker">Pull-based subscription billing on Arc</p>
+      <h1>Recurring revenue, collected in USDC.</h1>
+      <p class="lede">Levy pulls subscription payments in USDC every billing cycle. Your customers approve once. You collect on schedule, without chasing invoices or retrying cards by hand.</p>
+      <p class="hero-note">Built for Arc. Settled in USDC. Open contracts.</p>
+    </div>
+  </section>
+
+  <section id="how" class="section">
+    <div class="wrap">
+      <h2>How it works</h2>
+      <ol class="steps">
+        <li>
+          <span class="step-num">1</span>
+          <h3>You create a plan</h3>
+          <p>Set a price and a billing cycle on-chain: weekly, monthly, quarterly, yearly. The price is fixed at creation. To reprice, create a new plan.</p>
+        </li>
+        <li>
+          <span class="step-num">2</span>
+          <h3>Subscriber approves once</h3>
+          <p>The customer grants the contract a USDC allowance in a single transaction. No recurring signatures, no card on file, no account to bill.</p>
+        </li>
+        <li>
+          <span class="step-num">3</span>
+          <h3>The keeper pulls every cycle</h3>
+          <p>When a billing date arrives, the charge function accepts calls from any address. Levy runs the keeper for you: it pulls the payment, sends 99% to you and 1% to the protocol, and advances the cycle.</p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="fee" class="section alt">
+    <div class="wrap">
+      <h2>The fee</h2>
+      <p class="big-stat">1%</p>
+      <p>The protocol takes one percent of each collected payment. No monthly tiers. No per-seat pricing. No setup fee. If nothing is collected, nothing is owed.</p>
+    </div>
+  </section>
+
+  <section id="features" class="section">
+    <div class="wrap">
+      <h2>What comes with it</h2>
+      <div class="cards">
+        <div class="card">
+          <h3>Dunning</h3>
+          <p>When a pull fails, Levy retries on a schedule instead of dropping the subscription. The contract tracks failures on-chain and pauses the subscription only after repeated failures.</p>
+        </div>
+        <div class="card">
+          <h3>Webhooks</h3>
+          <p>Every billing event reaches your endpoint: subscription created, charge succeeded, charge failed, dunning started, paused, resumed, cancelled. Each payload carries an Ed25519 signature for verification.</p>
+        </div>
+        <div class="card">
+          <h3>Invoicing</h3>
+          <p>Every charge is an invoice record with a reference, transaction hash, and block number. Export the full history as CSV for your books.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="roadmap" class="section alt">
+    <div class="wrap">
+      <h2>Roadmap</h2>
+      <dl class="roadmap">
+        <div>
+          <dt>Live</dt>
+          <dd>Subscription contracts, the keeper service, dunning engine, signed webhooks, API, merchant dashboard, customer portal.</dd>
+        </div>
+        <div>
+          <dt>Next</dt>
+          <dd>Testnet soak: run real billing cycles end to end and clear the pre-mainnet verification list.</dd>
+        </div>
+        <div>
+          <dt>After that</dt>
+          <dd>Mainnet deployment with a multisig treasury.</dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+  <section id="developers" class="section">
+    <div class="wrap">
+      <h2>For developers</h2>
+      <p>The contracts are open source. The keeper, API, and dashboards are in the same repository.</p>
+      <p><a class="btn" href="https://github.com/RunTimeAdmin/levy">github.com/RunTimeAdmin/levy</a></p>
+      <p class="fine">The repository is private during development and will open as the project approaches mainnet. Contract addresses will be published at deployment.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <span>Levy &copy; 2026</span>
+    <span class="fine">Not financial advice. Levy is subscription billing software. Payment failures are a normal part of recurring billing.</span>
+  </div>
+</footer>
+
+</body>
+</html>

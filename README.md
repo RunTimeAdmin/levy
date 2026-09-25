@@ -2,7 +2,7 @@
 
 Pull-based USDC subscription billing for Arc mainnet. Merchants define plans, subscribers approve once, and a keeper triggers per-cycle pulls. The protocol takes a 1% fee on collected payments.
 
-**Status:** M1 (contracts) and M2 (keeper + dunning engine) complete. Contracts: 21 tests green (20 unit + 256-run invariant suite). Keeper: 13 tests green (10 unit + 3 anvil integration). Not yet deployed. Not audited. Webhooks, invoicing, and dashboards are M3 scope, not built.
+**Status:** M1 (contracts), M2 (keeper + dunning), M3 (webhooks + API + dashboards) complete, plus Permit2 subscribe path. Contracts: 28 tests green (incl. 256-run invariant suite). Keeper: 33 tests green. API: 12 tests green. Not yet deployed. Not audited.
 
 ## Contracts
 
@@ -14,7 +14,7 @@ Pull-based USDC subscription billing for Arc mainnet. Merchants define plans, su
 ### How charging works
 
 1. Merchant calls `createPlan(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed)`. Price is immutable; repricing means a new plan.
-2. Subscriber calls `subscribe(planId)` after granting a direct ERC-20 `approve` allowance. (A Permit2 signature path is proposed, not implemented.)
+2. Subscriber calls `subscribe(planId)` after granting a direct ERC-20 `approve` allowance, or `subscribeWithPermit2(planId, ...)` with an off-chain Permit2 signature (one user action; the keeper can submit it). Uses Arc's Permit2 at `0x000000000022D473030F116dDEE9F6B43aC78BA3`.
 3. Anyone calls `charge(subId)` once `block.timestamp >= nextChargeAt`. The contract pulls via `transferFrom`, routes 99% to the merchant and 1% to the FeeRouter, advances the cycle, and emits `Charged`. The call is permissionless by design: it can only move the subscriber's pre-approved funds to the correct merchant.
 4. Failed pulls never revert. The failure is recorded on-chain (`ChargeFailed`), the subscription goes `PAST_DUE` at `maxFailed` attempts and auto-pauses at `2x`, and the off-chain keeper retries on a dunning schedule (default day 1, 3, 7).
 
@@ -51,18 +51,18 @@ forge test
 
 `foundry.toml` pins `evm_version = "paris"`. (Whether Arc mainnet requires this is a pre-mainnet verification item; paris is the conservative choice until confirmed.)
 
-## Deployment notes (Arc mainnet) — verify before deploy
+## Deployment notes (Arc mainnet)
 
-- Chain ID 5042, RPC `https://rpc.mainnet.arc.io`.
-- USDC is the gas token. Published fee/finality figures for Arc (e.g. fixed base fee, sub-second finality) are **unconfirmed** — verify against mainnet before relying on them for keeper economics or confirmation logic.
-- Transaction memos: confirm mainnet availability before building invoicing on them. Invoicing keys off `Charged` events until then.
-- Pre-mainnet checklist: PUSH0 behavior, Permit2 mainnet flow, treasury multisig, finality assumptions, production fee math.
+- Chain ID 5042, RPC `https://rpc.mainnet.arc.io`. USDC is the gas token.
+- **Verified 2026-09-25** (see `VERIFICATION.md`): single-block deterministic finality (~0.5s blocks, Malachite BFT, no reorgs) — the keeper's zero-confirmation design is correct. Transaction memos are **live on mainnet** (Memo contract `0x5294E9927c3306DcBaDb03fe70b92e01cCede505`). Arc runs an Osaka-baseline EVM, so PUSH0 works; `evm_version = "paris"` in foundry.toml stays as a harmless conservative default.
+- Permit2 on Arc mainnet is at `0x000000000022D473030F116dDEE9F6B43aC78BA3` — **not** the Ethereum canonical address. The contract's `subscribeWithPermit2` uses Arc's address.
+- Remaining pre-mainnet items: treasury multisig signers, production fee math sign-off, dunning copy review.
 
 ## Roadmap
 
 - **M1:** contracts + tests (done)
 - **M2:** keeper service, deduped indexer, dunning engine (done)
-- **M3:** merchant dashboard, customer portal, signed webhooks, invoicing
+- **M3:** merchant dashboard, customer portal, signed webhooks, invoicing (done)
 - **M4:** testnet soak, mainnet deploy
 - **M5:** LEVY token — fee split to buyback-and-burn / staking, staking fee-tier discounts, premium feature gating
 

@@ -1,0 +1,21 @@
+# Levy keeper image. Multi-stage: compile TypeScript, ship only dist + prod deps.
+FROM node:24-slim AS build
+WORKDIR /build
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY tsconfig.json ./
+COPY src/ ./src/
+COPY abi/ ./abi/
+RUN npx tsc
+
+FROM node:24-slim
+WORKDIR /app
+ENV NODE_ENV=production
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+COPY --from=build /build/dist ./dist
+COPY --from=build /build/abi ./abi
+# /data holds the SQLite DB and webhook signing key (mounted volume).
+RUN mkdir -p /data && useradd -m levy && chown -R levy:levy /app /data
+USER levy
+CMD ["node", "dist/index.js"]

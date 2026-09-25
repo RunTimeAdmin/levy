@@ -1,0 +1,65 @@
+# Levy production stack: keeper (charge scheduler + webhooks) + API (REST + dashboards).
+#
+# Usage:
+#   cp ops/.env.example ops/.env   # fill in secrets + addresses (NEVER commit ops/.env)
+#   docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --build
+#
+# Both services share one SQLite DB via the levy-data volume. The keeper is the
+# writer; the API is read-mostly (webhook registration writes). SQLite handles
+# this fine on a single host (busy_timeout is set by both).
+
+services:
+  keeper:
+    build:
+      context: ../keeper
+      dockerfile: ../ops/Dockerfile.keeper
+    image: levy-keeper:latest
+    container_name: levy-keeper
+    env_file:
+      - .env
+    environment:
+      # Force DB + signing key onto the shared volume regardless of .env values.
+      LEVY_DB_PATH: /data/levy.db
+      LEVY_WEBHOOK_KEY_PATH: /data/webhook-signing-key.pem
+    volumes:
+      - levy-data:/data
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  api:
+    build:
+      context: ../api
+      dockerfile: ../ops/Dockerfile.api
+    image: levy-api:latest
+    container_name: levy-api
+    env_file:
+      - .env
+    environment:
+      LEVY_DB_PATH: /data/levy.db
+      LEVY_WEBHOOK_KEY_PATH: /data/webhook-signing-key.pem
+    ports:
+      - "${LEVY_API_PORT:-3001}:3001"
+    volumes:
+      - levy-data:/data
+    restart: unless-stopped
+    depends_on:
+      - keeper
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  levy-data:
+    name: levy-data
