@@ -31,6 +31,17 @@ ErrorDocument 404 /404.html
 <IfModule mod_expires.c>
   ExpiresActive On
   ExpiresDefault "access plus 1 day"
+  # Per type as well: the host's own config sets a week for CSS and images by
+  # type, which a default alone does not override.
+  ExpiresByType text/css "access plus 1 day"
+  ExpiresByType application/javascript "access plus 1 day"
+  ExpiresByType image/png "access plus 1 day"
+  ExpiresByType image/jpeg "access plus 1 day"
+  ExpiresByType image/webp "access plus 1 day"
+  ExpiresByType image/svg+xml "access plus 1 day"
+  ExpiresByType image/x-icon "access plus 1 day"
+  ExpiresByType image/vnd.microsoft.icon "access plus 1 day"
+  ExpiresByType application/pdf "access plus 1 day"
   ExpiresByType text/html "access plus 1 hour"
   ExpiresByType application/xml "access plus 1 hour"
   ExpiresByType text/xml "access plus 1 hour"
