@@ -161,7 +161,7 @@ The CSV download has the columns: `id,invoiceRef,subId,subscriber,merchant,amoun
 
 ## 5. Dunning: what happens when a pull fails
 
-A pull fails when the subscriber has insufficient USDC or has revoked the allowance. The contract never reverts on a failed pull; it records the failure on-chain and emits `ChargeFailed`. From there:
+A pull fails when the subscriber has insufficient USDC or has revoked the allowance. The contract never reverts on a failed pull; it records the failure on-chain and emits `ChargeFailed`, at most once a day per subscription (anyone can call `charge()`, so this stops a stranger from rushing a subscription to paused). From there:
 
 1. The keeper retries per failure: after failure 1 it retries in 1 day, after failure 2 in 3 days, after failure 3 and beyond every 7 days (configurable per deployment via `LEVY_DUNNING_DAYS`).
 2. When failures reach your plan's `maxFailed`, the subscription moves to `PAST_DUE`. It is still chargeable; the keeper keeps retrying.

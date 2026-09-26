@@ -10,7 +10,7 @@ Two independent loops run in one process (`src/index.ts`).
 
 1. **Sync:** fetches new logs (in chunks of `LEVY_LOG_CHUNK_BLOCKS`) and refreshes subscription and plan state from chain into SQLite.
 2. **Charge due:** calls `charge(subId)` for TRIAL and ACTIVE subscriptions past `nextChargeAt` that have no open dunning entry. Anyone can call `charge()`; the keeper is just the always-on caller.
-3. **Dunning retries:** re-calls `charge()` for failed subscriptions (including PAST_DUE ones) on the backoff schedule: 1 day after the first failure, 3 days after the second, then 7 days after each later one (`LEVY_DUNNING_DAYS`). A success clears the schedule.
+3. **Dunning retries:** re-calls `charge()` for failed subscriptions (including PAST_DUE ones) on the backoff schedule: 1 day after the first failure, 3 days after the second, then 7 days after each later one (`LEVY_DUNNING_DAYS`). A success clears the schedule. The contract records at most one failure per subscription per day, so gaps under a day gain nothing (a sooner retry reverts `RetryTooSoon` and falls into the revert backoff).
 4. **Re-sync:** picks up this cycle's own receipts immediately.
 5. **Allowance runway:** checks a bounded batch of subscribers' allowances (see Operational notes).
 

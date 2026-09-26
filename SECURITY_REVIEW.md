@@ -2,7 +2,7 @@
 
 Adversarial read of `SubscriptionManager.sol` and `FeeRouter.sol` before any
 paid audit, plus a short section on the off-chain services. Goal: find
-problems, not confirm correctness. Last revised 2026-09-25.
+problems, not confirm correctness. Last revised 2026-09-26.
 
 ## 1. Access control
 
@@ -47,7 +47,13 @@ there is no repricing or merchant-swap attack.
   subscriptions. With `maxFailed = 2` (what the tests use) that is about 4
   keeper transactions per resume. Resume resets the failure count and a
   subscriber can resume their own subscription, so each resume (paid by the
-  attacker) buys another round, spread over the dunning schedule (days).
+  attacker) buys another round.
+- The contract records at most one failure per subscription per
+  `MIN_RETRY_INTERVAL` (1 day); a failing `charge()` sooner than that reverts
+  `RetryTooSoon`. `charge()` is permissionless, so without this a third party
+  could call it repeatedly while a pull fails and pause the subscription in
+  one block (H-1, §9). Auto-pause now takes at least `2 × maxFailed - 1` days
+  after the first failure, whoever calls `charge()`.
 - Allowance front-running (revoke just before the keeper's `charge()`): the
   charge fails gracefully and dunning handles it. No theft; same bound.
 - **Mitigated: self-funded spam subscriptions.** Anyone can create a plan
@@ -76,7 +82,8 @@ live in `_collect`, shared with `subscribe` and `changePlan`):
 6. `invoiceRef` is a deterministic hash and moves no funds.
 
 The caller never receives or redirects tokens; front-running `charge()` changes
-nothing.
+nothing. The one thing a caller does control is when a failing pull is
+recorded, and the contract spaces those at least a day apart (§3).
 
 ## 5. FeeRouter trust assumptions
 
@@ -147,7 +154,7 @@ nothing.
 
 ## 9. Findings
 
-**Found and fixed on 2026-09-25** (this review missed the first and last):
+**Found and fixed** (this review missed the first, the fifth and the sixth):
 
 - **Unbacked proration credit.** Billing was effectively in arrears (the first
   charge came one cycle after subscribe), yet `changePlan` credited "unused"
@@ -175,6 +182,18 @@ nothing.
 - **No minimum cycle length.** A 1-second plan let a self-paying subscription
   cost the keeper gas every cycle and let a mistaken approval be drained within
   seconds. `createPlan` now requires `cycleSeconds >= MIN_CYCLE` (1 day).
+- **Failures could be recorded back to back (H-1).** Found 2026-09-26 by an
+  external engineering review (`docs/REVIEW_2026-09-25.md`, PR #1). `charge()`
+  is permissionless and a failed pull did not move `nextChargeAt`, so anyone
+  could call it `2 × maxFailed` times in one block while a subscriber's pull
+  was failing and push the subscription from ACTIVE to PAUSED at once,
+  skipping the off-chain dunning schedule. No funds could move. Fixed by
+  `MIN_RETRY_INTERVAL` (§3): at most one recorded failure per subscription
+  per day, a sooner failing call reverts `RetryTooSoon`, successful charges
+  are never held back, and resume clears the timer. The review's proof of
+  concept became regression tests (`test/FailureCooldown.t.sol`), and
+  `invariant_failuresSpaced` fuzzes it with a griefing action. Found after
+  the first testnet deploy; the contracts were redeployed before the soak.
 
 **Open** (for the paid audit and M4):
 

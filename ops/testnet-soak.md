@@ -128,6 +128,7 @@ unguessable ones (docs/merchant-guide.md).
 | Day 1 | keeper | S2's trial ends | S2 charged 1 USDC, TRIAL to ACTIVE |
 | Day 1 | keeper | S3's second charge | Succeeds; S3's allowance is now 0 |
 | Day 2 | keeper | S3's third charge | Fails: `charge.failed`, `dunning.started`, PAST_DUE (plan 4 allows one failure) |
+| Day 2 | you | Right after that failure: `& $cast call $mgr "charge(uint256)" <S3 id> --rpc-url $rpc` | Reverts `RetryTooSoon`: nobody can record a second failure within a day (the H-1 fix) |
 | Day 2 | you | Portal as S2: **Pause** | PAUSED; no charge while paused |
 | Day 2.5 | you | S4 upgrades: `& $cast send $mgr "changePlan(uint256,uint256)" <S4 id> 2 --rpc-url $rpc --interactive` (S4's key) | About half a day of plan 1 left becomes about 0.5 USDC of credit, about 1.5 USDC pulled, next charge in 1 day, `subscription.updated` |
 | Day 3 | keeper | S3 retry | Fails again: auto-paused (`subscription.paused` with `auto: true`) |

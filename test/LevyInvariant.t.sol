@@ -24,6 +24,8 @@ contract LevyHandler is Test {
     mapping(uint256 => bool) public cancelled;
     mapping(uint256 => uint256) public chargeCountAtCancel;
     mapping(uint256 => uint256) public paid; // USDC pulled per subscription, summed from Charged
+    mapping(uint256 => uint256) public lastFailureSeen; // from ChargeFailed; cleared on resume, as the contract does
+    bool public failuresTooClose; // two recorded failures of one subscription under MIN_RETRY_INTERVAL apart
 
     constructor(MockUSDC _usdc, FeeRouter _router, SubscriptionManager _manager, address _treasury) {
         usdc = _usdc;
@@ -43,16 +45,20 @@ contract LevyHandler is Test {
         return actors[seed % actors.length];
     }
 
-    /// @dev Credits every Charged amount in the recorded logs to its subscription.
+    /// @dev Credits every Charged amount in the recorded logs to its subscription,
+    ///      and checks every ChargeFailed against the previous one.
     function _recordPaid() internal {
         Vm.Log[] memory logs = vm.getRecordedLogs();
         for (uint256 i = 0; i < logs.length; i++) {
-            if (
-                logs[i].emitter == address(manager) &&
-                logs[i].topics[0] == SubscriptionManager.Charged.selector
-            ) {
+            if (logs[i].emitter != address(manager)) continue;
+            uint256 id = uint256(logs[i].topics[1]);
+            if (logs[i].topics[0] == SubscriptionManager.Charged.selector) {
                 (uint256 amount, , ) = abi.decode(logs[i].data, (uint256, uint256, uint256));
-                paid[uint256(logs[i].topics[1])] += amount;
+                paid[id] += amount;
+            } else if (logs[i].topics[0] == SubscriptionManager.ChargeFailed.selector) {
+                uint256 last = lastFailureSeen[id];
+                if (last != 0 && block.timestamp < last + manager.MIN_RETRY_INTERVAL()) failuresTooClose = true;
+                lastFailureSeen[id] = block.timestamp;
             }
         }
     }
@@ -101,6 +107,19 @@ contract LevyHandler is Test {
         _recordPaid();
     }
 
+    /// @dev A griefer: several charge() calls on one subscription at the same
+    ///      moment, which only matters while its pull is failing.
+    function griefCharge(uint256 subSeed, uint256 times) external {
+        if (subIds.length == 0) return;
+        uint256 subId = subIds[subSeed % subIds.length];
+        times = bound(times, 2, 4);
+        for (uint256 i = 0; i < times; i++) {
+            vm.recordLogs();
+            try manager.charge(subId) {} catch {}
+            _recordPaid();
+        }
+    }
+
     function changePlan(uint256 subSeed, uint256 planSeed) external {
         if (subIds.length == 0 || planIds.length < 2) return;
         uint256 subId = subIds[subSeed % subIds.length];
@@ -135,7 +154,9 @@ contract LevyHandler is Test {
         try manager.pauseSubscription(subId) {} catch {}
         if (!doPause) {
             vm.prank(subscriber == address(0) ? _actor(actorSeed) : subscriber);
-            try manager.resumeSubscription(subId) {} catch {}
+            try manager.resumeSubscription(subId) {
+                lastFailureSeen[subId] = 0;
+            } catch {}
         }
     }
 
@@ -221,6 +242,12 @@ contract LevyInvariantTest is Test {
             (, , , , , uint256 credit, , ) = manager.subscriptions(id);
             assertLe(credit, handler.paid(id));
         }
+    }
+
+    /// @notice Anyone can call charge(), but a subscription's recorded failures are
+    ///         never less than MIN_RETRY_INTERVAL apart (H-1 in the 2026-09-25 review).
+    function invariant_failuresSpaced() public view {
+        assertFalse(handler.failuresTooClose());
     }
 
     /// @notice The manager never holds funds at rest: every pull is fully split.

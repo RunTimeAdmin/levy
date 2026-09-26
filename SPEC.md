@@ -25,7 +25,7 @@
 
 **Charge.** The keeper calls `charge(subId)` once `block.timestamp >= nextChargeAt`; the pull pays for the cycle that starts then. `charge()` is permissionless: it can only move the subscriber's pre-approved funds to that plan's merchant, so there is nothing to gain by calling it. The contract checks the state is chargeable (TRIAL, ACTIVE or PAST_DUE), spends proration credit first, pulls the rest via `transferFrom` (direct allowance first, Permit2 as fallback), sends 1% to the FeeRouter and 99% to the merchant, advances `nextChargeAt` by one cycle and emits `Charged`. If the pull fails (allowance or balance), it increments `failedAttempts` and emits `ChargeFailed` without reverting.
 
-**Dunning.** Failure state is on-chain. At `maxFailed` failures the subscription becomes PAST_DUE; at `2 × maxFailed` the contract auto-pauses it (PAUSED, `AutoPaused`) inside `charge()`, so the keeper never pauses anything itself. Off-chain, the keeper retries 1, 3 and then 7 days after each failure (then every 7 days; configurable). A successful charge clears the retry schedule. The merchant or subscriber can resume a paused subscription, which resets `failedAttempts` and the keeper's retry schedule. Merchants get Ed25519-signed webhooks for each step and notify their subscribers themselves (suggested copy in `docs/dunning-copy.md`).
+**Dunning.** Failure state is on-chain. At `maxFailed` failures the subscription becomes PAST_DUE; at `2 × maxFailed` the contract auto-pauses it (PAUSED, `AutoPaused`) inside `charge()`, so the keeper never pauses anything itself. The contract records at most one failure per subscription per day (`MIN_RETRY_INTERVAL`; a sooner failing `charge()` reverts `RetryTooSoon`), so a third party calling the permissionless `charge()` cannot compress the schedule. Off-chain, the keeper retries 1, 3 and then 7 days after each failure (then every 7 days; configurable). A successful charge clears the retry schedule. The merchant or subscriber can resume a paused subscription, which resets `failedAttempts` and the keeper's retry schedule. Merchants get Ed25519-signed webhooks for each step and notify their subscribers themselves (suggested copy in `docs/dunning-copy.md`).
 
 **Proration.** A plan change, same merchant only, starts the new plan immediately and bills its first cycle immediately. Unused paid time on the old plan becomes credit, `price * remainingSeconds / cycleSeconds` (integer math, rounded down; the remainder stays with the merchant), added to any credit already held. Credit is spent first; the rest is pulled. Credit left over after a downgrade covers later cycles. Trial time was never paid for and earns no credit. Credit can never move to another merchant.
 
@@ -49,7 +49,7 @@
 
 **FeeRouter:** receives the 1% at charge time and holds it until anyone calls `sweep()`, which sends the whole balance to the treasury (a Safe multisig on mainnet). Phase 2: split 50% buyback-and-burn LEVY / 50% staking rewards (not built).
 
-**Invariants (fuzz-tested):** every minted unit sits in exactly one tracked account; the manager holds no funds at rest; `failedAttempts <= 2 × maxFailed`; cancel is terminal; `nextChargeAt` never falls below `start`; credit never exceeds the USDC the subscription paid, nor the largest plan price.
+**Invariants (fuzz-tested):** every minted unit sits in exactly one tracked account; the manager holds no funds at rest; `failedAttempts <= 2 × maxFailed`; recorded failures are at least a day apart; cancel is terminal; `nextChargeAt` never falls below `start`; credit never exceeds the USDC the subscription paid, nor the largest plan price.
 
 ## Off-chain services
 
@@ -123,7 +123,7 @@ Open issues and the self-review are in `SECURITY_REVIEW.md`; the math audit is i
 levy/
 ├── src/                # Foundry: SubscriptionManager, FeeRouter, IPermit2
 ├── script/             # Deploy.s.sol (Arc testnet / mainnet)
-├── test/               # 54 tests: 47 unit (incl. deploy script), 7 invariants
+├── test/               # 61 tests: 53 unit (incl. deploy script), 8 invariants
 ├── foundry.toml
 ├── FEE_MATH_AUDIT.md   # fee + proration math audit
 ├── SECURITY_REVIEW.md  # adversarial self-review and open issues

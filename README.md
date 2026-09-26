@@ -2,7 +2,7 @@
 
 Pull-based USDC subscription billing for Arc. Merchants define plans, subscribers approve a USDC allowance and subscribe, and a keeper triggers each cycle's pull. The protocol takes a 1% fee on collected payments.
 
-**Status:** contracts, keeper (charging, dunning, webhooks, allowance warnings), API with wallet sign-in, merchant dashboard, customer portal and checkout page are built and tested. Contracts: 54 tests green (47 unit + 7 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 55 tests green. API: 32 tests green. **Deployed on Arc testnet on 2026-09-26 for the M4 soak (see Deployments). Not on mainnet. Not audited.** Known open issues are listed in `SECURITY_REVIEW.md` §9.
+**Status:** contracts, keeper (charging, dunning, webhooks, allowance warnings), API with wallet sign-in, merchant dashboard, customer portal and checkout page are built and tested. Contracts: 61 tests green (53 unit + 8 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 55 tests green. API: 32 tests green. **Deployed on Arc testnet on 2026-09-26 for the M4 soak (see Deployments). Not on mainnet. Not audited.** Known open issues are listed in `SECURITY_REVIEW.md` §9.
 
 ## What's in the repo
 
@@ -23,7 +23,7 @@ Pull-based USDC subscription billing for Arc. Merchants define plans, subscriber
 1. A merchant calls `createPlan(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed)` from their wallet (there is no plan-creation UI yet). The cycle can be 1 day to 10 years. Price is immutable; repricing means a new plan.
 2. A subscriber approves a USDC allowance to the SubscriptionManager and calls `subscribe(planId, ref)`, or calls `subscribeWithPermit2(planId, ref, permit, signature)` with a Permit2 signature (submitted by the subscriber themselves). The checkout page (`/checkout.html?plan=<id>&ref=<ref>`) does the approve-and-subscribe flow for them. Billing is in advance: without a trial, the first cycle is pulled at subscribe, and the subscribe reverts if that pull fails. `ref` is the merchant's own reference for the customer (bytes32, zero for none), stored on-chain and carried on every webhook.
 3. Anyone can call `charge(subId)` once `block.timestamp >= nextChargeAt`; it pays for the cycle that starts then. The contract spends any proration credit first, pulls the rest via `transferFrom`, sends 99% to the merchant and 1% to the FeeRouter, advances the cycle and emits `Charged`. It is permissionless by design: it can only move the subscriber's pre-approved funds to that plan's merchant.
-4. A failed pull does not revert: the contract records it (`ChargeFailed`), marks the subscription `PAST_DUE` at `maxFailed` failures, and auto-pauses it at twice that. The keeper retries 1, 3 and then 7 days after each failure (then every 7 days).
+4. A failed pull does not revert: the contract records it (`ChargeFailed`), marks the subscription `PAST_DUE` at `maxFailed` failures, and auto-pauses it at twice that. It records at most one failure per subscription per day (`MIN_RETRY_INTERVAL`); a failing call sooner reverts `RetryTooSoon`, so nobody can rush a subscription to paused by calling `charge()` repeatedly. The keeper retries 1, 3 and then 7 days after each failure (then every 7 days).
 5. The subscriber or merchant can pause, resume or cancel. Nothing is charged while paused; resuming is a fresh start (paused cycles are never billed, billing restarts at the resume if the charge date passed, and the failure count resets). Cancel is final.
 6. A subscriber can change to another plan from the same merchant: the new plan starts and is billed immediately, less credit for unused paid time on the old plan.
 
@@ -37,6 +37,7 @@ Pull-based USDC subscription billing for Arc. Merchants define plans, subscriber
 
 - Conservation: every minted unit sits in exactly one tracked account.
 - `failedAttempts <= 2 * maxFailed` for every subscription.
+- Recorded failures are at least a day apart, even with a griefer calling `charge()` repeatedly.
 - Cancel is terminal: `chargeCount` never moves after cancellation.
 - `nextChargeAt` never falls below the subscription's start. (It can move earlier on a switch to a shorter-cycle plan, which bills the new cycle immediately.)
 - Credit is backed: a subscription never holds more credit than the USDC it has paid.

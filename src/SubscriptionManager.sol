@@ -11,9 +11,10 @@ import {IPermit2} from "./IPermit2.sol";
 ///         grant an allowance once, and anyone (the keeper in practice) triggers
 ///         per-cycle pulls. Billing is in advance: each pull pays for the cycle
 ///         that starts at it, and without a trial the first cycle is paid at
-///         subscribe. Failed keeper pulls never revert: they are recorded on-chain
-///         so the off-chain dunning engine can retry, and the subscription
-///         auto-pauses after maxFailed attempts.
+///         subscribe. A failed pull is recorded on-chain instead of reverting (at
+///         most once per MIN_RETRY_INTERVAL) so the off-chain dunning engine can
+///         retry; the subscription goes PAST_DUE at maxFailed failures and
+///         auto-pauses at twice that.
 /// @dev Money math: ALL amounts are 6-decimal USDC units via the ERC-20 interface.
 ///      Native 18-decimal values must never enter this contract. Integer arithmetic
 ///      only; division rounds down and dust stays with the merchant.
@@ -26,6 +27,12 @@ contract SubscriptionManager is ReentrancyGuard {
     ///         charge a subscription (a self-paying one never fails, so never
     ///         auto-pauses) and how fast a mistaken approval can be drained.
     uint256 public constant MIN_CYCLE = 1 days;
+    /// @notice Shortest gap between two recorded failures of one subscription.
+    ///         charge() is permissionless, so without it anyone could call it
+    ///         repeatedly while a pull fails and push the subscription to
+    ///         PAST_DUE and PAUSED within one block, skipping the dunning
+    ///         schedule. Successful charges are never held back by it.
+    uint256 public constant MIN_RETRY_INTERVAL = 1 days;
 
     enum Status {
         TRIAL,
@@ -74,6 +81,9 @@ contract SubscriptionManager is ReentrancyGuard {
     ///         so it must be an opaque token, and chosen by whoever subscribes,
     ///         so merchants should issue unguessable ones. Zero means none.
     mapping(uint256 => bytes32) public subscriptionRef;
+    /// @notice When the subscription's last failed charge was recorded; zero
+    ///         when none has been since it started or was last resumed.
+    mapping(uint256 => uint64) public lastFailedAt;
 
     event PlanCreated(uint256 indexed planId, address indexed merchant, uint256 price, uint256 cycleSeconds);
     event Subscribed(
@@ -109,6 +119,7 @@ contract SubscriptionManager is ReentrancyGuard {
     error ZeroAddress();
     error PaymentFailed();
     error DifferentMerchant();
+    error RetryTooSoon();
 
     constructor(address _usdc, address _feeRouter, address _permit2) {
         if (_usdc == address(0) || _feeRouter == address(0) || _permit2 == address(0)) {
@@ -210,7 +221,9 @@ contract SubscriptionManager is ReentrancyGuard {
     /// @notice Pull one cycle's payment. Permissionless: the pull can only move
     ///         the subscriber's pre-approved funds to the correct merchant, so
     ///         there is nothing for an attacker to gain by calling it.
-    /// @dev Never reverts on payment failure. Failures are recorded for dunning.
+    /// @dev A failed pull is recorded for dunning instead of reverting, at most
+    ///      once per MIN_RETRY_INTERVAL; a failing call sooner than that reverts
+    ///      RetryTooSoon and changes nothing.
     function charge(uint256 subId) external nonReentrant {
         Subscription storage sub = subscriptions[subId];
         if (sub.subscriber == address(0)) revert UnknownSubscription();
@@ -276,6 +289,9 @@ contract SubscriptionManager is ReentrancyGuard {
     }
 
     function _recordFailure(uint256 subId, Subscription storage sub, Plan memory plan) internal {
+        uint256 last = lastFailedAt[subId];
+        if (last != 0 && block.timestamp < last + MIN_RETRY_INTERVAL) revert RetryTooSoon();
+        lastFailedAt[subId] = uint64(block.timestamp);
         sub.failedAttempts += 1;
         emit ChargeFailed(subId, sub.failedAttempts);
         if (sub.failedAttempts >= plan.maxFailed && sub.status != Status.PAST_DUE) {
@@ -299,13 +315,15 @@ contract SubscriptionManager is ReentrancyGuard {
     /// @notice Resume a paused subscription as a fresh start. Paused time is
     ///         never billed: if the next charge date passed during the pause,
     ///         billing restarts now (an overdue cycle is forgiven, as with
-    ///         changePlan). The failure count resets for a new dunning run.
+    ///         changePlan). The failure count and the retry timer reset for a
+    ///         new dunning run.
     function resumeSubscription(uint256 subId) external {
         Subscription storage sub = subscriptions[subId];
         _onlySubscriberOrMerchant(sub);
         if (sub.status != Status.PAUSED) revert NotChargeable();
         if (sub.nextChargeAt < block.timestamp) sub.nextChargeAt = uint64(block.timestamp);
         sub.failedAttempts = 0;
+        delete lastFailedAt[subId];
         sub.status = Status.ACTIVE;
         emit Resumed(subId);
     }
