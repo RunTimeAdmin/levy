@@ -4,6 +4,9 @@
 
 Options -Indexes
 
+# Custom error pages
+ErrorDocument 404 /404.html
+
 <IfModule mod_rewrite.c>
   RewriteEngine On
   # www.getlevy.xyz -> getlevy.xyz
@@ -13,15 +16,67 @@ Options -Indexes
   RewriteRule (^|/)\.(?!well-known(/|$)) - [F]
 </IfModule>
 
+# Enable gzip/deflate compression
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/html text/css text/plain text/xml
+  AddOutputFilterByType DEFLATE application/javascript application/json
+  AddOutputFilterByType DEFLATE application/xml application/xhtml+xml
+  AddOutputFilterByType DEFLATE image/svg+xml
+</IfModule>
+
+# Cache control for static assets
+<IfModule mod_expires.c>
+  ExpiresActive On
+  ExpiresDefault "access plus 1 month"
+  
+  # HTML pages: short cache for fresh content
+  ExpiresByType text/html "access plus 1 hour"
+  
+  # CSS and JS: long cache (use versioned filenames for cache busting)
+  ExpiresByType text/css "access plus 1 year"
+  ExpiresByType application/javascript "access plus 1 year"
+  
+  # Images: long cache
+  ExpiresByType image/png "access plus 1 year"
+  ExpiresByType image/jpeg "access plus 1 year"
+  ExpiresByType image/webp "access plus 1 year"
+  ExpiresByType image/svg+xml "access plus 1 year"
+  ExpiresByType image/x-icon "access plus 1 year"
+  
+  # Fonts
+  ExpiresByType font/woff2 "access plus 1 year"
+  ExpiresByType font/woff "access plus 1 year"
+  
+  # PDF: moderate cache
+  ExpiresByType application/pdf "access plus 1 month"
+  
+  # XML/JSON files
+  ExpiresByType application/xml "access plus 1 hour"
+  ExpiresByType text/xml "access plus 1 hour"
+</IfModule>
+
 <IfModule mod_headers.c>
-  Header always set Strict-Transport-Security "max-age=31536000"
+  # Security headers
+  Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
   Header always set X-Content-Type-Options "nosniff"
   Header always set Referrer-Policy "strict-origin-when-cross-origin"
   Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
   Header always set Cross-Origin-Opener-Policy "same-origin"
-  # The pages run no scripts and load nothing from other sites.
+  
+  # Cache headers for immutable assets
+  <FilesMatch "\.(css|js|png|jpg|jpeg|webp|svg|ico|woff2|woff)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+  
+  # HTML pages: allow caching but revalidate
   <FilesMatch "\.html$">
+    Header set Cache-Control "public, max-age=3600, must-revalidate"
     Header always set Content-Security-Policy "default-src 'none'; img-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests"
     Header always set X-Frame-Options "DENY"
   </FilesMatch>
+</IfModule>
+
+# WebP content type
+<IfModule mod_mime.c>
+  AddType image/webp .webp
 </IfModule>
