@@ -156,15 +156,15 @@
       <dl class="roadmap">
         <div>
           <dt>Built</dt>
-          <dd>Subscription contracts, the keeper service, dunning engine, signed webhooks, API, merchant dashboard, customer portal and checkout. Not deployed yet.</dd>
+          <dd>Subscription contracts, the keeper service, dunning engine, signed webhooks, API, merchant dashboard, customer portal and checkout. Live on Arc testnet since 26 September 2026.</dd>
+        </div>
+        <div>
+          <dt>Now</dt>
+          <dd>Testnet soak: a week of real billing cycles end to end, covering trials, failed payments, pauses, plan changes and Permit2, and clearing the pre-mainnet verification list.</dd>
         </div>
         <div>
           <dt>Next</dt>
-          <dd>Testnet deploy and soak: run real billing cycles end to end and clear the pre-mainnet verification list.</dd>
-        </div>
-        <div>
-          <dt>After that</dt>
-          <dd>Mainnet deployment with a multisig treasury.</dd>
+          <dd>An external audit, then mainnet deployment with a multisig treasury.</dd>
         </div>
       </dl>
     </div>
@@ -173,9 +173,14 @@
   <section id="access" class="section alt">
     <div class="wrap">
       <h2>Get early access</h2>
-      <p>Levy is heading into its testnet soak and is looking for its first merchants. If you run subscriptions and want to collect them in USDC, get in touch.</p>
+      <p>Levy is live on Arc testnet, running its week-long soak, and is looking for its first merchants. If you run subscriptions and want to collect them in USDC, get in touch.</p>
       <p><a class="btn btn-primary" href="mailto:hello@getlevy.xyz?subject=Levy%20early%20access">Email hello@getlevy.xyz</a></p>
-      <p class="fine">For developers: the contracts will be open source, with the keeper, API and dashboards in the same repository. It opens as Levy approaches mainnet, and contract addresses are published at deployment. The <a href="whitepaper.html">whitepaper</a> (<a href="levy-whitepaper.pdf">PDF</a>) covers the design, security model and economics in full.</p>
+      <dl class="contracts">
+        <dt>Arc testnet contracts</dt>
+        <dd>SubscriptionManager <a class="addr" href="https://explorer.testnet.arc.io/address/0x9df75ab83bde215f773af982af95b00646318189" target="_blank" rel="noopener noreferrer">0x9df75ab83bde215f773af982af95b00646318189</a></dd>
+        <dd>FeeRouter <a class="addr" href="https://explorer.testnet.arc.io/address/0x79c6bb4030c688e64efdd2d33f0178e63fdf0b9f" target="_blank" rel="noopener noreferrer">0x79c6bb4030c688e64efdd2d33f0178e63fdf0b9f</a></dd>
+      </dl>
+      <p class="fine">For developers: the contracts will be open source, with the keeper, API and dashboards in the same repository. It opens as Levy approaches mainnet, where the addresses will be published at deployment. The <a href="whitepaper.html">whitepaper</a> (<a href="levy-whitepaper.pdf">PDF</a>) covers the design, security model and economics in full.</p>
     </div>
   </section>
 </main>
@@ -183,7 +188,7 @@
 <footer class="site-footer">
   <div class="wrap">
     <span>Levy &copy; 2026 &middot; <a href="mailto:hello@getlevy.xyz">hello@getlevy.xyz</a> &middot; <a href="whitepaper.html">Whitepaper</a> &middot; <a href="https://x.com/LevyOnArc" target="_blank" rel="noopener noreferrer">X @LevyOnArc</a></span>
-    <span class="fine">Pre-release software. The contracts are not yet deployed or audited.</span>
+    <span class="fine">Live on Arc testnet. Not audited, not on mainnet.</span>
   </div>
 </footer>
 

@@ -191,6 +191,7 @@
   .status, .note, .toc ol { font-size: 10pt; }
   .refs { font-size: 9.5pt; }
   .disclaimer, .fig figcaption, .paper caption { font-size: 9pt; }
+  .disclaimer { break-inside: avoid; margin-top: 14pt; padding-top: 10pt; }
   .paper a { color: inherit; text-decoration: none; }
   .refs a { color: var(--accent); }
 }

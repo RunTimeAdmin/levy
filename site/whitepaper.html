@@ -46,12 +46,12 @@
 </header>
 
 <main class="paper">
-  <p class="kicker">Whitepaper &middot; Version 0.1 &middot; 25 September 2026</p>
+  <p class="kicker">Whitepaper &middot; Version 0.2 &middot; 26 September 2026</p>
   <h1>Levy: pull-based subscription billing in USDC on Arc</h1>
   <p class="lede">How Levy collects recurring payments from a one-time USDC allowance, what the contract guarantees to customers and merchants, and what it does not.</p>
 
   <div class="status">
-    <p><strong>Status.</strong> Everything described here is built and tested. None of it is deployed or audited yet. The paper describes the contracts as of commit <code>e897e1b</code> and the services as of <code>9a27fbb</code>. Figures from our own measurements say how they were taken.</p>
+    <p><strong>Status.</strong> Everything described here is built and tested, and the contracts have been live on Arc testnet since 26 September 2026 for a week-long soak (Appendix D). Nothing is on mainnet and nothing is audited yet. The paper describes the contracts as of commit <code>e897e1b</code>, which is the code deployed, and the services as of <code>0cbd30d</code>. Figures from our own measurements say how they were taken.</p>
   </div>
 
   <p class="pdf-link"><a href="levy-whitepaper.pdf">Download this paper as a PDF</a></p>
@@ -454,7 +454,7 @@ credit = credit + floor(price_old * r / cycle_old)</div>
     <li>Checks allowance runway.</li>
   </ol>
   <p>The delivery loop, every 5 seconds, sends webhooks. All schedule decisions use the chain's timestamp, not the server clock. Because a block is final, the keeper treats a mined transaction as settled.</p>
-  <p>Indexing is deliberately narrow. On Arc, USDC is the gas token, so USDC logs are everywhere. We measured about 4,000 of them per 500 blocks on testnet and about 1,200 on mainnet on 25 September 2026, roughly 1.4 million and 430,000 a day. The keeper fetches only Levy's own events, USDC transfers into or out of the SubscriptionManager and approvals to it, in fixed-size block ranges.</p>
+  <p>Indexing is deliberately narrow. On Arc, USDC is the gas token, so USDC logs are everywhere. We measured about 4,000 of them per 500 blocks on testnet and about 1,200 on mainnet on 25 September 2026, roughly 1.4 million and 430,000 a day. The keeper fetches only Levy's own events, USDC transfers into or out of the SubscriptionManager and approvals to it, in fixed-size block ranges. It sends those queries one at a time and backs off for up to 15 seconds when refused, because Arc's public testnet RPC rate-limits bursts of them.</p>
   <p>The allowance check reads up to 50 subscribers per cycle, rechecking each after 6 hours, or sooner after a charge or a new approval. When a subscriber's allowance covers fewer than two more rounds of all their subscriptions, each affected merchant gets an <code>allowance.low</code> webhook. It is sent once, and again only if the allowance recovers and runs low again.</p>
   <p>Only one keeper should run per deployment. Two keepers cannot double-charge, because a second successful call on the same billing date reverts, but they could each record a failure for the same missed payment and double the pace of dunning. A merchant who does not want to depend on Levy's keeper can run its own against its own plans, or simply call <code>charge</code>.</p>
 
@@ -499,7 +499,7 @@ credit = credit + floor(price_old * r / cycle_old)</div>
       <tr><td><code>createPlan</code></td><td class="num">161,000</td><td class="num">about $0.004</td></tr>
       <tr><td>pause, resume, cancel</td><td class="num">49,000 to 57,000</td><td class="num">about $0.0015</td></tr>
     </tbody>
-    <caption>Twenty gwei is Arc's documented minimum base fee, 2 &times; 10<sup>-8</sup> USDC per unit of gas, which matches its target of about $0.001 per ERC-20 transfer [2]. The documented ceiling is 1,000 times higher. Deploying both contracts cost about 0.25 USDC in a testnet simulation.</caption>
+    <caption>Twenty gwei is Arc's documented minimum base fee, 2 &times; 10<sup>-8</sup> USDC per unit of gas, which matches its target of about $0.001 per ERC-20 transfer [2]. The documented ceiling is 1,000 times higher. Deploying both contracts on Arc testnet cost 0.12 USDC (3.65 million gas at 32.5 gwei).</caption>
   </table></div>
 
   <h3>8.4 Keeper sustainability</h3>
@@ -525,14 +525,14 @@ credit = credit + floor(price_old * r / cycle_old)</div>
         <li>Merchants sign in with their payout wallet: there are no scoped API keys and no support for smart-contract wallets (ERC-1271).</li>
         <li>There is no plan-creation page.</li>
       </ul></li>
-    <li><strong>Not deployed and not audited.</strong> Everything in this paper has been tested locally and reviewed by its authors only.</li>
+    <li><strong>Testnet only, and not audited.</strong> The contracts run on Arc testnet, nothing handles real money yet, and everything in this paper has been reviewed by its authors only.</li>
   </ul>
 
   <!-- 10 -->
   <h2 id="roadmap">10. Roadmap and future work</h2>
-  <p>The contracts, keeper, API, dashboard, portal and checkout are built. What remains before real money flows:</p>
+  <p>The contracts, keeper, API, dashboard, portal and checkout are built, and the contracts have been live on Arc testnet since 26 September 2026. What remains before real money flows:</p>
   <ol>
-    <li><strong>Testnet deployment and a soak of at least a week,</strong> running real billing cycles end to end, including the Permit2 path against Arc's own Permit2.</li>
+    <li><strong>A soak of at least a week on the testnet deployment,</strong> running real billing cycles end to end: trials, failed payments through to auto-pause, pause and resume, cancellation, plan changes with credit, and the Permit2 path against Arc's own Permit2.</li>
     <li><strong>An external audit</strong> of the contracts, with the open items in &sect;6.8 and the exposure bound in &sect;6.2 in scope.</li>
     <li><strong>Mainnet deployment</strong> with the treasury multisig in place, and the first real subscription billed.</li>
   </ol>
@@ -550,7 +550,7 @@ credit = credit + floor(price_old * r / cycle_old)</div>
 
   <!-- 11 -->
   <h2 id="conclusion">11. Conclusion</h2>
-  <p>Levy makes stablecoin subscriptions work the way merchants already bill: one authorisation at checkout, automatic collection every cycle, retries when a payment fails and a clean record of every charge. It does this with the plainest tool available, an ERC-20 allowance, and a contract that turns the allowance into a narrow, predictable permission: one plan price, per billing date, for one merchant. On Arc that permission costs a fraction of a cent to exercise and settles for good in under a second. The design is built and tested. The next step is to run it on a public network and have it audited, and this paper will be revised as that happens.</p>
+  <p>Levy makes stablecoin subscriptions work the way merchants already bill: one authorisation at checkout, automatic collection every cycle, retries when a payment fails and a clean record of every charge. It does this with the plainest tool available, an ERC-20 allowance, and a contract that turns the allowance into a narrow, predictable permission: one plan price, per billing date, for one merchant. On Arc that permission costs a fraction of a cent to exercise and settles for good in under a second. The design is built, tested and running on Arc testnet. The next steps are a week of real billing on it and an external audit, and this paper will be revised as they happen.</p>
 
   <!-- Appendices -->
   <h2 id="appendix">Appendix A. Contract interface</h2>
@@ -606,6 +606,16 @@ credit = credit + floor(price_old * r / cycle_old)</div>
     </tbody>
   </table></div>
 
+  <h2 id="deployment">Appendix D. Arc testnet deployment</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Contract</th><th>Address</th></tr></thead>
+    <tbody>
+      <tr><td>SubscriptionManager</td><td><a href="https://explorer.testnet.arc.io/address/0x9df75ab83bde215f773af982af95b00646318189"><code>0x9df75ab83bde215f773af982af95b00646318189</code></a></td></tr>
+      <tr><td>FeeRouter</td><td><a href="https://explorer.testnet.arc.io/address/0x79c6bb4030c688e64efdd2d33f0178e63fdf0b9f"><code>0x79c6bb4030c688e64efdd2d33f0178e63fdf0b9f</code></a></td></tr>
+    </tbody>
+    <caption>Arc testnet (chain 5042002), deployed on 26 September 2026 in block 64020204. The runtime bytecode of both contracts matches a build of the contract sources at commit <code>e897e1b</code>, apart from the addresses set at construction. On testnet the fee treasury is the deploying wallet; on mainnet it will be a Safe multisig.</caption>
+  </table></div>
+
   <h2 id="references">References</h2>
   <ol class="refs">
     <li>Stripe, "Pricing &amp; Fees", <a href="https://stripe.com/pricing">https://stripe.com/pricing</a> (accessed 25 September 2026).</li>
@@ -622,7 +632,7 @@ credit = credit + floor(price_old * r / cycle_old)</div>
     <li>EIP-1559, "Fee market change for ETH 1.0 chain", <a href="https://eips.ethereum.org/EIPS/eip-1559">https://eips.ethereum.org/EIPS/eip-1559</a>.</li>
   </ol>
 
-  <p class="disclaimer">This paper describes software. It is not an offer or solicitation to buy any token or other asset, and it promises no future feature, including the token mentioned in &sect;10. The contracts are not yet deployed or audited. Measurements come from local tests and may differ on Arc. Levy &copy; 2026 &middot; <a href="mailto:hello@getlevy.xyz">hello@getlevy.xyz</a></p>
+  <p class="disclaimer">This paper describes software. It is not an offer or solicitation to buy any token or other asset, and it promises no future feature, including the token mentioned in &sect;10. The contracts are on Arc testnet only and not yet audited. Gas figures come from local tests and may differ on Arc. Levy &copy; 2026 &middot; <a href="mailto:hello@getlevy.xyz">hello@getlevy.xyz</a></p>
 </main>
 
 <footer class="site-footer">
