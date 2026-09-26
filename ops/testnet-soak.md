@@ -8,8 +8,8 @@ contracts, the keeper and the API, and the results are written down below.
 
 | | |
 |---|---|
-| SubscriptionManager | `0x9df75ab83bde215f773af982af95b00646318189` |
-| FeeRouter | `0x79c6bb4030c688e64efdd2d33f0178e63fdf0b9f` |
+| SubscriptionManager | `0x33c8e7e46583bdfd2e001f55ac1c58bd84eb739f` |
+| FeeRouter | `0xa6efee5f5a2eb2afae102f790b4889fcc01fe848` |
 | Treasury (= deployer) | `0xe305652DB35Ed45A567538438c9B29ede7097162` |
 | Keeper | `0x712422F5fBE3935612AaCAdC5651443356e6c2B4` |
 | Dashboard, portal, checkout | https://app.getlevy.xyz |
@@ -54,7 +54,7 @@ transaction.
 
 ```powershell
 $cast = 'Z:\Sentinal Engine\foundry-bin\cast.exe'
-$mgr  = '0x9df75ab83bde215f773af982af95b00646318189'
+$mgr  = '0x33c8e7e46583bdfd2e001f55ac1c58bd84eb739f'
 $rpc  = 'https://rpc.testnet.arc.io'
 ```
 
@@ -138,7 +138,7 @@ unguessable ones (docs/merchant-guide.md).
 | Day 4 | Claude | `docker restart levy-keeper` just before a due charge | Charge collected once, no double charge, sync resumes |
 | Day 4.75 | you | S4 downgrades, six hours after plan 2's day-4.5 charge: `& $cast send $mgr "changePlan(uint256,uint256)" <S4 id> 1 --rpc-url $rpc --interactive` | 0.75 of a day of plan 2 left becomes 1.5 USDC of credit. Plan 1's first cycle is paid from it (a charge of 0 USDC); the 0.5 left carries, so the next charge a day later pulls only 0.5 USDC |
 | Day 7 | you | Portal as S2: **Cancel** | CANCELLED; nothing charged after this |
-| Day 7 | you | `& $cast send 0x79c6bb4030c688e64efdd2d33f0178e63fdf0b9f "sweep()" --rpc-url $rpc --interactive` (any funded wallet) | The treasury's USDC rises by exactly the fees collected |
+| Day 7 | you | `& $cast send 0xa6efee5f5a2eb2afae102f790b4889fcc01fe848 "sweep()" --rpc-url $rpc --interactive` (any funded wallet) | The treasury's USDC rises by exactly the fees collected |
 | Day 7 | you | Dashboard: Export CSV | One row per charge; totals match the chain |
 
 S1 and S5 are never touched: they should be charged exactly once a day, all
@@ -204,3 +204,4 @@ When every box is ticked, the soak item under "Before mainnet" in the README is 
 |---|---|---|
 | 2026-09-26 | Claude | Contracts deployed (block 64020204); API live at https://app.getlevy.xyz; keeper running from `0cbd30d` with sequential log queries and RPC backoff: no rate-limit errors in its first 10 minutes (about 1 in 5 cycles before) |
 | 2026-09-26 | Claude | Soak tools live: receiver at `/soak-hooks` (health ok, public key loaded), `ops/soak-status.sh` (first run: no alerts), Permit2 script tested against a fork of Arc testnet with Arc's real Permit2 |
+| 2026-09-26 | Claude | External review (PR #1) found H-1: failures could be recorded back to back. Fixed in `08dd7b7` (at most one recorded failure per day). Contracts redeployed in block 64031023 (SubscriptionManager `0x33c8...739f`); the first deployment is superseded. Keeper and API repointed with a fresh database; the old one is kept in `/root/levy-db-old-contract` on the host |

@@ -51,7 +51,7 @@
   <p class="lede">How Levy collects recurring payments from a one-time USDC allowance, what the contract guarantees to customers and merchants, and what it does not.</p>
 
   <div class="status">
-    <p><strong>Status.</strong> Everything described here is built and tested, and the contracts have been live on Arc testnet since 26 September 2026 for a week-long soak (Appendix D). Nothing is on mainnet and nothing is audited yet. The paper describes the contracts as of commit <code>e897e1b</code>, which is the code deployed, and the services as of <code>0cbd30d</code>. Figures from our own measurements say how they were taken.</p>
+    <p><strong>Status.</strong> Everything described here is built and tested, and the contracts have been live on Arc testnet since 26 September 2026 for a week-long soak (Appendix D). Nothing is on mainnet and nothing is audited yet. The paper describes the contracts as of commit <code>08dd7b7</code>, which is the code deployed, and the services as of the same commit. Figures from our own measurements say how they were taken.</p>
   </div>
 
   <p class="pdf-link"><a href="levy-whitepaper.pdf">Download this paper as a PDF</a></p>
@@ -615,10 +615,10 @@ credit = credit + floor(price_old * r / cycle_old)</div>
   <div class="table-wrap"><table>
     <thead><tr><th>Contract</th><th>Address</th></tr></thead>
     <tbody>
-      <tr><td>SubscriptionManager</td><td><a href="https://explorer.testnet.arc.io/address/0x9df75ab83bde215f773af982af95b00646318189"><code>0x9df75ab83bde215f773af982af95b00646318189</code></a></td></tr>
-      <tr><td>FeeRouter</td><td><a href="https://explorer.testnet.arc.io/address/0x79c6bb4030c688e64efdd2d33f0178e63fdf0b9f"><code>0x79c6bb4030c688e64efdd2d33f0178e63fdf0b9f</code></a></td></tr>
+      <tr><td>SubscriptionManager</td><td><a href="https://explorer.testnet.arc.io/address/0x33c8e7e46583bdfd2e001f55ac1c58bd84eb739f"><code>0x33c8e7e46583bdfd2e001f55ac1c58bd84eb739f</code></a></td></tr>
+      <tr><td>FeeRouter</td><td><a href="https://explorer.testnet.arc.io/address/0xa6efee5f5a2eb2afae102f790b4889fcc01fe848"><code>0xa6efee5f5a2eb2afae102f790b4889fcc01fe848</code></a></td></tr>
     </tbody>
-    <caption>Arc testnet (chain 5042002), deployed on 26 September 2026 in block 64020204. The runtime bytecode of both contracts matches a build of the contract sources at commit <code>e897e1b</code>, apart from the addresses set at construction. On testnet the fee treasury is the deploying wallet; on mainnet it will be a Safe multisig.</caption>
+    <caption>Arc testnet (chain 5042002), deployed on 26 September 2026 in block 64031023. The runtime bytecode of both contracts matches a build of the contract sources at commit <code>08dd7b7</code>, apart from the addresses set at construction. On testnet the fee treasury is the deploying wallet; on mainnet it will be a Safe multisig. An earlier deployment the same day, in block 64020204, predates the fix in &sect;6.8 and is not used.</caption>
   </table></div>
 
   <h2 id="references">References</h2>
