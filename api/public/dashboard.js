@@ -32,18 +32,26 @@ function refText(ref) {
 
 function showSession() {
   const m = merchant();
-  $("who").textContent = m ? `signed in as ${short(m)}` : "";
-  $("signIn").hidden = !!m;
-  $("signOut").hidden = !m;
+  $("booting").hidden = true;
+  // Signed out, the panel below has the sign-in button; the header shows the session only.
+  $("session").hidden = !m;
+  $("who").textContent = m ? short(m) : "";
   // Signed out, the panels would be empty shells: show one message instead.
   $("signedOut").hidden = !!m;
-  document.querySelectorAll("main > :not(#signedOut)").forEach((el) => { el.hidden = !m; });
+  $("app").hidden = !m;
+}
+
+// Placeholders while the panels load, so the page does not jump from empty to full.
+function showLoading() {
+  $("cards").innerHTML = `<div class="skeleton"></div>`.repeat(6);
+  for (const id of ["subs", "dunning", "hooks", "invoices"]) $(id).innerHTML = `<p class="loading">Loading...</p>`;
 }
 
 async function load() {
   showSession();
   const m = merchant();
   if (!m) return;
+  showLoading();
   chainId = (await fetch("/api/config").then((r) => r.json())).chainId;
   await Promise.all([loadMetrics(m), loadSubs(m), loadDunning(m), loadHooks(m), loadInvoices(m)]);
 }
@@ -124,7 +132,7 @@ async function loadInvoices(m) {
     `</tbody></table>`;
 }
 
-$("signIn").onclick = () => LevyAuth.signIn().then(load).catch(e => alert("Sign-in failed: " + e.message));
+$("signInMain").onclick = () => LevyAuth.signIn().then(load).catch(e => alert("Sign-in failed: " + e.message));
 $("signOut").onclick = () => LevyAuth.signOut().then(() => location.reload());
 // The CSV is fetched and saved rather than linked, so a failure shows as an alert.
 $("csvLink").onclick = async (e) => {

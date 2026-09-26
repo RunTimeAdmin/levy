@@ -4,92 +4,77 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Levy Merchant Dashboard</title>
+<meta name="theme-color" content="#0e1116">
 <link rel="icon" href="/public/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/public/app.css">
 <style>
-  :root { --bg: #0f1115; --panel: #171b22; --line: #262c36; --text: #e6e9ee; --muted: #8b94a3; --accent: #4cc38a; --warn: #e5a54b; --bad: #e5604f; }
-  * { box-sizing: border-box; }
-  [hidden] { display: none !important; } /* .cards' display: grid would otherwise override it */
-  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
-  header { padding: 16px 24px; border-bottom: 1px solid var(--line); display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
-  header h1 { font-size: 18px; margin: 0; }
-  header h1 span { color: var(--accent); }
-  main { max-width: 1200px; margin: 0 auto; padding: 24px; display: grid; gap: 24px; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
-  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
-  .card .value { font-size: 26px; font-weight: 600; margin-top: 4px; }
-  section.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
-  section.panel h2 { margin: 0 0 12px; font-size: 15px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
-  th { color: var(--muted); font-weight: 500; }
-  td.addr, th.addr { font-family: ui-monospace, monospace; }
-  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
-  .pill.active, .pill.trial { background: rgba(76,195,138,.15); color: var(--accent); }
-  .pill.past_due { background: rgba(229,165,75,.15); color: var(--warn); }
-  .pill.paused, .pill.cancelled { background: rgba(229,96,79,.15); color: var(--bad); }
-  .pill.sent { background: rgba(76,195,138,.15); color: var(--accent); }
-  .pill.failed, .pill.pending { background: rgba(229,165,75,.15); color: var(--warn); }
-  .pill.dead { background: rgba(229,96,79,.15); color: var(--bad); }
-  input, select, button { font: inherit; }
-  input[type=text], input[type=url] { background: #0f1115; border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 8px 10px; }
-  button { background: var(--accent); color: #0b0e12; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; font-weight: 600; }
-  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
-  button.danger { background: transparent; color: var(--bad); border: 1px solid var(--bad); }
-  button:disabled { opacity: .5; cursor: default; }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .muted { color: var(--muted); }
-  .events { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
-  .events label { display: flex; gap: 4px; align-items: center; font-size: 13px; background: #0f1115; border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
-  .empty { color: var(--muted); padding: 12px 0; }
-  a { color: var(--accent); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .cards .skeleton { height: 88px; }
+  .events { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 14px; }
+  .events label { display: flex; gap: 8px; align-items: center; min-height: 40px; font-size: 13px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+  .events label:has(input:checked) { border-color: rgba(76, 195, 138, 0.5); }
+  #hookUrl { width: min(100%, 460px); }
+  .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+  .panel-head h2 { margin: 0; }
 </style>
 </head>
 <body>
-<header>
-  <h1>Levy <span>Merchant</span></h1>
-  <div class="row">
-    <span id="who" class="muted"></span>
-    <button id="signIn">Sign in with wallet</button>
-    <button id="signOut" class="ghost" hidden>Sign out</button>
+<header class="app-header">
+  <div class="wrap">
+    <a class="brand" href="/" aria-label="Levy merchant dashboard"><img src="/public/logo.svg" alt="" width="21" height="22"><span class="wordmark">levy</span><span class="brand-tag">Merchant</span></a>
+    <a class="nav-link" href="/portal.html">Customer portal</a>
+    <div class="session" id="session" hidden>
+      <span id="who" class="who"></span>
+      <button id="signOut" class="ghost small">Sign out</button>
+    </div>
   </div>
-  <span class="muted" style="margin-left:auto"><a href="/portal.html">customer portal</a></span>
 </header>
-<main>
-  <p class="empty" id="signedOut">Sign in with the wallet that created your plans to see your subscriptions, dunning queue, webhooks and invoices.</p>
-  <div class="cards" id="cards"></div>
-
-  <section class="panel">
-    <h2>Subscriptions</h2>
-    <div id="subs"></div>
+<main class="wrap">
+  <p class="loading" id="booting">Loading...</p>
+  <section class="panel" id="signedOut" hidden>
+    <h2>Merchant dashboard</h2>
+    <p class="muted" style="margin:0 0 14px">Sign in with the wallet that created your plans to see your revenue, subscriptions, dunning queue, webhooks and invoices. Signing is free and sends no transaction.</p>
+    <button id="signInMain">Sign in with wallet</button>
   </section>
 
-  <section class="panel">
-    <h2>Dunning queue</h2>
-    <div id="dunning"></div>
-  </section>
+  <div class="stack" id="app" hidden>
+    <div class="cards" id="cards"></div>
 
-  <section class="panel">
-    <h2>Webhooks</h2>
-    <div id="hooks"></div>
-    <h3 style="font-size:13px;margin:16px 0 8px">Add endpoint</h3>
-    <div class="row">
-      <input type="url" id="hookUrl" size="48" placeholder="https://example.com/levy-hook">
-    </div>
-    <div class="events" id="hookEvents"></div>
-    <button id="addHook">Register webhook</button>
-    <p class="muted" style="font-size:12px">Deliveries are Ed25519-signed (X-Levy-Signature). Verify with the public key at <code>/api/webhooks/public-key</code>.</p>
-  </section>
+    <section class="panel">
+      <h2>Subscriptions</h2>
+      <div id="subs" class="table-scroll"></div>
+    </section>
 
-  <section class="panel">
-    <h2>Invoices</h2>
-    <div class="row" style="margin-bottom:12px">
-      <a id="csvLink" href="#">Export CSV</a>
-    </div>
-    <div id="invoices"></div>
-  </section>
+    <section class="panel">
+      <h2>Dunning queue</h2>
+      <div id="dunning" class="table-scroll"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Webhooks</h2>
+      <div id="hooks" class="table-scroll"></div>
+      <h3 style="font-size:14px;margin:18px 0 8px">Add endpoint</h3>
+      <input type="url" id="hookUrl" placeholder="https://example.com/levy-hook" aria-label="Webhook endpoint URL">
+      <div class="events" id="hookEvents"></div>
+      <button id="addHook">Register webhook</button>
+      <p class="muted" style="font-size:13px;margin:12px 0 0">Deliveries are Ed25519-signed (X-Levy-Signature). Verify with the public key at <code>/api/webhooks/public-key</code>.</p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Invoices</h2>
+        <a id="csvLink" class="button ghost small" href="#">Export CSV</a>
+      </div>
+      <div id="invoices" class="table-scroll"></div>
+    </section>
+  </div>
 </main>
+<footer class="app-footer">
+  <div class="wrap">
+    <span>Levy &copy; 2026 &middot; <a href="https://getlevy.xyz">getlevy.xyz</a> &middot; <a href="https://getlevy.xyz/whitepaper.html">Whitepaper</a> &middot; <a href="https://getlevy.xyz/security.html">Security</a></span>
+    <span>Not audited yet.</span>
+  </div>
+</footer>
 
 <script src="/public/auth.js"></script>
 <script src="/public/wallet.js"></script>

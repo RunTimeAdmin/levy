@@ -43,6 +43,10 @@ describe("wallet.js encodings match the contracts", () => {
     assert.equal(m[1], toEventSelector(event));
     assert.equal(event.inputs[0].name, "subId");
     assert.equal(event.inputs[0].indexed, true);
+    // subscribe() reads the first charge time from the first word of the log data.
+    const data = event.inputs.filter((i) => !i.indexed);
+    assert.equal(data[0].name, "nextChargeAt");
+    assert.equal(data[0].type, "uint64");
   });
 });
 

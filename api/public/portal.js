@@ -38,6 +38,7 @@ async function act(subId, action) {
   buttons.forEach((b) => { b.disabled = true; });
   try {
     note.textContent = "Confirm in your wallet...";
+    note.classList.add("busy");
     const account = await LevyWallet.connect(cfg.chainId);
     if (account.toLowerCase() !== LevyAuth.address.toLowerCase()) {
       throw new Error(`Your wallet is on ${short(account)}; switch it to ${short(LevyAuth.address)}, the account you signed in with.`);
@@ -54,14 +55,19 @@ async function act(subId, action) {
   } catch (e) {
     note.textContent = e.message || String(e);
     buttons.forEach((b) => { b.disabled = false; });
+  } finally {
+    note.classList.remove("busy");
   }
 }
 
 function showSession() {
   const s = LevyAuth.address;
-  $("who").textContent = s ? `signed in as ${short(s)}` : "";
-  $("signIn").hidden = !!s;
-  $("signOut").hidden = !s;
+  $("booting").hidden = true;
+  // Signed out, the panel below has the sign-in button; the header shows the session only.
+  $("session").hidden = !s;
+  $("who").textContent = s ? short(s) : "";
+  $("signedOut").hidden = !!s;
+  $("main").hidden = !s;
 }
 
 // Shown while the allowance (shared by all the subscriber's Levy
@@ -91,6 +97,7 @@ function fundsBanner(funds) {
       b.disabled = true;
       try {
         status.textContent = "Confirm in your wallet...";
+        status.classList.add("busy");
         const account = await LevyWallet.connect(cfg.chainId);
         if (account.toLowerCase() !== LevyAuth.address.toLowerCase()) {
           throw new Error(`Your wallet is on ${short(account)}; switch it to ${short(LevyAuth.address)}, the account you signed in with.`);
@@ -103,6 +110,8 @@ function fundsBanner(funds) {
       } catch (e) {
         status.textContent = e.message || String(e);
         b.disabled = false;
+      } finally {
+        status.classList.remove("busy");
       }
     };
     box.append(b);
@@ -115,20 +124,21 @@ async function load() {
   showSession();
   const s = LevyAuth.address;
   if (!s) return;
+  const main = $("main");
+  main.innerHTML = `<p class="loading">Loading your subscriptions...</p>`;
   const [subs, config, funds] = await Promise.all([
     LevyAuth.api(`/api/subscriptions?subscriber=${s}`),
     fetch("/api/config").then((r) => r.json()),
     LevyAuth.api("/api/funds"),
   ]);
   cfg = config;
-  const main = $("main");
-  if (!subs.length) { main.innerHTML = `<p class="empty">No subscriptions found for this address.</p>`; return; }
+  if (!subs.length) { main.innerHTML = `<section class="panel"><p class="empty">No subscriptions found for this address.</p></section>`; return; }
   const cards = await Promise.all(subs.map(async (sub) => {
     const detail = await LevyAuth.api(`/api/subscriptions/${sub.subId}`);
     const invoices = (detail.charges || []).map(c => `<tr>
       <td class="addr">${short(c.invoiceRef)}</td><td>${usd(c.amountUsdc)}</td>
       <td class="addr">${txCell(c.txHash)}</td></tr>`).join("");
-    return `<div class="sub">
+    return `<div class="card sub">
       <h2>Subscription #${sub.subId} <span class="pill ${sub.statusName}" data-pill="${sub.subId}">${sub.statusName}</span></h2>
       <div class="grid">
         <div><div class="label">Price</div><div class="value">${usd(sub.priceUsdc)}</div></div>
@@ -138,8 +148,8 @@ async function load() {
       </div>
       <div class="row" data-actions="${sub.subId}"></div>
       <p class="note" data-status="${sub.subId}">Pause, resume and cancel are wallet transactions from the account you signed in with.</p>
-      <h3 style="font-size:13px;margin:12px 0 4px">Invoice history</h3>
-      ${invoices ? `<table><thead><tr><th>Invoice</th><th>Amount</th><th>Tx</th></tr></thead><tbody>${invoices}</tbody></table>`
+      <h3>Invoice history</h3>
+      ${invoices ? `<div class="table-scroll"><table><thead><tr><th>Invoice</th><th>Amount</th><th>Tx</th></tr></thead><tbody>${invoices}</tbody></table></div>`
                  : `<p class="muted">No charges yet.</p>`}
     </div>`;
   }));
@@ -148,6 +158,6 @@ async function load() {
   if (funds.checked && (funds.low || BigInt(funds.balance) < BigInt(funds.perCycle))) main.prepend(fundsBanner(funds));
 }
 
-$("signIn").onclick = () => LevyAuth.signIn().then(load).catch(e => alert("Sign-in failed: " + e.message));
+$("signInMain").onclick = () => LevyAuth.signIn().then(load).catch(e => alert("Sign-in failed: " + e.message));
 $("signOut").onclick = () => LevyAuth.signOut().then(() => location.reload());
 LevyAuth.ready.then(load).catch(e => { showSession(); if (LevyAuth.address) alert("Load failed: " + e.message); });

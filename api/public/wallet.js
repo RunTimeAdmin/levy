@@ -75,14 +75,19 @@ const LevyWallet = (() => {
 
   /**
    * subscribe(planId, ref); `ref` is a 0x-prefixed bytes32 (the merchant's
-   * reference, or zero). Returns the new subscription id from Subscribed.
+   * reference, or zero). Returns the new subscription id and its first charge
+   * time (unix seconds) from Subscribed, whose data is nextChargeAt then ref.
    */
   async function subscribe(from, manager, planId, ref) {
     const r = await send(from, manager, SEL.subscribe + word(planId) + ref.replace(/^0x/, ""));
     const log = r.logs.find(
       (l) => l.address.toLowerCase() === manager.toLowerCase() && l.topics[0] === SUBSCRIBED_TOPIC
     );
-    return { subId: log ? BigInt(log.topics[1]).toString() : null, txHash: r.transactionHash };
+    return {
+      subId: log ? BigInt(log.topics[1]).toString() : null,
+      nextChargeAt: log ? Number(BigInt(log.data.slice(0, 66))) : null,
+      txHash: r.transactionHash,
+    };
   }
 
   /** pause / resume / cancel a subscription (subscriber or merchant only). */

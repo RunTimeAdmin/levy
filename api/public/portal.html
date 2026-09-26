@@ -3,58 +3,44 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Levy — My Subscriptions</title>
+<title>Levy: My Subscriptions</title>
+<meta name="theme-color" content="#0e1116">
 <link rel="icon" href="/public/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/public/app.css">
 <style>
-  :root { --bg: #0f1115; --panel: #171b22; --line: #262c36; --text: #e6e9ee; --muted: #8b94a3; --accent: #4cc38a; --warn: #e5a54b; --bad: #e5604f; }
-  * { box-sizing: border-box; }
-  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
-  header { padding: 16px 24px; border-bottom: 1px solid var(--line); display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
-  header h1 { font-size: 18px; margin: 0; }
-  header h1 span { color: var(--accent); }
-  main { max-width: 900px; margin: 0 auto; padding: 24px; display: grid; gap: 16px; }
-  .sub { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
-  .sub h2 { margin: 0 0 8px; font-size: 16px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; margin: 12px 0; }
-  .grid .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
-  .grid .value { font-size: 18px; font-weight: 600; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
-  th { color: var(--muted); font-weight: 500; }
-  td.addr { font-family: ui-monospace, monospace; }
-  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
-  .pill.active, .pill.trial { background: rgba(76,195,138,.15); color: var(--accent); }
-  .pill.past_due { background: rgba(229,165,75,.15); color: var(--warn); }
-  .pill.paused, .pill.cancelled { background: rgba(229,96,79,.15); color: var(--bad); }
-  input, button { font: inherit; }
-  input[type=text] { background: #0f1115; border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 8px 10px; }
-  button { background: var(--accent); color: #0b0e12; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; font-weight: 600; }
-  button:disabled { opacity: .45; cursor: default; }
-  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
-  button.ghost.danger { color: var(--bad); border-color: var(--bad); }
-  .banner { background: rgba(229,165,75,.1); border: 1px solid var(--warn); border-radius: 8px; padding: 12px 16px; display: grid; gap: 8px; }
-  .banner button { justify-self: start; }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .muted { color: var(--muted); }
-  .note { background: #0f1115; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; font-size: 13px; color: var(--muted); }
-  .empty { color: var(--muted); padding: 24px; text-align: center; }
-  a { color: var(--accent); }
+  .sub h2 { display: flex; align-items: center; gap: 10px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin: 14px 0; }
+  .grid .value { font-size: 18px; }
+  .sub .row { margin-bottom: 10px; }
+  .sub h3 { font-size: 14px; margin: 16px 0 4px; }
 </style>
 </head>
 <body>
-<header>
-  <h1>Levy <span>Subscriptions</span></h1>
-  <div class="row">
-    <span id="who" class="muted"></span>
-    <button id="signIn">Sign in with wallet</button>
-    <button id="signOut" class="ghost" hidden>Sign out</button>
+<header class="app-header">
+  <div class="wrap narrow">
+    <a class="brand" href="/portal.html" aria-label="Levy customer portal"><img src="/public/logo.svg" alt="" width="21" height="22"><span class="wordmark">levy</span><span class="brand-tag">Portal</span></a>
+    <a class="nav-link" href="/">Merchant dashboard</a>
+    <div class="session" id="session" hidden>
+      <span id="who" class="who"></span>
+      <button id="signOut" class="ghost small">Sign out</button>
+    </div>
   </div>
-  <span class="muted" style="margin-left:auto"><a href="/">merchant dashboard</a></span>
 </header>
-<main id="main">
-  <p class="empty">Sign in with your wallet to see your subscriptions and invoices.</p>
+<main class="wrap narrow">
+  <p class="loading" id="booting">Loading...</p>
+  <section class="panel" id="signedOut" hidden>
+    <h2>Your subscriptions</h2>
+    <p class="muted" style="margin:0 0 14px">Sign in with the wallet you subscribed with to see your subscriptions and invoices, top up your allowance, and pause, resume or cancel. Signing is free and sends no transaction.</p>
+    <button id="signInMain">Sign in with wallet</button>
+  </section>
+  <div class="stack" id="main" hidden></div>
 </main>
+<footer class="app-footer">
+  <div class="wrap narrow">
+    <span>Levy &copy; 2026 &middot; <a href="https://getlevy.xyz">getlevy.xyz</a> &middot; <a href="https://getlevy.xyz/whitepaper.html">Whitepaper</a> &middot; <a href="https://getlevy.xyz/security.html">Security</a></span>
+    <span>Not audited yet.</span>
+  </div>
+</footer>
 
 <script src="/public/auth.js"></script>
 <script src="/public/wallet.js"></script>

@@ -539,6 +539,15 @@ describe("static frontend", () => {
     assert.equal(checkout.status, 200);
     assert.ok(checkout.body.includes("Levy Checkout"));
     assert.equal((await get("/public/wallet.js")).status, 200);
+
+    // The shared stylesheet and logo every page links.
+    for (const page of [dash, portal, checkout]) {
+      assert.ok(page.body.includes(`href="/public/app.css"`) && page.body.includes(`src="/public/logo.svg"`));
+    }
+    const css = await get("/public/app.css");
+    assert.equal(css.status, 200);
+    assert.ok(css.headers.get("content-type")?.includes("text/css"));
+    assert.equal((await get("/public/logo.svg")).status, 200);
   });
 
   it("sends a CSP on every page that forbids inline scripts, and the pages have none", async () => {
