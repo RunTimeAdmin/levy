@@ -22,10 +22,80 @@
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:site" content="@LevyOnArc">
 <link rel="stylesheet" href="style.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": "https://getlevy.xyz/#organization",
+      "name": "Levy",
+      "url": "https://getlevy.xyz",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://getlevy.xyz/og-image.png",
+        "width": 1200,
+        "height": 630
+      },
+      "sameAs": ["https://x.com/LevyOnArc"],
+      "contactPoint": {
+        "@type": "ContactPoint",
+        "email": "hello@getlevy.xyz",
+        "contactType": "customer service"
+      }
+    },
+    {
+      "@type": "WebSite",
+      "@id": "https://getlevy.xyz/#website",
+      "url": "https://getlevy.xyz",
+      "name": "Levy",
+      "description": "Pull-based USDC subscription billing on Arc",
+      "publisher": {"@id": "https://getlevy.xyz/#organization"}
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://getlevy.xyz/#product",
+      "name": "Levy",
+      "applicationCategory": "FinanceApplication",
+      "operatingSystem": "Web",
+      "description": "Pull-based USDC subscription billing protocol on Arc. Merchants define plans, subscribers approve a USDC allowance, and payments are pulled every billing cycle with a 1% protocol fee.",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD",
+        "description": "1% fee on collected payments only"
+      },
+      "provider": {"@id": "https://getlevy.xyz/#organization"},
+      "featureList": [
+        "Pull-based USDC subscription billing",
+        "On-chain dunning and retry logic",
+        "Ed25519-signed webhooks",
+        "Merchant dashboard with MRR tracking",
+        "Customer portal with self-service controls",
+        "Hosted checkout page",
+        "Invoice records and CSV export",
+        "1% fee on collected payments"
+      ]
+    },
+    {
+      "@type": "WebPage",
+      "@id": "https://getlevy.xyz/",
+      "url": "https://getlevy.xyz/",
+      "name": "Levy: Recurring USDC billing on Arc",
+      "description": "Levy is pull-based USDC subscription billing on Arc. Merchants define plans, subscribers approve a USDC allowance, and payments are pulled every cycle.",
+      "isPartOf": {"@id": "https://getlevy.xyz/#website"},
+      "about": {"@id": "https://getlevy.xyz/#product"},
+      "provider": {"@id": "https://getlevy.xyz/#organization"}
+    }
+  ]
+}
+</script>
 </head>
 <body>
 
-<header class="site-header">
+<a href="#main" class="skip-link">Skip to main content</a>
+
+<header class="site-header" role="banner">
   <div class="wrap">
     <a class="brand" href="#top" aria-label="Levy home"><img src="logo.svg" alt="" width="22" height="24"><span class="wordmark">levy</span></a>
     <nav>
@@ -40,11 +110,11 @@
   </div>
 </header>
 
-<main>
-  <section class="hero">
+<main id="main" role="main">
+  <section class="hero" aria-labelledby="hero-heading">
     <div class="wrap">
       <p class="kicker">Pull-based subscription billing on Arc</p>
-      <h1>Recurring revenue, collected in USDC.</h1>
+      <h1 id="hero-heading">Recurring revenue, collected in USDC.</h1>
       <p class="lede">Levy pulls subscription payments in USDC every billing cycle. Your customers approve an allowance up front instead of paying each invoice. You collect on schedule, without chasing invoices or retrying cards by hand.</p>
       <p class="hero-actions">
         <a class="btn btn-primary" href="mailto:hello@getlevy.xyz?subject=Levy%20early%20access">Get early access</a>
@@ -52,7 +122,12 @@
       </p>
       <p class="hero-note">Built for Arc. Settled in USDC. Open-source contracts at launch.</p>
       <figure class="shot">
-        <a href="screenshot-dashboard.png"><img src="screenshot-dashboard.png" width="960" height="856" alt="The Levy merchant dashboard: MRR, active subscriptions, charge success rate and dunning queue, a table of subscriptions with customer references, status and allowance runway, and the dunning queue."></a>
+        <a href="screenshot-dashboard.png">
+          <picture>
+            <source srcset="screenshot-dashboard.webp" type="image/webp">
+            <img src="screenshot-dashboard.png" width="960" height="856" alt="The Levy merchant dashboard: MRR, active subscriptions, charge success rate and dunning queue, a table of subscriptions with customer references, status and allowance runway, and the dunning queue.">
+          </picture>
+        </a>
         <figcaption>The merchant dashboard: revenue, every subscription with your own customer reference, how many cycles each customer's allowance still covers, and the dunning queue. Demo data on a local test chain.</figcaption>
       </figure>
     </div>
@@ -108,7 +183,12 @@
         </div>
       </div>
       <figure class="shot shot-narrow">
-        <a href="screenshot-checkout.png"><img src="screenshot-checkout.png" width="560" height="671" loading="lazy" alt="The Levy checkout: a $29 monthly plan, the merchant and contract addresses, a field for how many cycles to approve with the total in USDC, the customer's balance and current allowance, and a note that Levy can only pull the plan's price each cycle."></a>
+        <a href="screenshot-checkout.png">
+          <picture>
+            <source srcset="screenshot-checkout.webp" type="image/webp">
+            <img src="screenshot-checkout.png" width="560" height="671" loading="lazy" alt="The Levy checkout: a $29 monthly plan, the merchant and contract addresses, a field for how many cycles to approve with the total in USDC, the customer's balance and current allowance, and a note that Levy can only pull the plan's price each cycle.">
+          </picture>
+        </a>
         <figcaption>Checkout: the customer chooses how many cycles to approve, sees their balance and current allowance, and is told exactly what Levy can pull. Demo data on a local test chain.</figcaption>
       </figure>
     </div>
@@ -185,7 +265,7 @@
   </section>
 </main>
 
-<footer class="site-footer">
+<footer class="site-footer" role="contentinfo">
   <div class="wrap">
     <span>Levy &copy; 2026 &middot; <a href="mailto:hello@getlevy.xyz">hello@getlevy.xyz</a> &middot; <a href="whitepaper.html">Whitepaper</a> &middot; <a href="https://x.com/LevyOnArc" target="_blank" rel="noopener noreferrer">X @LevyOnArc</a> &middot; <a href="security.html">Security</a></span>
     <span class="fine">Live on Arc testnet. Not audited, not on mainnet.</span>

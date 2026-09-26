@@ -1,0 +1,5 @@
+# Levy marketing site
+User-agent: *
+Allow: /
+
+Sitemap: https://getlevy.xyz/sitemap.xml
