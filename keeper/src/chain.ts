@@ -43,7 +43,10 @@ export interface ChainClients {
 export function createClients(cfg: LevyConfig): ChainClients {
   const chain = { ...arcMainnet, id: cfg.chainId } as Chain;
   const account = privateKeyToAccount(cfg.keeperKey);
-  const transport = http(cfg.rpcUrl);
+  // Public Arc RPCs rate-limit bursts (measured on testnet: "rate limit
+  // exceeded" on eth_getLogs even after viem's default ~1s of retries), so
+  // back off for up to ~15s (1, 2, 4, 8s) before failing the cycle.
+  const transport = http(cfg.rpcUrl, { retryCount: 4, retryDelay: 1000 });
   const publicClient = createPublicClient({ chain, transport });
   const walletClient = createWalletClient({ account, chain, transport });
   const manager = getContract({

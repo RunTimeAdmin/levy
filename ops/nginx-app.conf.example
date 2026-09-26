@@ -1,0 +1,43 @@
+# Levy API and pages (dashboard, portal, checkout) behind a host nginx.
+#
+# The API container publishes on host loopback only (127.0.0.1:LEVY_API_PORT,
+# default 3001), so nginx on the same host proxies straight to it.
+#
+#   cp ops/nginx-app.conf.example /etc/nginx/sites-available/app.getlevy.xyz
+#   ln -s /etc/nginx/sites-available/app.getlevy.xyz /etc/nginx/sites-enabled/
+#   nginx -t && systemctl reload nginx
+#   certbot --nginx -d app.getlevy.xyz
+#
+# Run `nginx -t` before every reload. A bad config takes down every site this
+# nginx serves, not just this one.
+
+# POST /api/auth/challenge is the one unauthenticated endpoint that writes
+# (api/README.md), so it is rate-limited per client IP: 10 a minute, bursts of 5.
+limit_req_zone $binary_remote_addr zone=levy_auth:10m rate=10r/m;
+
+server {
+    server_name app.getlevy.xyz;
+
+    # Requests are small JSON (sign-in, webhook registration).
+    client_max_body_size 64k;
+
+    location = /api/auth/challenge {
+        limit_req zone=levy_auth burst=5 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:3001;
+        include /etc/nginx/proxy_params;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:3001;
+        include /etc/nginx/proxy_params;
+    }
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+
+    # certbot --nginx adds the TLS listener and the redirect. Until it runs, the
+    # ACME challenge needs plain port 80.
+    listen 80;
+    listen [::]:80;
+}

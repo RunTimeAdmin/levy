@@ -2,7 +2,7 @@
 
 Pull-based USDC subscription billing for Arc. Merchants define plans, subscribers approve a USDC allowance and subscribe, and a keeper triggers each cycle's pull. The protocol takes a 1% fee on collected payments.
 
-**Status:** contracts, keeper (charging, dunning, webhooks, allowance warnings), API with wallet sign-in, merchant dashboard, customer portal and checkout page are built and tested. Contracts: 54 tests green (47 unit + 7 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 55 tests green. API: 32 tests green. **Not yet deployed. Not audited.** Known open issues are listed in `SECURITY_REVIEW.md` §9.
+**Status:** contracts, keeper (charging, dunning, webhooks, allowance warnings), API with wallet sign-in, merchant dashboard, customer portal and checkout page are built and tested. Contracts: 54 tests green (47 unit + 7 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 55 tests green. API: 32 tests green. **Deployed on Arc testnet on 2026-09-26 for the M4 soak (see Deployments). Not on mainnet. Not audited.** Known open issues are listed in `SECURITY_REVIEW.md` §9.
 
 ## What's in the repo
 
@@ -82,9 +82,24 @@ forge script script/Deploy.s.sol --rpc-url arc_testnet             # simulate
 forge script script/Deploy.s.sol --rpc-url arc_testnet --broadcast # deploy
 ```
 
-Use `--rpc-url arc_mainnet` for mainnet, and add `--legacy` if fee estimation fails. `LEVY_USDC` and `LEVY_PERMIT2` override the Arc defaults. A deploy costs about 0.25 USDC of gas (simulated on testnet, 2026-09-25). Broadcast records land in `broadcast/`; commit the testnet and mainnet ones as the deployment record. If the keeper first starts more than `LEVY_LOOKBACK_BLOCKS` (default 5000, about 40 minutes) after the deploy, raise it to reach back to the deploy block.
+On Windows, `script/deploy-testnet.ps1` does the testnet broadcast for you: it asks for the deployer's key without echoing it, checks that the key belongs to the address you give and that the wallet holds enough USDC, and clears the key when forge exits.
 
-To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --build` (copy `ops/.env.example` first; `LEVY_PUBLIC_ORIGIN` is required). The API is published on the host's loopback only; put a TLS reverse proxy in front. `ops/keeper.service` is the systemd alternative for the keeper.
+Use `--rpc-url arc_mainnet` for mainnet, and add `--legacy` if fee estimation fails. `LEVY_USDC` and `LEVY_PERMIT2` override the Arc defaults. The testnet deploy used 3.65M gas at 32.5 gwei, about 0.12 USDC (2026-09-26). Broadcast records land in `broadcast/`; commit the testnet and mainnet ones as the deployment record. If the keeper first starts more than `LEVY_LOOKBACK_BLOCKS` (default 5000, about 40 minutes) after the deploy, raise it to reach back to the deploy block.
+
+To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --build` (copy `ops/.env.example` first; `LEVY_PUBLIC_ORIGIN` is required). The API is published on the host's loopback only; put a TLS reverse proxy in front (`ops/nginx-app.conf.example` is the nginx site the testnet host uses). `ops/keeper.service` is the systemd alternative for the keeper.
+
+## Deployments
+
+**Arc testnet** (chain 5042002), deployed 2026-09-26 in block 64020204. The record is `broadcast/Deploy.s.sol/5042002/run-latest.json`.
+
+| Contract | Address | Transaction |
+|---|---|---|
+| SubscriptionManager | `0x9df75ab83bde215f773af982af95b00646318189` | `0x366065bfc01f2622d8d875ce344aa31c24fb06e5722a65bb1fa837a3bde6b93c` |
+| FeeRouter | `0x79c6bb4030c688e64efdd2d33f0178e63fdf0b9f` | `0x3ab7a73694113a5cc9c24a46ce033a56a2262987a0d9a2332b259e3cd435241e` |
+
+- Deployer and treasury: `0xe305652DB35Ed45A567538438c9B29ede7097162` (testnet only; mainnet uses the Safe).
+- Code: the on-chain runtime bytecode of both contracts matches a local build of the contract sources at `e897e1b` byte for byte, outside the constructor-set immutables. Source is not yet verified on the explorer.
+- Soak host: keeper and API at `https://app.getlevy.xyz`.
 
 ## Arc facts (verified 2026-09-25, see `VERIFICATION.md`)
 
@@ -96,7 +111,7 @@ To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file 
 
 ## Before mainnet
 
-- Testnet deploy and a soak of at least a week (M4).
+- A soak of at least a week on the testnet deployment (M4; deployed 2026-09-26).
 - Treasury multisig signers set (`ops/treasury-multisig.md`).
 - Permit2 end to end against Arc (tested against a mock only so far).
 - Open items in `SECURITY_REVIEW.md` §9, and an external audit.
@@ -107,7 +122,7 @@ To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file 
 - **M1:** contracts + tests (done; testnet deploy moves to M4)
 - **M2:** keeper service, indexer, dunning engine (done)
 - **M3:** signed webhooks, API, merchant dashboard, customer portal, checkout, invoicing (done, except a plan-creation UI)
-- **M4:** testnet deploy and soak, then mainnet deploy
+- **M4:** testnet deploy (done 2026-09-26) and soak, then mainnet deploy
 - **M5:** LEVY token: fee split to buyback-and-burn and staking, staking fee-tier discounts, premium feature gating
 
 ## License

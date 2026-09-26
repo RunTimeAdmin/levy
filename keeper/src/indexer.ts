@@ -109,12 +109,13 @@ export class Indexer {
     const pub = this.clients.public;
     const usdc = this.cfg.usdcAddress;
     const manager = this.cfg.managerAddress;
-    const batches = await Promise.all([
-      pub.getLogs({ address: manager, fromBlock, toBlock }),
-      pub.getLogs({ address: usdc, event: TRANSFER_EVENT, args: { to: manager }, fromBlock, toBlock }),
-      pub.getLogs({ address: usdc, event: TRANSFER_EVENT, args: { from: manager }, fromBlock, toBlock }),
-      pub.getLogs({ address: usdc, event: APPROVAL_EVENT, args: { spender: manager }, fromBlock, toBlock }),
-    ]);
+    // One at a time: four parallel queries per chunk trip public RPC rate limits.
+    const batches = [
+      await pub.getLogs({ address: manager, fromBlock, toBlock }),
+      await pub.getLogs({ address: usdc, event: TRANSFER_EVENT, args: { to: manager }, fromBlock, toBlock }),
+      await pub.getLogs({ address: usdc, event: TRANSFER_EVENT, args: { from: manager }, fromBlock, toBlock }),
+      await pub.getLogs({ address: usdc, event: APPROVAL_EVENT, args: { spender: manager }, fromBlock, toBlock }),
+    ];
     // Back into chain order, so events are handled as they happened.
     return (batches.flat() as unknown as RawLog[]).sort((a, b) =>
       a.blockNumber === b.blockNumber ? a.logIndex - b.logIndex : a.blockNumber < b.blockNumber ? -1 : 1

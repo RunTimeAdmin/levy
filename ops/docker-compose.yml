@@ -10,6 +10,10 @@
 # registrations and sign-in challenges and sessions. SQLite in WAL mode handles
 # this fine on a single host (both set busy_timeout).
 
+# Fixed project name: without it compose names the project after this folder
+# ("ops"), which is too generic on a shared host.
+name: levy
+
 services:
   keeper:
     build:
