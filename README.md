@@ -13,7 +13,7 @@ Pull-based USDC subscription billing for Arc. Merchants define plans, subscriber
 | `script/Deploy.s.sol` | Deploys both contracts to Arc testnet or mainnet, with safety checks |
 | `keeper/` | TypeScript service: indexes events, charges due subscriptions, runs dunning, delivers signed webhooks, warns when allowances run low. See `keeper/README.md` |
 | `api/` | Fastify API plus the merchant dashboard, customer portal and checkout page. See `api/README.md` |
-| `ops/` | Dockerfiles, docker-compose, systemd unit, env example, monitoring runbook, treasury multisig plan |
+| `ops/` | Dockerfiles, docker-compose, systemd unit, env example, monitoring runbook, treasury multisig plan, and the testnet soak checklist (`testnet-soak.md`) with its tools |
 | `docs/` | Merchant guide and dunning email copy |
 | `site/` | Static landing page and whitepaper (`whitepaper.html`, with a PDF built from it) |
 | `SPEC.md`, `SECURITY_REVIEW.md`, `FEE_MATH_AUDIT.md`, `VERIFICATION.md` | Design spec, adversarial self-review, math audit, verified Arc facts |
@@ -111,7 +111,7 @@ To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file 
 
 ## Before mainnet
 
-- A soak of at least a week on the testnet deployment (M4; deployed 2026-09-26).
+- A soak of at least a week on the testnet deployment (M4; deployed 2026-09-26). Checklist and pass criteria: `ops/testnet-soak.md`.
 - Treasury multisig signers set (`ops/treasury-multisig.md`).
 - Permit2 end to end against Arc (tested against a mock only so far).
 - Open items in `SECURITY_REVIEW.md` §9, and an external audit.

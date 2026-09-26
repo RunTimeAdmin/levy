@@ -1,0 +1,31 @@
+# Soak-only services (ops/testnet-soak.md). Not part of production.
+#
+#   cd /docker/levy
+#   mkdir -p ops/soak/data && chown 1000:1000 ops/soak/data
+#   docker compose -f ops/soak/docker-compose.yml up -d
+#
+# nginx on the host proxies https://app.getlevy.xyz/soak-hooks to 127.0.0.1:3002
+# (the location block is in ops/testnet-soak.md). Remove both after the soak.
+
+name: levy-soak
+
+services:
+  hooks:
+    image: node:24-slim
+    container_name: levy-soak-hooks
+    command: ["node", "/soak/webhook-receiver.mjs"]
+    user: "1000:1000"
+    environment:
+      PUBLIC_KEY_URL: https://app.getlevy.xyz/api/webhooks/public-key
+      LOG_PATH: /data/hooks.jsonl
+    volumes:
+      - ./webhook-receiver.mjs:/soak/webhook-receiver.mjs:ro
+      - ./data:/data
+    ports:
+      - "127.0.0.1:3002:3002"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
