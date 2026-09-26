@@ -12,6 +12,11 @@ const short = (a) => a ? a.slice(0, 6) + "..." + a.slice(-4) : "";
 const usd = (s) => "$" + s.replace(/(\.\d\d\d*?)0+$/, "$1");
 const merchant = () => LevyAuth.address;
 const api = (p, opts) => LevyAuth.api(p, opts);
+let chainId = null; // from /api/config, for explorer links
+function txCell(hash) {
+  const url = LevyWallet.txUrl(chainId, hash);
+  return url ? `<a href="${url}" target="_blank" rel="noopener">${short(hash)}</a>` : short(hash);
+}
 
 function pill(text, cls) { return `<span class="pill ${cls || text}">${text}</span>`; }
 // The subscription's merchant reference: readable text when it is ASCII
@@ -30,12 +35,16 @@ function showSession() {
   $("who").textContent = m ? `signed in as ${short(m)}` : "";
   $("signIn").hidden = !!m;
   $("signOut").hidden = !m;
+  // Signed out, the panels would be empty shells: show one message instead.
+  $("signedOut").hidden = !!m;
+  document.querySelectorAll("main > :not(#signedOut)").forEach((el) => { el.hidden = !m; });
 }
 
 async function load() {
   showSession();
   const m = merchant();
   if (!m) return;
+  chainId = (await fetch("/api/config").then((r) => r.json())).chainId;
   await Promise.all([loadMetrics(m), loadSubs(m), loadDunning(m), loadHooks(m), loadInvoices(m)]);
 }
 
@@ -111,7 +120,7 @@ async function loadInvoices(m) {
     <th>Invoice ref</th><th>Sub</th><th>Amount</th><th>Fee</th><th>Tx</th></tr></thead><tbody>` +
     rows.slice(0, 50).map(c => `<tr><td class="addr">${short(c.invoiceRef)}</td>
       <td>${c.subId}</td><td>${usd(c.amountUsdc)}</td><td>${usd(c.feeUsdc)}</td>
-      <td class="addr">${short(c.txHash)}</td></tr>`).join("") +
+      <td class="addr">${txCell(c.txHash)}</td></tr>`).join("") +
     `</tbody></table>`;
 }
 

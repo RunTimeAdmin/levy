@@ -59,14 +59,22 @@ async function init() {
   row(dl, "Merchant", plan.merchant, true);
   if (ref.label) row(dl, "Reference", ref.label, true);
   row(dl, "Levy contract", cfg.managerAddress, true);
-  row(dl, "Network", `chain ${cfg.chainId}`);
+  row(dl, "Network", LevyWallet.chainName(cfg.chainId));
   card.append(h, p, dl);
   $("pay").hidden = false;
   showBudget();
 }
 
-function cycles() { return Math.max(1, Math.min(120, Math.trunc(+$("cycles").value) || 12)); }
-function showBudget() { $("budget").textContent = `= ${usdc(BigInt(plan.price) * BigInt(cycles()))} USDC`; }
+/** The cycles field as a whole number from 1 to 120, or null when it is not one. */
+function cycles() {
+  const v = $("cycles").value.trim();
+  return /^\d+$/.test(v) && +v >= 1 && +v <= 120 ? +v : null;
+}
+function showBudget() {
+  const n = cycles();
+  $("budget").textContent = n === null ? "Enter a whole number from 1 to 120." : `= ${usdc(BigInt(plan.price) * BigInt(n))} USDC`;
+  $("budget").className = n === null ? "invalid" : "muted";
+}
 $("cycles").oninput = showBudget;
 
 async function refreshWallet() {
@@ -98,6 +106,7 @@ $("connect").onclick = async () => {
 };
 
 $("go").onclick = async () => {
+  if (cycles() === null) { status("Enter a whole number of billing cycles from 1 to 120.", "bad"); return; }
   $("go").disabled = true;
   try {
     if (!approved) {

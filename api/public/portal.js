@@ -6,6 +6,10 @@ const short = (a) => a ? a.slice(0, 6) + "..." + a.slice(-4) : "";
 // further digits only when they are not zero, so no amount is misstated.
 const usd = (s) => "$" + s.replace(/(\.\d\d\d*?)0+$/, "$1");
 let cfg; // chain id and contract addresses, for the wallet actions
+function txCell(hash) {
+  const url = LevyWallet.txUrl(cfg.chainId, hash);
+  return url ? `<a href="${url}" target="_blank" rel="noopener">${short(hash)}</a>` : short(hash);
+}
 
 // What the contract allows in each state (SubscriptionManager.sol).
 const ACTIONS = { trial: ["pause", "cancel"], active: ["pause", "cancel"], past_due: ["pause", "cancel"], paused: ["resume", "cancel"] };
@@ -123,7 +127,7 @@ async function load() {
     const detail = await LevyAuth.api(`/api/subscriptions/${sub.subId}`);
     const invoices = (detail.charges || []).map(c => `<tr>
       <td class="addr">${short(c.invoiceRef)}</td><td>${usd(c.amountUsdc)}</td>
-      <td>${usd(c.feeUsdc)}</td><td class="addr">${short(c.txHash)}</td></tr>`).join("");
+      <td class="addr">${txCell(c.txHash)}</td></tr>`).join("");
     return `<div class="sub">
       <h2>Subscription #${sub.subId} <span class="pill ${sub.statusName}" data-pill="${sub.subId}">${sub.statusName}</span></h2>
       <div class="grid">
@@ -135,7 +139,7 @@ async function load() {
       <div class="row" data-actions="${sub.subId}"></div>
       <p class="note" data-status="${sub.subId}">Pause, resume and cancel are wallet transactions from the account you signed in with.</p>
       <h3 style="font-size:13px;margin:12px 0 4px">Invoice history</h3>
-      ${invoices ? `<table><thead><tr><th>Invoice</th><th>Amount</th><th>Fee</th><th>Tx</th></tr></thead><tbody>${invoices}</tbody></table>`
+      ${invoices ? `<table><thead><tr><th>Invoice</th><th>Amount</th><th>Tx</th></tr></thead><tbody>${invoices}</tbody></table>`
                  : `<p class="muted">No charges yet.</p>`}
     </div>`;
   }));

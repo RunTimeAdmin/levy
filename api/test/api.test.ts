@@ -295,6 +295,17 @@ describe("public endpoints", () => {
     assert.deepEqual(r.json, { chainId: 5042002, managerAddress: MANAGER, usdcAddress: USDC });
   });
 
+  it("GET /api/config treats the zero-address placeholder as unset", async () => {
+    const zero = `0x${"0".repeat(40)}`;
+    const local = buildServer({ dbPath: DB, webhookKeyPath: KEY, origin: ORIGIN, chainId: 5042002, managerAddress: zero, usdcAddress: USDC });
+    try {
+      const r = await local.inject({ method: "GET", url: "/api/config" });
+      assert.deepEqual(r.json(), { chainId: 5042002, managerAddress: null, usdcAddress: USDC });
+    } finally {
+      await local.close();
+    }
+  });
+
   it("GET /api/plans", async () => {
     const r = await get("/api/plans");
     assert.equal(r.status, 200);

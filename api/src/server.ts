@@ -81,6 +81,11 @@ function isAddress(v: unknown): v is string {
   return typeof v === "string" && /^0x[0-9a-fA-F]{40}$/.test(v);
 }
 
+/** A contract address the pages can use: null when unset, malformed or the zero placeholder. */
+function contractAddress(v: unknown): string | null {
+  return isAddress(v) && !/^0x0{40}$/.test(v) ? v : null;
+}
+
 function sameAddress(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
 }
@@ -116,8 +121,8 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   // on-chain addresses.
   app.get("/api/config", async () => ({
     chainId: opts.chainId,
-    managerAddress: isAddress(opts.managerAddress) ? opts.managerAddress : null,
-    usdcAddress: isAddress(opts.usdcAddress) ? opts.usdcAddress : null,
+    managerAddress: contractAddress(opts.managerAddress),
+    usdcAddress: contractAddress(opts.usdcAddress),
   }));
 
   // ---- plans (read-only mirror of the on-chain plan registry) ----

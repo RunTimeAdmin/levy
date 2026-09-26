@@ -21,6 +21,10 @@ const LevyWallet = (() => {
     5042002: { chainName: "Arc Testnet", rpcUrls: ["https://rpc.testnet.arc.io"], blockExplorerUrls: ["https://explorer.testnet.arc.io"] },
   };
   const explorer = (chainId) => CHAINS[chainId]?.blockExplorerUrls[0] ?? null;
+  const chainName = (chainId) => CHAINS[chainId]?.chainName ?? `chain ${chainId}`;
+  /** Explorer page of a transaction, or null (no explorer for the chain, or not a tx hash). */
+  const txUrl = (chainId, hash) =>
+    explorer(chainId) && /^0x[0-9a-fA-F]{64}$/.test(hash) ? `${explorer(chainId)}/tx/${hash}` : null;
 
   const word = (n) => BigInt(n).toString(16).padStart(64, "0");
   const addr = (a) => a.toLowerCase().replace(/^0x/, "").padStart(64, "0");
@@ -87,5 +91,5 @@ const LevyWallet = (() => {
     return send(from, manager, SEL[action] + word(subId));
   };
 
-  return { connect, balanceOf, allowance, approve, subscribe, manage, explorer };
+  return { connect, balanceOf, allowance, approve, subscribe, manage, explorer, chainName, txUrl };
 })();
