@@ -129,4 +129,4 @@ To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file 
 
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE).
