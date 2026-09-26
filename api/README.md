@@ -129,5 +129,5 @@ differs from the keeper's makes every merchant's signature check fail.
 ## Tests
 
 ```bash
-npm test   # 32 tests, seeded temp DB, ephemeral port, real wallet signatures
+npm test   # 34 tests, seeded temp DB, ephemeral port, real wallet signatures
 ```
