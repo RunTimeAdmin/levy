@@ -130,7 +130,7 @@ levy/
 ├── keeper/             # indexer, charge loop, dunning, webhook delivery, allowance checks
 ├── api/                # Fastify API + merchant dashboard, customer portal, checkout
 ├── ops/                # Dockerfiles, docker-compose, systemd unit, .env example, monitoring runbook, multisig plan
-├── site/               # getlevy.xyz landing page (static)
+├── site/               # getlevy.xyz landing page and whitepaper (static)
 ├── docs/               # merchant guide, dunning copy
 ├── SPEC.md             # this doc
 └── VERIFICATION.md     # pre-mainnet fact checks with sources

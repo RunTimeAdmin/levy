@@ -1,0 +1,196 @@
+/* Levy whitepaper: long-form reading on the landing page's theme (style.css
+   loads first). Printing, and the PDF made from this page, switch to light. */
+
+:root {
+  --border-strong: #3a4454;
+  --code-bg: #121720;
+  --warn: #e5a54b;
+}
+
+.paper {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 56px 24px 80px;
+}
+
+.paper h1 {
+  font-size: 42px;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  margin: 0 0 18px;
+  text-wrap: balance;
+}
+
+.paper h2 {
+  font-size: 26px;
+  letter-spacing: -0.01em;
+  margin: 60px 0 16px;
+  scroll-margin-top: 84px;
+}
+
+.paper h3 {
+  font-size: 19px;
+  margin: 34px 0 10px;
+  scroll-margin-top: 84px;
+}
+
+.paper p { margin: 0 0 16px; }
+.paper ul, .paper ol { padding-left: 24px; margin: 0 0 16px; }
+.paper li { margin: 6px 0; }
+.paper strong { color: var(--text); }
+
+.paper .lede { margin-bottom: 26px; }
+
+.status, .note {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  font-size: 15.5px;
+  margin: 0 0 24px;
+}
+.status { border-color: var(--accent); background: var(--accent-dim); }
+.note p:last-child, .status p:last-child { margin-bottom: 0; }
+
+.pdf-link { margin: 0 0 32px; font-size: 15.5px; }
+
+/* Contents */
+
+.toc {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 24px;
+  margin: 0 0 12px;
+}
+.toc h2 { font-size: 15px; margin: 0 0 8px; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+.toc ol { margin: 0; padding-left: 22px; columns: 2; column-gap: 32px; font-size: 15.5px; }
+.toc li { margin: 3px 0; break-inside: avoid; }
+
+/* Abstract */
+
+.abstract {
+  border-left: 3px solid var(--accent);
+  border-radius: 0;
+  padding: 2px 0 2px 20px;
+  margin: 0 0 36px;
+}
+.abstract h2 { font-size: 15px; margin: 0 0 8px; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+
+/* Code, formulas, tables */
+
+.paper code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 0.86em;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 5px;
+  overflow-wrap: anywhere;
+}
+
+.paper pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  overflow-x: auto;
+  font-size: 14px;
+  line-height: 1.55;
+  margin: 0 0 18px;
+}
+.paper pre code { background: none; border: 0; padding: 0; font-size: inherit; overflow-wrap: normal; }
+
+.formula {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 15px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  margin: 0 0 18px;
+  overflow-x: auto;
+  white-space: pre;
+  line-height: 1.6;
+}
+
+.table-wrap { overflow-x: auto; margin: 6px 0 20px; }
+.paper table { width: 100%; border-collapse: collapse; font-size: 15px; }
+.paper th, .paper td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.paper th { color: var(--muted); font-weight: 600; font-size: 14px; }
+.paper td.num, .paper th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.paper caption { caption-side: bottom; text-align: left; color: var(--muted); font-size: 14px; padding-top: 10px; }
+
+/* Figures (inline SVG, colours from the variables so print can switch them) */
+
+.fig { margin: 28px 0; }
+.fig svg { display: block; width: 100%; height: auto; }
+.fig figcaption { color: var(--muted); font-size: 14px; margin-top: 10px; }
+.fig text { font-family: inherit; }
+.fig .box { fill: var(--card); stroke: var(--border-strong); stroke-width: 1; }
+.fig .box-acc { fill: var(--accent-dim); stroke: var(--accent); stroke-width: 1.2; }
+.fig .band { fill: none; stroke: var(--border-strong); stroke-width: 1; stroke-dasharray: 4 4; }
+.fig .lbl { fill: var(--text); font-size: 14px; font-weight: 600; }
+.fig .sub { fill: var(--muted); font-size: 12px; }
+.fig .ln { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+.fig .ln-acc { stroke: var(--accent); stroke-width: 1.5; fill: none; }
+.fig .dash { stroke-dasharray: 5 4; }
+.fig .warn-band { fill: var(--warn); opacity: 0.85; }
+.fig .dot { fill: var(--bg); stroke: var(--text); stroke-width: 1.5; }
+.ah { fill: var(--muted); }
+.ah-acc { fill: var(--accent); }
+
+.refs { font-size: 15px; }
+.refs li { overflow-wrap: anywhere; }
+
+.disclaimer { color: var(--muted); font-size: 14.5px; border-top: 1px solid var(--border); padding-top: 18px; margin-top: 48px; }
+
+@media (max-width: 640px) {
+  .paper { padding-top: 36px; }
+  .paper h1 { font-size: 31px; }
+  .paper h2 { font-size: 23px; margin-top: 48px; }
+  .toc ol { columns: 1; }
+  .paper pre, .formula { font-size: 12.5px; }
+  .paper table { font-size: 14px; }
+  .paper th, .paper td { padding: 8px 6px; }
+  .paper td.num, .paper th.num { white-space: normal; }
+  /* Figures keep a readable size and scroll sideways instead of shrinking. */
+  .fig { overflow-x: auto; }
+  .fig svg { min-width: 620px; }
+}
+
+/* Print and PDF: light theme, no site chrome, keep blocks whole. */
+
+@page { size: A4; margin: 18mm 16mm 20mm; }
+
+@media print {
+  :root {
+    --bg: #ffffff;
+    --bg-alt: #f5f7fa;
+    --card: #f6f8fa;
+    --text: #14181d;
+    --muted: #4a5361;
+    --accent: #1d8a5a;
+    --accent-dim: rgba(29, 138, 90, 0.09);
+    --border: #d9dee5;
+    --border-strong: #9aa4b2;
+    --code-bg: #f3f5f8;
+    --warn: #d4912c;
+  }
+  body { background: #fff; font-size: 10.5pt; line-height: 1.55; }
+  .site-header, .site-footer, .pdf-link { display: none; }
+  .paper { max-width: none; padding: 0; }
+  .paper h1 { font-size: 24pt; }
+  .paper h2 { font-size: 15pt; margin-top: 22pt; break-after: avoid; }
+  .paper h3 { font-size: 12pt; margin-top: 14pt; break-after: avoid; }
+  .paper pre, .formula { font-size: 8.8pt; white-space: pre-wrap; }
+  .paper table { font-size: 9.5pt; }
+  .abstract h2, .toc h2 { font-size: 9pt; margin: 0 0 6pt; }
+  .table-wrap { overflow: visible; }
+  .fig, .paper tr, .paper li, .paper pre, .formula, .note, .status, .toc, .abstract { break-inside: avoid; }
+  .status, .note, .toc ol { font-size: 10pt; }
+  .refs { font-size: 9.5pt; }
+  .disclaimer, .fig figcaption, .paper caption { font-size: 9pt; }
+  .paper a { color: inherit; text-decoration: none; }
+  .refs a { color: var(--accent); }
+}

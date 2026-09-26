@@ -20,6 +20,7 @@
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="The Levy logo and the line: Recurring revenue, collected in USDC.">
 <meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:site" content="@LevyOnArc">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -32,6 +33,8 @@
       <a href="#customers">For customers</a>
       <a href="#fee">Fee</a>
       <a href="#roadmap">Roadmap</a>
+      <a href="whitepaper.html">Whitepaper</a>
+      <a class="social" href="https://x.com/LevyOnArc" target="_blank" rel="noopener noreferrer" aria-label="Levy on X (@LevyOnArc)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg></a>
       <a class="btn btn-small" href="#access">Get early access</a>
     </nav>
   </div>
@@ -45,7 +48,7 @@
       <p class="lede">Levy pulls subscription payments in USDC every billing cycle. Your customers approve an allowance up front instead of paying each invoice. You collect on schedule, without chasing invoices or retrying cards by hand.</p>
       <p class="hero-actions">
         <a class="btn btn-primary" href="mailto:hello@getlevy.xyz?subject=Levy%20early%20access">Get early access</a>
-        <a class="link-quiet" href="#how">See how it works</a>
+        <a class="link-quiet" href="whitepaper.html">Read the whitepaper</a>
       </p>
       <p class="hero-note">Built for Arc. Settled in USDC. Open-source contracts at launch.</p>
       <figure class="shot">
@@ -84,18 +87,22 @@
       <p class="section-lede">Pull payments ask customers for trust. The contract limits what can be pulled, and customers can stop paying on their own, without asking you.</p>
       <div class="cards">
         <div class="card">
+          <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/></svg></span>
           <h3>They set the cap</h3>
           <p>The customer approves a USDC allowance for the number of cycles they choose. Levy can never pull more than that.</p>
         </div>
         <div class="card">
+          <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/></svg></span>
           <h3>Only the price, only when due</h3>
           <p>Each cycle the contract can pull the plan's price once, only to that plan's merchant, and never before the billing date. Prices are fixed, so they can't be raised on an existing subscription.</p>
         </div>
         <div class="card">
+          <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6"/></svg></span>
           <h3>Stop any time</h3>
           <p>Customers pause, resume or cancel in the customer portal with their own wallet. They can also revoke the allowance directly, and nothing more is pulled.</p>
         </div>
         <div class="card">
+          <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4"/><rect x="4" y="4" width="16" height="16" rx="3"/></svg></span>
           <h3>Every payment on record</h3>
           <p>Each charge is an on-chain transaction with an invoice reference, listed in the portal and visible on the block explorer.</p>
         </div>
@@ -120,18 +127,22 @@
       <h2>What comes with it</h2>
       <div class="cards">
         <div class="card">
+          <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 12a8 8 0 0114-5.3M20 12a8 8 0 01-14 5.3M17 4v3h-3M7 20v-3h3"/></svg></span>
           <h3>Dunning</h3>
           <p>When a pull fails, Levy retries on a schedule instead of dropping the subscription. The contract tracks failures on-chain and pauses the subscription only after repeated failures.</p>
         </div>
         <div class="card">
+          <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6l8 6 8-6M4 6h16v12H4z"/></svg></span>
           <h3>Webhooks</h3>
           <p>Every billing event reaches your endpoint: subscription created or changed, charge succeeded or failed, dunning started, paused, resumed, cancelled, and an early warning when a customer's allowance is running low. Each delivery carries an Ed25519 signature for verification.</p>
         </div>
         <div class="card">
+          <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 3h10v18l-5-3-5 3z"/></svg></span>
           <h3>Invoicing</h3>
           <p>Every charge is an invoice record with a reference, transaction hash, and block number. Export the full history as CSV for your books.</p>
         </div>
         <div class="card">
+          <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="2"/><path stroke-linecap="round" stroke-linejoin="round" d="M3 10h18M7 15h4"/></svg></span>
           <h3>Checkout and portal</h3>
           <p>A checkout link per plan, carrying your own customer reference. Customers see their subscriptions and pause, cancel or top up their allowance from their wallet.</p>
         </div>
@@ -164,14 +175,14 @@
       <h2>Get early access</h2>
       <p>Levy is heading into its testnet soak and is looking for its first merchants. If you run subscriptions and want to collect them in USDC, get in touch.</p>
       <p><a class="btn btn-primary" href="mailto:hello@getlevy.xyz?subject=Levy%20early%20access">Email hello@getlevy.xyz</a></p>
-      <p class="fine">For developers: the contracts will be open source, with the keeper, API and dashboards in the same repository. It opens as Levy approaches mainnet, and contract addresses are published at deployment.</p>
+      <p class="fine">For developers: the contracts will be open source, with the keeper, API and dashboards in the same repository. It opens as Levy approaches mainnet, and contract addresses are published at deployment. The <a href="whitepaper.html">whitepaper</a> (<a href="levy-whitepaper.pdf">PDF</a>) covers the design, security model and economics in full.</p>
     </div>
   </section>
 </main>
 
 <footer class="site-footer">
   <div class="wrap">
-    <span>Levy &copy; 2026 &middot; <a href="mailto:hello@getlevy.xyz">hello@getlevy.xyz</a></span>
+    <span>Levy &copy; 2026 &middot; <a href="mailto:hello@getlevy.xyz">hello@getlevy.xyz</a> &middot; <a href="whitepaper.html">Whitepaper</a> &middot; <a href="https://x.com/LevyOnArc" target="_blank" rel="noopener noreferrer">X @LevyOnArc</a></span>
     <span class="fine">Pre-release software. The contracts are not yet deployed or audited.</span>
   </div>
 </footer>

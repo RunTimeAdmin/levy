@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Levy Whitepaper: Pull-based USDC subscription billing on Arc</title>
+<meta name="description" content="The Levy whitepaper: how Levy collects recurring USDC payments on Arc from a one-time allowance, what the contract guarantees to customers and merchants, its accounting, security model, economics and limitations.">
+<link rel="canonical" href="https://getlevy.xyz/whitepaper.html">
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#0e1116">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Levy">
+<meta property="og:url" content="https://getlevy.xyz/whitepaper.html">
+<meta property="og:title" content="Levy Whitepaper: Pull-based USDC subscription billing on Arc">
+<meta property="og:description" content="How Levy collects recurring USDC payments from a one-time allowance, what the contract guarantees, and what it does not.">
+<meta property="og:image" content="https://getlevy.xyz/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The Levy logo and the line: Recurring revenue, collected in USDC.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:site" content="@LevyOnArc">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="paper.css">
+</head>
+<body>
+
+<svg width="0" height="0" aria-hidden="true" style="position:absolute">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="ah"/></marker>
+    <marker id="ah-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="ah-acc"/></marker>
+  </defs>
+</svg>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html" aria-label="Levy home"><img src="logo.svg" alt="" width="22" height="24"><span class="wordmark">levy</span></a>
+    <nav>
+      <a href="index.html">Home</a>
+      <a href="index.html#access">Early access</a>
+      <a class="social" href="https://x.com/LevyOnArc" target="_blank" rel="noopener noreferrer" aria-label="Levy on X (@LevyOnArc)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg></a>
+      <a class="btn btn-small" href="levy-whitepaper.pdf">Download PDF</a>
+    </nav>
+  </div>
+</header>
+
+<main class="paper">
+  <p class="kicker">Whitepaper &middot; Version 0.1 &middot; 25 September 2026</p>
+  <h1>Levy: pull-based subscription billing in USDC on Arc</h1>
+  <p class="lede">How Levy collects recurring payments from a one-time USDC allowance, what the contract guarantees to customers and merchants, and what it does not.</p>
+
+  <div class="status">
+    <p><strong>Status.</strong> Everything described here is built and tested. None of it is deployed or audited yet. The paper describes the contracts as of commit <code>e897e1b</code> and the services as of <code>9a27fbb</code>. Figures from our own measurements say how they were taken.</p>
+  </div>
+
+  <p class="pdf-link"><a href="levy-whitepaper.pdf">Download this paper as a PDF</a></p>
+
+  <section class="abstract">
+    <h2>Abstract</h2>
+    <p>Software is sold by subscription, yet stablecoin payments still work like invoices: the customer has to act every time a payment is due. Levy is a protocol for subscription billing in USDC on Arc. A customer approves a USDC allowance once, sized in billing cycles they choose. From then on a smart contract lets anyone trigger each payment when it falls due, and it can only collect the plan's price, once per billing date, for the plan's merchant. A failed payment is recorded on-chain instead of reverting. That lets an off-chain keeper run retries while the contract itself decides when a subscription is past due and when it pauses. The merchant receives 99% of each payment in the transaction that collects it; 1% goes to the protocol. Around the contract, Levy provides the services merchants expect from card billing: signed webhooks, invoice records, a dashboard, a customer portal and a hosted checkout. This paper describes the design, its accounting and security properties, its economics and its known limitations.</p>
+  </section>
+
+  <nav class="toc" aria-label="Contents">
+    <h2>Contents</h2>
+    <ol>
+      <li><a href="#introduction">Introduction</a></li>
+      <li><a href="#goals">Design goals</a></li>
+      <li><a href="#overview">System overview</a></li>
+      <li><a href="#protocol">Protocol</a></li>
+      <li><a href="#accounting">Accounting</a></li>
+      <li><a href="#security">Security model</a></li>
+      <li><a href="#services">Off-chain services</a></li>
+      <li><a href="#economics">Economics</a></li>
+      <li><a href="#limitations">Limitations</a></li>
+      <li><a href="#roadmap">Roadmap and future work</a></li>
+      <li><a href="#conclusion">Conclusion</a></li>
+      <li><a href="#appendix">Appendices and references</a></li>
+    </ol>
+  </nav>
+
+  <!-- 1 -->
+  <h2 id="introduction">1. Introduction</h2>
+
+  <h3>1.1 Subscriptions and the rails under them</h3>
+  <p>Most subscriptions run on cards. A card on file lets a merchant charge the customer every cycle without asking again, and that convenience is expensive. Stripe's published US pricing is 2.9% plus 30 cents per domestic card payment, 1.5% more for international cards and $15 per dispute, and its Billing product adds 0.7% of billing volume [1]. On a $29 monthly plan those list prices come to about $1.34 per payment, or 4.6%, before any dispute. A card payment can also be reversed weeks later through a chargeback.</p>
+  <p>Stablecoins remove most of that cost. A USDC transfer settles in seconds, is final and costs a fraction of a cent on a chain built for it. But a token transfer is a push payment: the customer's wallet has to sign each one. For a subscription, that means asking the customer to act every cycle, and every missed signature is a failed renewal. Merchants who accept stablecoins today mostly send an invoice each cycle and wait.</p>
+
+  <h3>1.2 Earlier approaches</h3>
+  <p>Recurring payments on EVM chains have been proposed before. The EIP-948 discussion and ERC-1337 (2018) described subscriptions in which the customer signs a replayable authorisation that the merchant later submits to the customer's smart-contract wallet [7, 8]. ERC-1337 is marked stagnant, and its design needs a contract wallet, which most customers do not have. Streaming protocols take another route and move value continuously, second by second. That suits payroll and vesting. Software billing, though, is priced per cycle, invoiced per payment and reconciled per customer, and merchants expect retries, prorated plan changes and a record of every charge.</p>
+
+  <h3>1.3 Levy's approach</h3>
+  <p>Levy builds on a primitive every ERC-20 token already has: the allowance [5]. The customer approves the Levy contract to spend an amount of USDC they choose (the checkout sizes it as a number of billing cycles) and subscribes to a plan. From then on the contract decides what may be pulled and when: at most the plan's price, once per billing date, for the plan's merchant. Anyone may trigger a payment that is due, and Levy runs a keeper that does so on schedule. A failed payment is written to the chain instead of reverting, so the contract, not an off-chain service, decides when a subscription is past due and when it stops. Around this contract Levy provides what merchants expect from card billing: dunning, signed webhooks, invoice records, a dashboard, a customer portal and a hosted checkout.</p>
+
+  <h3>1.4 Why Arc</h3>
+  <p>Arc is a layer-1 chain built around USDC. Four of its properties matter for billing:</p>
+  <ul>
+    <li><strong>USDC is the gas token.</strong> Customers, merchants and the keeper pay network fees in the same dollars they bill in. Nobody has to hold a second token.</li>
+    <li><strong>Fees are low and stable by design.</strong> Arc prices gas with EIP-1559 plus a moving average of block utilisation, targets about $0.001 for an ERC-20 transfer and caps the base fee [2, 12]. A billing operator can predict its costs.</li>
+    <li><strong>Finality is deterministic and takes under a second.</strong> Blocks are finalised by Malachite BFT consensus and are never reorganised [3]. A charge is final once it is mined, so the keeper needs no confirmation depth and a merchant can act on the webhook at once.</li>
+    <li><strong>It is EVM-compatible.</strong> USDC has an ERC-20 interface with 6 decimals at <code>0x3600&hellip;0000</code>, and Permit2 is deployed at its canonical address [4, 6].</li>
+  </ul>
+
+  <!-- 2 -->
+  <h2 id="goals">2. Design goals</h2>
+  <p>Levy was designed against five goals. Later sections show how each is met.</p>
+  <ol>
+    <li><strong>Bounded exposure.</strong> A customer can work out the most the contract will ever take from them: never more than their allowance, and never more than one plan price per billing date (&sect;6.2).</li>
+    <li><strong>No custody.</strong> Levy never holds funds at rest. Each payment is split between the merchant and the fee router in the transaction that collects it.</li>
+    <li><strong>Permissionless execution.</strong> The payment trigger is open to anyone. Levy's keeper is needed for timeliness, not for correctness: if it stops, charges wait, and nothing is lost or double-charged.</li>
+    <li><strong>Merchant-grade operations.</strong> Trials, dunning, prorated plan changes, invoice records, signed webhooks and customer references are part of the system, not left to each merchant.</li>
+    <li><strong>Exact accounting.</strong> Integer USDC units, rounding in a documented direction, and invariants checked by fuzzing.</li>
+  </ol>
+  <p>Out of scope: converting USDC to fiat, tax calculation, on-chain refunds, usage-based billing and currencies other than USDC.</p>
+
+  <!-- 3 -->
+  <h2 id="overview">3. System overview</h2>
+
+  <figure class="fig">
+    <svg viewBox="0 0 720 380" role="img" aria-labelledby="fig1t">
+      <title id="fig1t">Levy architecture: on-chain contracts and off-chain services</title>
+      <rect class="band" x="8" y="8" width="704" height="238" rx="10"/>
+      <text class="sub" x="22" y="30">On-chain (Arc)</text>
+      <rect class="band" x="8" y="262" width="704" height="110" rx="10"/>
+      <text class="sub" x="22" y="284">Off-chain services</text>
+
+      <rect class="box" x="20" y="62" width="150" height="56" rx="8"/>
+      <text class="lbl" x="95" y="86" text-anchor="middle">Subscriber</text>
+      <text class="sub" x="95" y="104" text-anchor="middle">wallet</text>
+
+      <rect class="box-acc" x="275" y="50" width="190" height="80" rx="8"/>
+      <text class="lbl" x="370" y="84" text-anchor="middle">SubscriptionManager</text>
+      <text class="sub" x="370" y="104" text-anchor="middle">plans, subscriptions, rules</text>
+
+      <rect class="box" x="550" y="40" width="150" height="50" rx="8"/>
+      <text class="lbl" x="625" y="62" text-anchor="middle">Merchant</text>
+      <text class="sub" x="625" y="79" text-anchor="middle">wallet</text>
+
+      <rect class="box" x="550" y="110" width="150" height="46" rx="8"/>
+      <text class="lbl" x="625" y="130" text-anchor="middle">FeeRouter</text>
+      <text class="sub" x="625" y="147" text-anchor="middle">holds the 1%</text>
+
+      <rect class="box" x="550" y="186" width="150" height="46" rx="8"/>
+      <text class="lbl" x="625" y="206" text-anchor="middle">Treasury</text>
+      <text class="sub" x="625" y="223" text-anchor="middle">Safe multisig</text>
+
+      <line class="ln" x1="170" y1="90" x2="273" y2="90" marker-end="url(#ah)"/>
+      <text class="sub" x="222" y="68" text-anchor="middle">approve,</text>
+      <text class="sub" x="222" y="82" text-anchor="middle">subscribe</text>
+      <line class="ln-acc" x1="465" y1="65" x2="548" y2="65" marker-end="url(#ah-acc)"/>
+      <text class="sub" x="506" y="57" text-anchor="middle">99%</text>
+      <line class="ln-acc" x1="465" y1="122" x2="548" y2="122" marker-end="url(#ah-acc)"/>
+      <text class="sub" x="506" y="114" text-anchor="middle">1%</text>
+      <line class="ln" x1="625" y1="156" x2="625" y2="184" marker-end="url(#ah)"/>
+      <text class="sub" x="633" y="175">sweep()</text>
+
+      <rect class="box" x="20" y="296" width="170" height="56" rx="8"/>
+      <text class="lbl" x="105" y="320" text-anchor="middle">API and apps</text>
+      <text class="sub" x="105" y="338" text-anchor="middle">dashboard, portal, checkout</text>
+
+      <rect class="box" x="275" y="296" width="190" height="56" rx="8"/>
+      <text class="lbl" x="370" y="320" text-anchor="middle">Keeper</text>
+      <text class="sub" x="370" y="338" text-anchor="middle">schedules charges, dunning</text>
+
+      <rect class="box" x="550" y="296" width="150" height="56" rx="8"/>
+      <text class="lbl" x="625" y="320" text-anchor="middle">Merchant backend</text>
+      <text class="sub" x="625" y="338" text-anchor="middle">receives webhooks</text>
+
+      <line class="ln-acc" x1="395" y1="294" x2="395" y2="132" marker-end="url(#ah-acc)"/>
+      <text class="sub" x="403" y="205">charge(subId)</text>
+      <line class="ln dash" x1="345" y1="132" x2="345" y2="294" marker-end="url(#ah)"/>
+      <text class="sub" x="337" y="205" text-anchor="end">events</text>
+      <line class="ln" x1="465" y1="324" x2="548" y2="324" marker-end="url(#ah)"/>
+      <text class="sub" x="506" y="316" text-anchor="middle">webhooks</text>
+      <line class="ln dash" x1="190" y1="324" x2="275" y2="324"/>
+      <text class="sub" x="232" y="316" text-anchor="middle">database</text>
+      <line class="ln dash" x1="150" y1="118" x2="150" y2="294"/>
+      <text class="sub" x="158" y="205">checkout and portal</text>
+    </svg>
+    <figcaption>Figure 1. Payments move only on-chain (green arrows), from the subscriber's allowance through the SubscriptionManager to the merchant and the FeeRouter in one transaction. Off-chain services decide when to call <code>charge</code> and tell merchants what happened.</figcaption>
+  </figure>
+
+  <p>There are four actors:</p>
+  <ul>
+    <li><strong>Merchant:</strong> creates plans from its wallet and receives 99% of each payment.</li>
+    <li><strong>Subscriber:</strong> approves a USDC allowance, subscribes, and can pause, resume or cancel.</li>
+    <li><strong>Keeper:</strong> an off-chain service that calls <code>charge</code> when payments fall due. Levy runs one; anyone can.</li>
+    <li><strong>Treasury:</strong> receives the protocol fee from the fee router. On mainnet it is a Safe multisig.</li>
+  </ul>
+  <p>The split between on-chain and off-chain follows one rule: anything that decides who pays what, and when, lives in the contract. Anything that only affects timing or communication lives off-chain.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Concern</th><th>Where it lives</th></tr></thead>
+    <tbody>
+      <tr><td>Plan terms and prices</td><td>Contract</td></tr>
+      <tr><td>Who may be charged, how much, from which date, and to whom</td><td>Contract</td></tr>
+      <tr><td>Failure count, past-due and auto-pause thresholds</td><td>Contract</td></tr>
+      <tr><td>The 99/1 split</td><td>Contract</td></tr>
+      <tr><td>When to call <code>charge</code>; the retry schedule</td><td>Keeper</td></tr>
+      <tr><td>Invoice records, metrics, allowance warnings</td><td>Keeper database and API</td></tr>
+      <tr><td>Notifying merchants</td><td>Signed webhooks</td></tr>
+      <tr><td>Emailing customers, refunds, tax</td><td>The merchant</td></tr>
+    </tbody>
+  </table></div>
+
+  <!-- 4 -->
+  <h2 id="protocol">4. Protocol</h2>
+  <p>The protocol is two contracts: <code>SubscriptionManager</code>, which holds plans and subscriptions and moves payments, and <code>FeeRouter</code>, which receives the protocol fee. Appendix A lists their interfaces.</p>
+
+  <h3>4.1 Units</h3>
+  <p>All amounts are 6-decimal USDC units through the ERC-20 interface: 1 USDC is 1,000,000 units. Arc's native gas balance uses 18 decimals, and those values never enter payment logic. Times are chain timestamps in seconds.</p>
+
+  <h3>4.2 Plans</h3>
+  <p>A merchant creates a plan with <code>createPlan(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed)</code> and becomes that plan's merchant.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Parameter</th><th>Meaning</th><th>Rule</th></tr></thead>
+    <tbody>
+      <tr><td><code>price</code></td><td>Price per cycle, in units</td><td>Above 0</td></tr>
+      <tr><td><code>cycleSeconds</code></td><td>Length of a billing cycle</td><td>1 day to 10 years</td></tr>
+      <tr><td><code>trialSeconds</code></td><td>Free trial before the first charge</td><td>Shorter than the cycle; 0 for none</td></tr>
+      <tr><td><code>graceSeconds</code></td><td>Informational</td><td>Not enforced; retries are scheduled off-chain</td></tr>
+      <tr><td><code>maxFailed</code></td><td>Failed charges before the subscription is past due</td><td>1 to 255</td></tr>
+    </tbody>
+  </table></div>
+  <p>Plans are immutable; there is no function to edit one. A merchant who wants a new price creates a new plan, and existing subscribers keep the old price unless they choose to switch (&sect;4.8). The one-day minimum cycle allows each subscription at most one billing date per day, which limits how quickly a mistaken approval could be spent (&sect;6.5). Cycles are fixed lengths in seconds, so a 30-day "month" drifts against calendar months.</p>
+
+  <h3>4.3 Subscriptions</h3>
+  <p>A subscription records its <code>subscriber</code>, <code>planId</code>, <code>start</code>, <code>nextChargeAt</code> (the next billing date), <code>failedAttempts</code>, proration <code>credit</code>, <code>chargeCount</code> and <code>status</code>. The status is one of TRIAL, ACTIVE, PAST_DUE, PAUSED or CANCELLED (Figure 2). A separate mapping, <code>subscriptionRef</code>, holds the merchant's 32-byte reference for the customer (&sect;4.10).</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 720 340" role="img" aria-labelledby="fig2t">
+      <title id="fig2t">Subscription states and transitions</title>
+      <text class="sub" x="85" y="20" text-anchor="middle">subscribe (trial plan)</text>
+      <line class="ln" x1="85" y1="28" x2="85" y2="58" marker-end="url(#ah)"/>
+      <text class="sub" x="330" y="20" text-anchor="middle">subscribe (first cycle paid)</text>
+      <line class="ln" x1="330" y1="28" x2="330" y2="58" marker-end="url(#ah)"/>
+
+      <rect class="band" x="12" y="40" width="690" height="216" rx="10"/>
+
+      <rect class="box" x="30" y="60" width="110" height="46" rx="8"/>
+      <text class="lbl" x="85" y="88" text-anchor="middle">TRIAL</text>
+      <rect class="box-acc" x="275" y="60" width="110" height="46" rx="8"/>
+      <text class="lbl" x="330" y="88" text-anchor="middle">ACTIVE</text>
+      <rect class="box" x="520" y="60" width="130" height="46" rx="8"/>
+      <text class="lbl" x="585" y="88" text-anchor="middle">PAST_DUE</text>
+      <rect class="box" x="275" y="190" width="110" height="46" rx="8"/>
+      <text class="lbl" x="330" y="218" text-anchor="middle">PAUSED</text>
+      <rect class="box" x="520" y="282" width="130" height="46" rx="8"/>
+      <text class="lbl" x="585" y="310" text-anchor="middle">CANCELLED</text>
+
+      <line class="ln-acc" x1="140" y1="83" x2="273" y2="83" marker-end="url(#ah-acc)"/>
+      <text class="sub" x="206" y="75" text-anchor="middle">first charge paid</text>
+      <line class="ln" x1="385" y1="74" x2="518" y2="74" marker-end="url(#ah)"/>
+      <text class="sub" x="452" y="66" text-anchor="middle">maxFailed failures</text>
+      <line class="ln-acc" x1="520" y1="94" x2="387" y2="94" marker-end="url(#ah-acc)"/>
+      <text class="sub" x="452" y="112" text-anchor="middle">charge succeeds</text>
+      <line class="ln" x1="310" y1="106" x2="310" y2="188" marker-end="url(#ah)"/>
+      <text class="sub" x="302" y="152" text-anchor="end">pause</text>
+      <line class="ln-acc" x1="350" y1="190" x2="350" y2="108" marker-end="url(#ah-acc)"/>
+      <text class="sub" x="358" y="152">resume</text>
+      <line class="ln" x1="560" y1="106" x2="388" y2="200" marker-end="url(#ah)"/>
+      <text class="sub" x="478" y="170">auto-pause at</text>
+      <text class="sub" x="478" y="184">2 &times; maxFailed</text>
+      <line class="ln" x1="585" y1="256" x2="585" y2="280" marker-end="url(#ah)"/>
+      <text class="sub" x="577" y="273" text-anchor="end">cancel, from any state (terminal)</text>
+    </svg>
+    <figcaption>Figure 2. Subscription states. Pause is also available from TRIAL and PAST_DUE, and a trial whose first charge keeps failing reaches PAST_DUE the same way an active subscription does. Only CANCELLED is final.</figcaption>
+  </figure>
+
+  <h3>4.4 Subscribing</h3>
+  <p>The subscriber calls <code>subscribe(planId, ref)</code>. The subscriber is always the caller, so nobody can subscribe someone else. If the plan has a trial, the subscription starts in TRIAL and its first billing date is the end of the trial. Otherwise billing is in advance: the first cycle is collected in the same transaction, the next billing date is one cycle later, and if the payment fails the whole subscribe reverts. A customer either pays for the cycle they are entering or does not subscribe.</p>
+  <p>There are two ways to authorise payments:</p>
+  <ul>
+    <li><strong>Approve, then subscribe.</strong> An ERC-20 <code>approve</code> to the SubscriptionManager, then <code>subscribe</code>: two transactions. The hosted checkout walks the customer through both and suggests 12 cycles' worth, added to any allowance they already gave Levy. Levy's own interfaces never ask for an unlimited allowance.</li>
+    <li><strong>Permit2.</strong> <code>subscribeWithPermit2(planId, ref, permit, signature)</code> grants the allowance through Permit2 [6] with an EIP-712 signature [9] and subscribes in one transaction. The contract checks that the permit names itself as spender and USDC as the token. Only the signer can submit it: the permit does not name a plan, so a third party who could relay it could also choose the plan.</li>
+  </ul>
+
+  <h3>4.5 Charging</h3>
+  <p>Once a subscription's billing date has passed, anyone may call <code>charge(subId)</code>:</p>
+<pre><code>charge(s):
+  require s.status in {TRIAL, ACTIVE, PAST_DUE}
+  require now &gt;= s.nextChargeAt
+  if collect(s, plan):
+      s.nextChargeAt += plan.cycleSeconds      // from the old date, not from now
+      s.failedAttempts = 0
+      if s.status in {TRIAL, PAST_DUE}: s.status = ACTIVE
+  else:
+      s.failedAttempts += 1                    // emits ChargeFailed; no revert
+      if s.failedAttempts &gt;= maxFailed:     s.status = PAST_DUE
+      if s.failedAttempts &gt;= 2 * maxFailed: s.status = PAUSED   // emits AutoPaused
+
+collect(s, plan):                               // shared by subscribe, charge, changePlan
+  if s.credit &gt;= plan.price:
+      s.credit -= plan.price; due = 0; fee = 0 // cycle paid from credit
+  else:
+      due = plan.price - s.credit
+      if not pull(s.subscriber, due): return false   // nothing changed
+      s.credit = 0
+      fee = floor(due / 100)
+      transfer(merchant, due - fee)
+      transfer(feeRouter, fee)
+  s.chargeCount += 1                           // emits Charged
+  return true</code></pre>
+  <p>Some consequences of this design:</p>
+  <ul>
+    <li><strong>No funds at rest.</strong> The pull goes into the contract and straight back out to the merchant and the fee router in the same transaction.</li>
+    <li><strong>The schedule does not drift.</strong> A successful charge moves the billing date forward by exactly one cycle from its previous value. A late call does not shift later dates. If the keeper misses several billing dates, each needs its own call and each collects one cycle.</li>
+    <li><strong>Failures are recorded, not reverted.</strong> A pull fails when the subscriber lacks the balance or the allowance. The call still succeeds, the failure count goes up and <code>ChargeFailed</code> is emitted, so the failure is on the record and the keeper's transaction is not wasted on a revert.</li>
+    <li><strong>Two allowance sources.</strong> The pull tries the direct ERC-20 allowance first, then a Permit2 allowance, and stops at the first that succeeds.</li>
+    <li><strong>Every charge has an invoice reference.</strong> <code>Charged(subId, amount, fee, invoiceRef, chargeCount)</code> carries <code>invoiceRef = keccak256(abi.encode(subId, chargeCount))</code>, a deterministic reference unique to that charge.</li>
+  </ul>
+
+  <h3>4.6 Dunning</h3>
+  <p>Dunning, the process of recovering failed payments, is split between the chain and the keeper. The contract holds the thresholds: at <code>maxFailed</code> failures a subscription becomes PAST_DUE and can still be charged; at twice that, <code>charge</code> itself pauses it. No off-chain service decides to stop billing a customer. The keeper holds the schedule: by default it retries 1 day after the first failure, 3 days after the second and 7 days after each later one (configurable per deployment). A success at any point resets the failure count, returns the subscription to ACTIVE and moves the billing date one cycle past the missed one.</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 720 140" role="img" aria-labelledby="fig3t">
+      <title id="fig3t">Dunning timeline for a plan with maxFailed of 3</title>
+      <text class="sub" x="92" y="36" text-anchor="middle">retrying</text>
+      <text class="sub" x="417" y="36" text-anchor="middle">PAST_DUE, still retried</text>
+      <text class="sub" x="700" y="36" text-anchor="end">auto-paused</text>
+      <line class="ln" x1="40" y1="80" x2="690" y2="80"/>
+      <rect class="warn-band" x="144" y="76" width="546" height="8" rx="2"/>
+      <circle class="dot" cx="40" cy="80" r="6"/><text class="sub" x="40" y="62" text-anchor="middle">1</text><text class="sub" x="40" y="106" text-anchor="middle">0</text>
+      <circle class="dot" cx="66" cy="80" r="6"/><text class="sub" x="66" y="62" text-anchor="middle">2</text><text class="sub" x="66" y="106" text-anchor="middle">1</text>
+      <circle class="dot" cx="144" cy="80" r="6"/><text class="sub" x="144" y="62" text-anchor="middle">3</text><text class="sub" x="144" y="106" text-anchor="middle">4</text>
+      <circle class="dot" cx="326" cy="80" r="6"/><text class="sub" x="326" y="62" text-anchor="middle">4</text><text class="sub" x="326" y="106" text-anchor="middle">11</text>
+      <circle class="dot" cx="508" cy="80" r="6"/><text class="sub" x="508" y="62" text-anchor="middle">5</text><text class="sub" x="508" y="106" text-anchor="middle">18</text>
+      <circle class="dot" cx="690" cy="80" r="6"/><text class="sub" x="690" y="62" text-anchor="middle">6</text><text class="sub" x="690" y="106" text-anchor="middle">25</text>
+      <text class="sub" x="365" y="130" text-anchor="middle">days after the first failed charge</text>
+    </svg>
+    <figcaption>Figure 3. A plan with <code>maxFailed</code> = 3 under the default retry schedule, assuming no retry succeeds. Numbered dots are failed attempts. The subscription is past due 4 days after the first failure and pauses itself after 25.</figcaption>
+  </figure>
+
+  <p>Merchants receive <code>charge.failed</code>, <code>dunning.started</code> and <code>subscription.paused</code> webhooks and contact the customer themselves. Levy sends no email to subscribers.</p>
+
+  <h3>4.7 Pause, resume and cancel</h3>
+  <p>Both the subscriber and the merchant can pause, resume and cancel a subscription. Nothing is charged while it is paused, and days already paid for keep running. Resuming is a fresh start: if the billing date passed during the pause, it moves to the moment of resuming, so paused cycles are never billed and an overdue cycle is forgiven, and the failure count resets. Cancelling is final: a cancelled subscription can never be charged or resumed.</p>
+  <div class="note"><p>Because the merchant can also resume, a pause is shared between the two parties, not a lock the customer holds. A customer's hard stops are cancelling and reducing or revoking the allowance. Refunds are the merchant's policy, paid from the merchant's wallet; the contract has no refund function.</p></div>
+
+  <h3>4.8 Plan changes and proration</h3>
+  <p>A subscriber can move to another plan from the same merchant with <code>changePlan(subId, newPlanId)</code>. Only the subscriber can call it, and a plan from a different merchant is refused. The new plan starts and is billed at once, less credit for unused paid time on the old plan:</p>
+  <div class="formula">r      = min(nextChargeAt - now, cycle_old)   if chargeCount &gt; 0 and nextChargeAt &gt; now
+       = 0                                    otherwise
+credit = credit + floor(price_old * r / cycle_old)</div>
+  <p>The contract then collects the new plan's first cycle, spending credit before pulling anything, sets the next billing date one new cycle ahead, resets the failure count and marks the subscription ACTIVE. If the pull fails, the whole change reverts.</p>
+  <p>These rules keep credit honest. It is earned only for time that was paid for, so trial time earns none. One change adds at most one old-plan price. It is added to existing credit rather than replacing it. It is only ever spent with the merchant who received the USDC behind it. The invariant suite checks that a subscription's credit never exceeds what it has paid (&sect;5.2).</p>
+  <ul>
+    <li><strong>Upgrade.</strong> Ten days into a $30, 30-day plan, the customer moves to a $60, 30-day plan. The 20 unused days become $20 of credit, the contract pulls $40, and the next billing date is 30 days away.</li>
+    <li><strong>Downgrade.</strong> Ten days into a $60, 30-day plan, the customer moves to a $10, 30-day plan. The 20 unused days become $40 of credit. The first $10 cycle is paid from it, and the remaining $30 covers the next three cycles, each recorded as a $0 charge.</li>
+    <li><strong>Overdue.</strong> A change made after the billing date has passed earns no credit and forgives the overdue cycle, as cancelling and resubscribing would.</li>
+  </ul>
+
+  <h3>4.9 Fees</h3>
+  <p>The protocol fee is <code>floor(due / 100)</code>: 1% rounded down, with any fraction of a unit left to the merchant. A pull under 100 units ($0.0001) pays no fee, and a cycle paid entirely from credit pays none. The rate is a constant in the contract, not a plan parameter, so changing it takes a new deployment. Merchants can rely on it. Fees reach the <code>FeeRouter</code> in the charging transaction, and its permissionless <code>sweep()</code> forwards the balance to the treasury. Only the current treasury can name a new one.</p>
+
+  <h3>4.10 Merchant references</h3>
+  <p>A merchant's checkout link can carry a reference for its own customer record: 32 bytes, entered in the checkout as up to 31 ASCII characters or 64 hex digits. It is stored with the subscription and included in every webhook. The reference is public, and the subscriber supplies it when subscribing, so it is a claim rather than proof. Someone could copy a victim's reference into a subscription of their own and cancel it. Merchants should issue unguessable references per checkout and, once a subscription is created, track it by its <code>subId</code>.</p>
+
+  <!-- 5 -->
+  <h2 id="accounting">5. Accounting</h2>
+
+  <h3>5.1 Rounding</h3>
+  <p>The contracts use integer arithmetic only. They never convert decimals and never touch native 18-decimal values. The deploy script refuses a USDC address that does not report 6 decimals. Two operations divide, and both round in the merchant's favour by less than one unit:</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Operation</th><th>Formula</th><th>Remainder (under 1 unit) goes to</th></tr></thead>
+    <tbody>
+      <tr><td>Protocol fee</td><td><code>floor(due / 100)</code></td><td>Merchant</td></tr>
+      <tr><td>Proration credit</td><td><code>floor(price * r / cycle)</code></td><td>Merchant, who already collected the full price</td></tr>
+    </tbody>
+  </table></div>
+  <p>Timestamps are 64-bit, far beyond any realistic date. A multiplication in the proration formula could only overflow for prices above about 3.7 &times; 10<sup>68</sup> units, and Solidity 0.8 reverts on overflow rather than wrapping.</p>
+
+  <h3>5.2 Invariants</h3>
+  <p>Foundry's invariant fuzzer runs random sequences of plan creation, subscribing, approvals, charges across warped time, plan changes, pauses, resumes, cancellations and fee sweeps, with and without trials and across the full <code>maxFailed</code> range of 1 to 255. After every step it checks seven properties:</p>
+  <ol>
+    <li><strong>Conservation:</strong> every USDC unit minted in the test sits in exactly one tracked account.</li>
+    <li><strong>No funds at rest:</strong> the SubscriptionManager's balance is always zero.</li>
+    <li><strong>Bounded failures:</strong> <code>failedAttempts</code> never exceeds twice <code>maxFailed</code>.</li>
+    <li><strong>Cancel is terminal:</strong> a cancelled subscription's charge count never changes again.</li>
+    <li><strong>Monotonic schedule:</strong> a billing date never falls before the subscription's start.</li>
+    <li><strong>Credit is backed:</strong> a subscription never holds more credit than the USDC it has paid.</li>
+    <li><strong>Credit is bounded:</strong> credit never exceeds the largest plan price.</li>
+  </ol>
+  <p>Continuous integration runs 1,000 sequences of 40 calls on every push, alongside 47 unit tests. The keeper has 55 tests, including an end-to-end run against a local chain; the API has 32.</p>
+
+  <!-- 6 -->
+  <h2 id="security">6. Security model</h2>
+
+  <h3>6.1 Trust assumptions</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Party</th><th>Can</th><th>Cannot</th></tr></thead>
+    <tbody>
+      <tr><td>Merchant</td><td>Create plans; pause, resume or cancel its own subscriptions</td><td>Change a price, move a customer to another plan, charge a wallet that did not subscribe, charge before a billing date, or undo a cancellation</td></tr>
+      <tr><td>Levy's keeper</td><td>Choose when a due charge is submitted</td><td>Change amounts, recipients or dates; charge early; receive anything from a charge</td></tr>
+      <tr><td>Anyone else</td><td>Call <code>charge</code> on a due subscription; call <code>sweep</code></td><td>Redirect or receive funds</td></tr>
+      <tr><td>Treasury</td><td>Receive fees; name a new treasury</td><td>Touch payments or subscriptions</td></tr>
+      <tr><td>Levy's API and webhooks</td><td>Show data; send notifications</td><td>Move funds</td></tr>
+      <tr><td>USDC issuer</td><td>Freeze addresses. A frozen merchant or fee router makes charges on the affected plans revert, and the customer is not charged</td><td>Nothing specific to Levy</td></tr>
+      <tr><td>Arc validators</td><td>Order and finalise transactions; a halt delays charges</td><td>Change the contract's rules</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="exposure">6.2 Customer exposure</h3>
+  <p>The contract pulls from a customer in exactly three places. <code>subscribe</code> and <code>changePlan</code> can only be called by the customer. <code>charge</code> can be called by anyone, but each successful call needs a billing date that has passed, collects at most one plan price and moves the billing date exactly one cycle later. The only other writes to the billing date are resume, which can only move it later, and the customer's own plan change. It follows that for a subscription with price <var>p</var>, cycle <var>c</var> and first billing date <var>d</var><sub>1</sub>, the total that other parties can cause to be pulled by time <var>t</var> is</p>
+  <div class="formula">pulled_by_others(t) &lt;= p * (1 + floor((t - d1) / c))      for t &gt;= d1, and 0 before d1</div>
+  <p>A plan change by the customer starts a new schedule under the same rule. Across all of a customer's Levy subscriptions, whichever merchants they belong to, the total can never exceed the allowances the customer granted to the SubscriptionManager, directly or through Permit2, because every pull spends them. This bound follows from the code. It is not one of the fuzzed invariants, and we would like the audit to check it.</p>
+
+  <h3>6.3 Why the charge function can be public</h3>
+  <p>Consider <code>charge</code> called by an attacker. The subscription and plan are read from storage, so the caller influences nothing. Tokens move from the subscriber to the contract, then to the plan's merchant and the fee router, both fixed. The caller receives nothing, and calling first, or front-running the keeper, changes nothing but who paid the gas. The worst a caller can do is charge a due subscription at the earliest moment it is due, which is the intended behaviour.</p>
+
+  <h3>6.4 Reentrancy</h3>
+  <p>Every function that moves tokens is guarded against reentrancy. State is written after the transfers in these functions, the reverse of the usual checks-effects-interactions order. That is safe with USDC, which makes no callbacks on transfer, but it would matter with a token that did, and pause, resume and cancel are not guarded. This is flagged for the audit.</p>
+
+  <h3>6.5 Denial of service and keeper cost</h3>
+  <p>A customer who revokes their allowance cannot make the keeper's transaction revert; the failure is recorded and costs one transaction. Each subscription can fail at most twice <code>maxFailed</code> times before it pauses itself, and only a resume, which the attacker must pay for, buys another round.</p>
+  <p>A cheaper attack is a self-funded subscription: create a plan priced at one unit and subscribe to it. The attacker pays themselves, so charges never fail and never pause, and the keeper pays gas for each one. The one-day minimum cycle limits every such subscription to one charge a day, but the number of subscriptions is unbounded. The mitigation is keeper policy, for example skipping subscriptions whose fee does not cover their gas (&sect;8.4), and the keeper's gas spend is on the monitoring list.</p>
+
+  <h3>6.6 Permit2</h3>
+  <p>An earlier version let anyone relay a customer's Permit2 signature. Because a permit does not name a plan, a relayer, or anyone who read it from the mempool, could have subscribed the customer to a plan of their own. Only the signer can submit it now. A remaining low-severity issue: someone who sees the signed permit can submit it to Permit2 directly and use up its nonce, making the customer's subscribe fail. No funds are at risk, the allowance is still granted, and the customer can subscribe the ordinary way.</p>
+
+  <h3>6.7 Off-chain services</h3>
+  <p>The API authenticates with Sign-In with Ethereum [10]. Messages are bound to the deployment's origin, challenges are single-use, and sessions last 24 hours and are stored hashed. Every endpoint is scoped to the signed-in address, and another merchant's records return not-found. Webhook URLs must use https on port 443 at a public address, checked at registration and again at connection time so a DNS change cannot redirect deliveries to an internal network, and redirects are never followed. Deliveries are signed with Ed25519 [11] over the timestamp, delivery id and body, so a captured delivery cannot be replayed later. Delivery runs in its own loop, so a slow merchant endpoint cannot delay charging.</p>
+
+  <h3>6.8 Findings so far</h3>
+  <p>Code review and fuzzing during development found five issues before any deployment. All are fixed and have regression tests:</p>
+  <ol>
+    <li><strong>Unbacked proration credit.</strong> Billing used to be in arrears, and a plan change credited unused time on a cycle nobody had paid for, from any merchant's plan. A customer could mint credit on a plan of their own and spend it on a real merchant's plan. Fixed by billing in advance, earning credit only from paid time and allowing same-merchant changes only.</li>
+    <li><strong>Relayed Permit2 subscriptions</strong> (&sect;6.6).</li>
+    <li><strong>Resume billed paused cycles</strong> and kept the failure count. Resume is now a fresh start.</li>
+    <li><strong>An overflow in the auto-pause check.</strong> For <code>maxFailed</code> of 128 or more, doubling it in 8-bit arithmetic overflowed and made every failed charge revert. The fuzzer's range was widened to 1 to 255.</li>
+    <li><strong>No minimum cycle.</strong> A one-second plan let a customer's mistaken approval be drained in seconds and let spam subscriptions cost the keeper gas every 30 seconds. The minimum is now one day.</li>
+  </ol>
+  <p>Open items, all tracked for the audit and the testnet soak:</p>
+  <ul>
+    <li>Self-funded spam subscriptions (&sect;6.5).</li>
+    <li>The inverted update order (&sect;6.4).</li>
+    <li>Plan changes and resumes forgive an overdue cycle. This is intended, but merchants should know it.</li>
+    <li>The Permit2 nonce front-run (&sect;6.6).</li>
+    <li>A frozen merchant blocks charges on its plans.</li>
+    <li>The treasury can hand itself to a single-key address.</li>
+    <li>The off-chain gaps listed in &sect;9.</li>
+  </ul>
+
+  <!-- 7 -->
+  <h2 id="services">7. Off-chain services</h2>
+
+  <h3>7.1 Keeper</h3>
+  <p>The keeper runs two independent loops. The charge loop, every 30 seconds:</p>
+  <ol>
+    <li>Syncs contract events into its database.</li>
+    <li>Charges due subscriptions.</li>
+    <li>Runs dunning retries.</li>
+    <li>Backs off charges that revert for reasons other than payment (after 1, 5 and 15 minutes, then 1 hour, then every 6 hours).</li>
+    <li>Checks allowance runway.</li>
+  </ol>
+  <p>The delivery loop, every 5 seconds, sends webhooks. All schedule decisions use the chain's timestamp, not the server clock. Because a block is final, the keeper treats a mined transaction as settled.</p>
+  <p>Indexing is deliberately narrow. On Arc, USDC is the gas token, so USDC logs are everywhere. We measured about 4,000 of them per 500 blocks on testnet and about 1,200 on mainnet on 25 September 2026, roughly 1.4 million and 430,000 a day. The keeper fetches only Levy's own events, USDC transfers into or out of the SubscriptionManager and approvals to it, in fixed-size block ranges.</p>
+  <p>The allowance check reads up to 50 subscribers per cycle, rechecking each after 6 hours, or sooner after a charge or a new approval. When a subscriber's allowance covers fewer than two more rounds of all their subscriptions, each affected merchant gets an <code>allowance.low</code> webhook. It is sent once, and again only if the allowance recovers and runs low again.</p>
+  <p>Only one keeper should run per deployment. Two keepers cannot double-charge, because a second successful call on the same billing date reverts, but they could each record a failure for the same missed payment and double the pace of dunning. A merchant who does not want to depend on Levy's keeper can run its own against its own plans, or simply call <code>charge</code>.</p>
+
+  <h3>7.2 Webhooks</h3>
+  <p>Contract events become signed webhooks to the endpoints of the subscription's merchant. There are ten event types, listed in Appendix C, and every payload carries <code>subId</code>, <code>merchant</code> and the merchant's <code>ref</code>. Each delivery carries <code>X-Levy-Signature</code>, an Ed25519 signature over <code>{timestamp}.{deliveryId}.{body}</code>, plus the timestamp, delivery id, key id and event type in headers. Receivers verify the signature against the public key the API publishes, reject timestamps more than a few minutes old and drop delivery ids they have seen. Up to 8 deliveries run in parallel with one in flight per endpoint, so each endpoint receives events in order. Failures retry after 1, 5 and 15 minutes, 1 hour and then every 6 hours, and are dead-lettered after 24 hours. A merchant can register up to 5 endpoints.</p>
+
+  <h3>7.3 API and applications</h3>
+  <ul>
+    <li><strong>Merchant dashboard.</strong> Monthly recurring revenue normalised to 30 days, active subscriptions, charge success rate, dunning queue, total collected, every subscription with the merchant's reference and allowance runway, webhook management and an invoice export in CSV.</li>
+    <li><strong>Customer portal.</strong> The customer's subscriptions and invoices, pause, resume and cancel from their own wallet, and an allowance top-up when it runs low.</li>
+    <li><strong>Hosted checkout.</strong> <code>/checkout.html?plan=&lt;id&gt;&amp;ref=&lt;ref&gt;</code> shows the plan, the merchant, the contract and the customer's balance, asks how many cycles to approve, and states what Levy can pull.</li>
+  </ul>
+  <p>All three are static pages with no third-party scripts, served by the API.</p>
+
+  <!-- 8 -->
+  <h2 id="economics">8. Economics</h2>
+
+  <h3>8.1 The fee</h3>
+  <p>Levy charges 1% of each collected payment. There are no tiers, no monthly minimum and no setup fee, and a failed payment costs the merchant nothing. The fee is split out on-chain in the same transaction, so the merchant never invoices Levy and Levy never invoices the merchant.</p>
+
+  <h3>8.2 Compared with card billing</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Monthly price</th><th class="num">Card + Stripe Billing</th><th class="num">Share</th><th class="num">Levy</th><th class="num">Share</th></tr></thead>
+    <tbody>
+      <tr><td>$10</td><td class="num">$0.66</td><td class="num">6.6%</td><td class="num">$0.10</td><td class="num">1.0%</td></tr>
+      <tr><td>$29</td><td class="num">$1.34</td><td class="num">4.6%</td><td class="num">$0.29</td><td class="num">1.0%</td></tr>
+      <tr><td>$99</td><td class="num">$3.86</td><td class="num">3.9%</td><td class="num">$0.99</td><td class="num">1.0%</td></tr>
+      <tr><td>$499</td><td class="num">$18.26</td><td class="num">3.7%</td><td class="num">$4.99</td><td class="num">1.0%</td></tr>
+    </tbody>
+    <caption>Card figures use Stripe's US list prices on 25 September 2026: 2.9% plus 30 cents per domestic card payment and 0.7% of volume for Stripe Billing [1]. They exclude the 1.5% international surcharge, $15 per dispute, negotiated rates and the services a card processor bundles, such as fraud screening. Levy figures exclude the merchant's cost of converting USDC to another currency, if it needs to.</caption>
+  </table></div>
+  <p>Two differences do not show in the table. A Levy payment is final: there are no chargebacks, so no dispute fees and no revenue clawed back months later. And settlement happens in the charging transaction, under a second after the call, with no payout schedule.</p>
+
+  <h3>8.3 Gas</h3>
+  <p>Customers pay gas for approving and subscribing, merchants for creating plans, and the keeper for every charge. We measured execution gas in the contract test suite against a mock USDC token; a transaction adds a base cost of 21,000 gas, and Arc's USDC may cost somewhat more or less than the mock.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Call</th><th class="num">Execution gas (measured)</th><th class="num">Transaction cost at 20 gwei</th></tr></thead>
+    <tbody>
+      <tr><td><code>charge</code></td><td class="num">70,000 median, 113,000 max</td><td class="num">about $0.002 to $0.003</td></tr>
+      <tr><td><code>subscribe</code>, first cycle charged</td><td class="num">up to 273,000</td><td class="num">about $0.006</td></tr>
+      <tr><td><code>changePlan</code></td><td class="num">131,000 median, 191,000 max</td><td class="num">about $0.003 to $0.004</td></tr>
+      <tr><td><code>createPlan</code></td><td class="num">161,000</td><td class="num">about $0.004</td></tr>
+      <tr><td>pause, resume, cancel</td><td class="num">49,000 to 57,000</td><td class="num">about $0.0015</td></tr>
+    </tbody>
+    <caption>Twenty gwei is Arc's documented minimum base fee, 2 &times; 10<sup>-8</sup> USDC per unit of gas, which matches its target of about $0.001 per ERC-20 transfer [2]. The documented ceiling is 1,000 times higher. Deploying both contracts cost about 0.25 USDC in a testnet simulation.</caption>
+  </table></div>
+
+  <h3>8.4 Keeper sustainability</h3>
+  <p>The keeper pays for charges out of the protocol fee. A charge earns <code>price / 100</code> and costs about $0.002 to $0.003 at the target fee, so a plan pays for its own charges from roughly $0.30 per cycle. A $29 plan earns $0.29 per charge, about a hundred times its gas. Below $0.30 per cycle a plan costs the keeper more than it brings in, which is why a policy that skips such subscriptions is the natural defence against spam (&sect;6.5).</p>
+
+  <h3>8.5 Where fees go</h3>
+  <p>Fees accumulate in the FeeRouter until anyone calls <code>sweep()</code>, which sends the whole balance to the treasury, a Safe multisig on mainnet. The deploy script refuses a mainnet treasury that is not a contract. The FeeRouter is also the seam for any later change to how fees are distributed (&sect;10).</p>
+
+  <!-- 9 -->
+  <h2 id="limitations">9. Limitations</h2>
+  <ul>
+    <li><strong>An allowance is not escrow.</strong> A customer can spend their balance or revoke the allowance at any time, and future payments then fail. Merchants get the same assurance a card on file gives: none, plus dunning.</li>
+    <li><strong>No disputes.</strong> Finality protects merchants and removes customers' recourse. A customer who wants money back depends on the merchant's refund policy.</li>
+    <li><strong>Everything is public.</strong> Which wallets subscribe to which merchant, at what price and with which reference, can be read from the chain. Merchant references must never contain personal data.</li>
+    <li><strong>Fixed-length cycles.</strong> A month is a fixed number of seconds. Calendar billing, usage-based billing and currencies other than USDC are not supported.</li>
+    <li><strong>A pause is not the customer's alone</strong> (&sect;4.7).</li>
+    <li><strong>Timeliness depends on a keeper.</strong> Correctness does not, but if no one calls <code>charge</code>, merchants are paid late. The keeper runs as a single instance.</li>
+    <li><strong>Off-chain gaps.</strong>
+      <ul>
+        <li>Allowance warnings do not read Permit2 allowances, so Permit2 subscribers are flagged low from the start.</li>
+        <li>The event-type header is not covered by the webhook signature (the body identifies the event).</li>
+        <li>The pages do not yet send a Content Security Policy.</li>
+        <li>Merchants sign in with their payout wallet: there are no scoped API keys and no support for smart-contract wallets (ERC-1271).</li>
+        <li>There is no plan-creation page.</li>
+      </ul></li>
+    <li><strong>Not deployed and not audited.</strong> Everything in this paper has been tested locally and reviewed by its authors only.</li>
+  </ul>
+
+  <!-- 10 -->
+  <h2 id="roadmap">10. Roadmap and future work</h2>
+  <p>The contracts, keeper, API, dashboard, portal and checkout are built. What remains before real money flows:</p>
+  <ol>
+    <li><strong>Testnet deployment and a soak of at least a week,</strong> running real billing cycles end to end, including the Permit2 path against Arc's own Permit2.</li>
+    <li><strong>An external audit</strong> of the contracts, with the open items in &sect;6.8 and the exposure bound in &sect;6.2 in scope.</li>
+    <li><strong>Mainnet deployment</strong> with the treasury multisig in place, and the first real subscription billed.</li>
+  </ol>
+  <p>Planned after launch:</p>
+  <ul>
+    <li>Carrying each invoice reference on the payment itself through Arc's transaction memos, which are live on mainnet.</li>
+    <li>A plan-creation page.</li>
+    <li>Scoped merchant API keys.</li>
+    <li>Sign-in for smart-contract wallets.</li>
+    <li>A Content Security Policy.</li>
+    <li>Reading Permit2 allowances in the runway check.</li>
+    <li>A keeper policy for uneconomic subscriptions.</li>
+  </ul>
+  <p><strong>A possible token.</strong> One option under consideration for later is a LEVY token, with part of the protocol fee used to buy it back and part distributed to people who stake it. Nothing about it is built or decided. No supply, allocation or launch date exists, and USDC billing works without it. If it goes ahead, it will come only after the protocol carries real fee revenue, and it will be described in a separate document.</p>
+
+  <!-- 11 -->
+  <h2 id="conclusion">11. Conclusion</h2>
+  <p>Levy makes stablecoin subscriptions work the way merchants already bill: one authorisation at checkout, automatic collection every cycle, retries when a payment fails and a clean record of every charge. It does this with the plainest tool available, an ERC-20 allowance, and a contract that turns the allowance into a narrow, predictable permission: one plan price, per billing date, for one merchant. On Arc that permission costs a fraction of a cent to exercise and settles for good in under a second. The design is built and tested. The next step is to run it on a public network and have it audited, and this paper will be revised as that happens.</p>
+
+  <!-- Appendices -->
+  <h2 id="appendix">Appendix A. Contract interface</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Function</th><th>Who can call</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>createPlan(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed)</code></td><td>Anyone (becomes the merchant)</td><td>Creates an immutable plan; emits <code>PlanCreated</code></td></tr>
+      <tr><td><code>subscribe(planId, ref)</code></td><td>The subscriber</td><td>Starts a subscription; charges the first cycle unless the plan has a trial</td></tr>
+      <tr><td><code>subscribeWithPermit2(planId, ref, permit, signature)</code></td><td>The permit's signer</td><td>Grants a Permit2 allowance and subscribes in one transaction</td></tr>
+      <tr><td><code>charge(subId)</code></td><td>Anyone, once due</td><td>Collects one cycle or records a failure</td></tr>
+      <tr><td><code>changePlan(subId, newPlanId)</code></td><td>The subscriber</td><td>Moves to a same-merchant plan, billed now, less credit</td></tr>
+      <tr><td><code>pauseSubscription(subId)</code></td><td>Subscriber or merchant</td><td>Stops charges until resumed</td></tr>
+      <tr><td><code>resumeSubscription(subId)</code></td><td>Subscriber or merchant</td><td>Fresh start; resets failures</td></tr>
+      <tr><td><code>cancelSubscription(subId)</code></td><td>Subscriber or merchant</td><td>Final</td></tr>
+      <tr><td><code>isChargeable(subId)</code></td><td>Anyone (view)</td><td>Whether the subscription is due for a charge now</td></tr>
+      <tr><td><code>FeeRouter.sweep()</code></td><td>Anyone</td><td>Sends collected fees to the treasury</td></tr>
+      <tr><td><code>FeeRouter.setTreasury(address)</code></td><td>The treasury</td><td>Names a new treasury</td></tr>
+    </tbody>
+  </table></div>
+  <p>Events: <code>PlanCreated(planId, merchant, price, cycleSeconds)</code>, <code>Subscribed(subId, subscriber, planId, nextChargeAt, ref)</code>, <code>Charged(subId, amount, fee, invoiceRef, chargeCount)</code>, <code>ChargeFailed(subId, failedAttempts)</code>, <code>AutoPaused(subId)</code>, <code>Paused(subId)</code>, <code>Resumed(subId)</code>, <code>Cancelled(subId)</code>, <code>PlanChanged(subId, oldPlanId, newPlanId, credit)</code>, and on the FeeRouter <code>Swept(amount, treasury)</code> and <code>TreasuryUpdated(old, new)</code>.</p>
+
+  <h2 id="parameters">Appendix B. Parameters</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Parameter</th><th>Value</th><th>Set in</th></tr></thead>
+    <tbody>
+      <tr><td>Protocol fee</td><td>1% of each pull, rounded down</td><td>Contract constant</td></tr>
+      <tr><td>Cycle length</td><td>86,400 s (1 day) to 315,360,000 s (10 years)</td><td>Contract constants</td></tr>
+      <tr><td><code>maxFailed</code></td><td>1 to 255 per plan; auto-pause at twice the value</td><td>Plan</td></tr>
+      <tr><td>Charge loop / delivery loop</td><td>30 s / 5 s</td><td>Keeper configuration</td></tr>
+      <tr><td>Dunning retries</td><td>1, 3, then every 7 days after each failure</td><td>Keeper configuration</td></tr>
+      <tr><td>Revert backoff</td><td>1 min, 5 min, 15 min, 1 h, then every 6 h</td><td>Keeper</td></tr>
+      <tr><td>Allowance warning</td><td>Fewer than 2 rounds left; up to 50 subscribers per cycle; recheck after 6 h</td><td>Keeper</td></tr>
+      <tr><td>Webhooks</td><td>5 endpoints per merchant; 5 s timeout; 8 in parallel; retries 1 min to 6 h; dead after 24 h</td><td>Keeper and API</td></tr>
+      <tr><td>Sessions</td><td>24 hours</td><td>API</td></tr>
+      <tr><td>Checkout default</td><td>12 cycles approved, added to any existing allowance</td><td>Checkout</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="events">Appendix C. Webhook events</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Event</th><th>Sent when</th></tr></thead>
+    <tbody>
+      <tr><td><code>subscription.created</code></td><td>A customer subscribes</td></tr>
+      <tr><td><code>subscription.updated</code></td><td>The customer changes plan</td></tr>
+      <tr><td><code>charge.succeeded</code></td><td>A cycle is collected (amount 0 when credit covered it)</td></tr>
+      <tr><td><code>invoice.ready</code></td><td>Alongside every <code>charge.succeeded</code>, with the same body</td></tr>
+      <tr><td><code>charge.failed</code></td><td>A charge attempt fails</td></tr>
+      <tr><td><code>dunning.started</code></td><td>The first failure, with the next retry time</td></tr>
+      <tr><td><code>subscription.paused</code></td><td>Paused by either party, or automatically (<code>auto: true</code>)</td></tr>
+      <tr><td><code>subscription.resumed</code></td><td>Resumed</td></tr>
+      <tr><td><code>subscription.cancelled</code></td><td>Cancelled</td></tr>
+      <tr><td><code>allowance.low</code></td><td>The customer's allowance covers fewer than 2 more rounds</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="references">References</h2>
+  <ol class="refs">
+    <li>Stripe, "Pricing &amp; Fees", <a href="https://stripe.com/pricing">https://stripe.com/pricing</a> (accessed 25 September 2026).</li>
+    <li>Arc Docs, "Gas and fees", <a href="https://docs.arc.io/arc/references/gas-and-fees">https://docs.arc.io/arc/references/gas-and-fees</a> (accessed 25 September 2026).</li>
+    <li>Arc Docs, "Deterministic finality and settlement", <a href="https://docs.arc.io/arc/concepts/deterministic-finality">https://docs.arc.io/arc/concepts/deterministic-finality</a> (accessed 25 September 2026).</li>
+    <li>Arc Docs, "Contract addresses", <a href="https://docs.arc.io/arc/references/contract-addresses">https://docs.arc.io/arc/references/contract-addresses</a> (accessed 25 September 2026).</li>
+    <li>EIP-20, "Token Standard", <a href="https://eips.ethereum.org/EIPS/eip-20">https://eips.ethereum.org/EIPS/eip-20</a>.</li>
+    <li>Uniswap, "Permit2 overview", <a href="https://developers.uniswap.org/docs/protocols/permit2/overview">https://developers.uniswap.org/docs/protocols/permit2/overview</a>.</li>
+    <li>ERC-1337, "Subscriptions on the blockchain" (2018, stagnant), <a href="https://eips.ethereum.org/EIPS/eip-1337">https://eips.ethereum.org/EIPS/eip-1337</a>.</li>
+    <li>EIP-948 discussion, "Recurring Subscription Models", <a href="https://github.com/ethereum/EIPs/issues/948">https://github.com/ethereum/EIPs/issues/948</a>.</li>
+    <li>EIP-712, "Typed structured data hashing and signing", <a href="https://eips.ethereum.org/EIPS/eip-712">https://eips.ethereum.org/EIPS/eip-712</a>.</li>
+    <li>EIP-4361, "Sign-In with Ethereum", <a href="https://eips.ethereum.org/EIPS/eip-4361">https://eips.ethereum.org/EIPS/eip-4361</a>.</li>
+    <li>RFC 8032, "Edwards-Curve Digital Signature Algorithm (EdDSA)", <a href="https://www.rfc-editor.org/rfc/rfc8032">https://www.rfc-editor.org/rfc/rfc8032</a>.</li>
+    <li>EIP-1559, "Fee market change for ETH 1.0 chain", <a href="https://eips.ethereum.org/EIPS/eip-1559">https://eips.ethereum.org/EIPS/eip-1559</a>.</li>
+  </ol>
+
+  <p class="disclaimer">This paper describes software. It is not an offer or solicitation to buy any token or other asset, and it promises no future feature, including the token mentioned in &sect;10. The contracts are not yet deployed or audited. Measurements come from local tests and may differ on Arc. Levy &copy; 2026 &middot; <a href="mailto:hello@getlevy.xyz">hello@getlevy.xyz</a></p>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <span>Levy &copy; 2026 &middot; <a href="mailto:hello@getlevy.xyz">hello@getlevy.xyz</a> &middot; <a href="https://x.com/LevyOnArc" target="_blank" rel="noopener noreferrer">X @LevyOnArc</a></span>
+    <span class="fine"><a href="index.html">Home</a> &middot; <a href="levy-whitepaper.pdf">Whitepaper PDF</a></span>
+  </div>
+</footer>
+
+</body>
+</html>
