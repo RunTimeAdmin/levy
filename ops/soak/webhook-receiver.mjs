@@ -16,6 +16,12 @@ const KEY_URL = process.env.PUBLIC_KEY_URL ?? "https://app.getlevy.xyz/api/webho
 const LOG_PATH = process.env.LOG_PATH ?? "/data/hooks.jsonl";
 const MAX_SKEW_SECONDS = 300; // the merchant guide's replay window
 const MAX_BODY_BYTES = 64 * 1024;
+// The event types in docs/merchant-guide.md. Anything else is rejected.
+const EVENTS = new Set([
+  "subscription.created", "subscription.updated", "charge.succeeded", "charge.failed",
+  "dunning.started", "subscription.paused", "subscription.resumed", "subscription.cancelled",
+  "invoice.ready", "allowance.low",
+]);
 
 let publicKey = null;
 let expectedKeyId = null;
@@ -29,10 +35,10 @@ async function loadKey() {
   console.log(`public key loaded (keyId ${j.keyId})`);
 }
 
-function signatureValid(timestamp, deliveryId, rawBody, signature) {
-  if (!publicKey || !timestamp || !deliveryId || !signature) return false;
+function signatureValid(timestamp, deliveryId, event, rawBody, signature) {
+  if (!publicKey || !timestamp || !deliveryId || !EVENTS.has(event) || !signature) return false;
   try {
-    const signed = Buffer.from(`${timestamp}.${deliveryId}.${rawBody}`, "utf-8");
+    const signed = Buffer.from(`${timestamp}.${deliveryId}.${event}.${rawBody}`, "utf-8");
     return verify(null, signed, publicKey, Buffer.from(String(signature), "base64"));
   } catch {
     return false;
@@ -75,14 +81,15 @@ const server = createServer(async (req, res) => {
   const h = req.headers;
   const timestamp = h["x-levy-timestamp"];
   const deliveryId = h["x-levy-delivery"];
+  const event = h["x-levy-event"];
   const signature = h["x-levy-signature"];
 
   if (!publicKey) await loadKey().catch((e) => console.error(e.message));
-  let sigValid = signatureValid(timestamp, deliveryId, raw, signature);
+  let sigValid = signatureValid(timestamp, deliveryId, event, raw, signature);
   if (!sigValid && h["x-levy-key-id"] !== expectedKeyId) {
     // The key may have been rotated: reload once and check again.
     await loadKey().catch((e) => console.error(e.message));
-    sigValid = signatureValid(timestamp, deliveryId, raw, signature);
+    sigValid = signatureValid(timestamp, deliveryId, event, raw, signature);
   }
 
   const skewSeconds = Math.floor(Date.now() / 1000) - Number(timestamp);
@@ -95,7 +102,7 @@ const server = createServer(async (req, res) => {
 
   const entry = {
     receivedAt: new Date().toISOString(),
-    event: h["x-levy-event"] ?? null,
+    event: event ?? null,
     delivery: deliveryId ?? null,
     keyId: h["x-levy-key-id"] ?? null,
     keyIdMatches: h["x-levy-key-id"] === expectedKeyId,

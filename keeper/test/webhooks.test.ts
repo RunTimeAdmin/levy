@@ -275,15 +275,22 @@ describe("dispatchDue (live HTTP)", () => {
     assert.equal(r.headers["x-levy-event"], "charge.succeeded");
     assert.equal(r.headers["x-levy-key-id"], keyId(key));
     // The delivery must verify against the published public key, and the
-    // signature must cover the timestamp and delivery id, not just the body.
+    // signature must cover the timestamp, delivery id and event, not just the body.
     const h = (name: string) => r.headers[name] as string;
     const check = (over: Partial<Parameters<typeof verifyDelivery>[0]> = {}) => verifyDelivery({
       publicKeyPem: publicKeyPem(key), body: r.body, timestamp: h("x-levy-timestamp"),
-      deliveryId: h("x-levy-delivery"), signature: h("x-levy-signature"), ...over,
+      deliveryId: h("x-levy-delivery"), event: h("x-levy-event"), signature: h("x-levy-signature"), ...over,
     });
     assert.ok(check());
     assert.ok(Math.abs(Number(h("x-levy-timestamp")) - Date.now() / 1000) < 60);
     assert.equal(check({ deliveryId: "999" }), false, "delivery id is signed");
+    assert.equal(check({ event: "charge.failed" }), false, "event is signed");
+    // The same signed bytes re-split at another dot must not verify either.
+    assert.equal(
+      check({ deliveryId: `${h("x-levy-delivery")}.charge`, event: "succeeded" }),
+      false,
+      "event cannot be spliced into the delivery id"
+    );
     assert.equal(check({ body: r.body + " " }), false, "body is signed");
     assert.equal(check({ nowSec: Number(h("x-levy-timestamp")) + 301 }), false, "stale replay rejected");
     assert.equal(check({ publicKeyPem: publicKeyPem(testKey()) }), false, "other key rejected");

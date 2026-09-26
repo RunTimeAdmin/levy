@@ -112,13 +112,19 @@ export function verifySignature(
 }
 
 /**
- * What a delivery's X-Levy-Signature covers: `${timestamp}.${deliveryId}.${body}`.
+ * What a delivery's X-Levy-Signature covers: `${timestamp}.${deliveryId}.${event}.${body}`.
  * Signing the timestamp lets receivers reject replays of a captured delivery;
- * signing the delivery id lets them drop duplicates safely. Neither header can
- * be changed without breaking the signature.
+ * signing the delivery id lets them drop duplicates safely; signing the event
+ * type lets them route on X-Levy-Event. None of these headers can be changed
+ * without breaking the signature.
  */
-export function signedContent(timestamp: number | string, deliveryId: number | string, body: string): string {
-  return `${timestamp}.${deliveryId}.${body}`;
+export function signedContent(
+  timestamp: number | string,
+  deliveryId: number | string,
+  event: string,
+  body: string
+): string {
+  return `${timestamp}.${deliveryId}.${event}.${body}`;
 }
 
 /**
@@ -135,14 +141,19 @@ export const REPLAY_TOLERANCE_SEC = 300;
 /**
  * Receiver-side check of one delivery: the signature matches, and the
  * timestamp is within `toleranceSec` of now. Pass the raw body as received
- * and the X-Levy-Timestamp / X-Levy-Delivery / X-Levy-Signature headers.
- * Receivers should also drop delivery ids they have already processed.
+ * and the X-Levy-Timestamp / X-Levy-Delivery / X-Levy-Event / X-Levy-Signature
+ * headers. Receivers should also drop delivery ids they have already processed.
+ *
+ * Unknown event types are rejected. Event names contain dots, so without that
+ * check the same signed bytes could be re-split (delivery id "7.charge", event
+ * "succeeded"); no tail or head of a real event name is itself an event name.
  */
 export function verifyDelivery(opts: {
   publicKeyPem: string;
   body: string;
   timestamp: string;
   deliveryId: string;
+  event: string;
   signature: string;
   nowSec?: number;
   toleranceSec?: number;
@@ -150,7 +161,12 @@ export function verifyDelivery(opts: {
   const ts = Number(opts.timestamp);
   const now = opts.nowSec ?? Math.floor(Date.now() / 1000);
   if (!Number.isInteger(ts) || Math.abs(now - ts) > (opts.toleranceSec ?? REPLAY_TOLERANCE_SEC)) return false;
-  return verifySignature(opts.publicKeyPem, signedContent(opts.timestamp, opts.deliveryId, opts.body), opts.signature);
+  if (!isWebhookEventType(opts.event)) return false;
+  return verifySignature(
+    opts.publicKeyPem,
+    signedContent(opts.timestamp, opts.deliveryId, opts.event, opts.body),
+    opts.signature
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -417,7 +433,7 @@ export class WebhookDispatcher {
 
     // Signed at send time, so every retry carries a fresh timestamp.
     const timestamp = Math.floor(Date.now() / 1000);
-    const signature = signPayload(this.privateKey, signedContent(timestamp, d.id, d.payload));
+    const signature = signPayload(this.privateKey, signedContent(timestamp, d.id, d.event_type, d.payload));
     const body = Buffer.from(d.payload, "utf-8");
     return new Promise((resolve) => {
       const req = (u.protocol === "https:" ? https : http).request(u, {

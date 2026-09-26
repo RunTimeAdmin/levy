@@ -87,7 +87,7 @@ Available event types. Every payload carries `subId`, `merchant` and `ref`
 | `allowance.low` | `subscriber`, `allowance`, `balance`, `cyclesCovered`, `nextChargeAt` |
 
 `subscription.resumed` and `subscription.cancelled` have identical bodies, so
-use the `X-Levy-Event` header (or your endpoint URL) to tell events apart.
+use the `X-Levy-Event` header (it is signed) or your endpoint URL to tell events apart.
 
 `allowance.low` is your cue to email the customer before their payments start failing. The allowance is one pool shared by all of a subscriber's Levy subscriptions, so it runs down with every charge; the warning is sent once per subscription, and again only if the subscriber tops up and later runs low again. Customers top up from the portal. Your dashboard's Allowance column shows the same thing. Only direct USDC approvals count, not Permit2 allowances, so a subscriber who used Permit2 is flagged low right after subscribing.
 
@@ -106,7 +106,7 @@ Deliveries retry with backoff (1 minute, 5 minutes, 15 minutes, 1 hour, then eve
 
 Every webhook POST carries these headers:
 
-- `X-Levy-Signature`: base64 Ed25519 signature over `{timestamp}.{deliveryId}.{raw body}`.
+- `X-Levy-Signature`: base64 Ed25519 signature over `{timestamp}.{deliveryId}.{event}.{raw body}`.
 - `X-Levy-Timestamp`: unix seconds when this attempt was signed (retries get a fresh one).
 - `X-Levy-Delivery`: the delivery id. Store it and ignore repeats.
 - `X-Levy-Key-Id`: which signing key was used (matches `keyId` below).
@@ -124,8 +124,9 @@ Verification steps:
 
 1. Read the raw request body exactly as received (before JSON parsing).
 2. Reject the request if `X-Levy-Timestamp` is more than 5 minutes from your clock. A captured delivery then cannot be replayed later.
-3. Build `{X-Levy-Timestamp}.{X-Levy-Delivery}.{raw body}` and verify the base64 `X-Levy-Signature` over it with the public key. Reject on failure.
-4. Drop the request if you already processed that `X-Levy-Delivery` id (the id is signed, so this is safe).
+3. Reject the request if `X-Levy-Event` is not one of the event types listed above. Event names contain dots, and this check stops the signed text from being split at a different dot.
+4. Build `{X-Levy-Timestamp}.{X-Levy-Delivery}.{X-Levy-Event}.{raw body}` and verify the base64 `X-Levy-Signature` over it with the public key. Reject on failure.
+5. Drop the request if you already processed that `X-Levy-Delivery` id (the id is signed, so this is safe).
 
 Example in Node.js:
 
@@ -134,11 +135,16 @@ import { createPublicKey, verify } from "node:crypto";
 
 const { publicKey } = await fetch(API + "/api/webhooks/public-key").then(r => r.json());
 const key = createPublicKey(publicKey);
+const EVENTS = new Set(["subscription.created", "subscription.updated", "charge.succeeded",
+  "charge.failed", "dunning.started", "subscription.paused", "subscription.resumed",
+  "subscription.cancelled", "invoice.ready", "allowance.low"]);
 
 function isValid(rawBody, headers) {
   const ts = headers["x-levy-timestamp"];
+  const event = headers["x-levy-event"];
   if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
-  const signed = Buffer.from(`${ts}.${headers["x-levy-delivery"]}.${rawBody}`, "utf-8");
+  if (!EVENTS.has(event)) return false;
+  const signed = Buffer.from(`${ts}.${headers["x-levy-delivery"]}.${event}.${rawBody}`, "utf-8");
   return verify(null, signed, key, Buffer.from(headers["x-levy-signature"], "base64"));
 }
 ```

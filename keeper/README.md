@@ -42,10 +42,10 @@ Merchants register endpoints through the API (`api/README.md`). Contract events 
   and `allowance.low` (from the allowance check, not a contract event; one per affected subscription).
 
 Deliveries are Ed25519-signed: `X-Levy-Signature` covers
-`{X-Levy-Timestamp}.{X-Levy-Delivery}.{canonical JSON body}`, so receivers can
-reject replays and dedupe on the delivery id (`verifyDelivery` in
-`src/webhooks.ts`). `X-Levy-Key-Id` names the key; `X-Levy-Event` gives the event
-type (not signed; the body identifies the event too). The signing key is loaded
+`{X-Levy-Timestamp}.{X-Levy-Delivery}.{X-Levy-Event}.{canonical JSON body}`, so
+receivers can reject replays, dedupe on the delivery id and route on the event
+type (`verifyDelivery` in `src/webhooks.ts`, which also rejects unknown event
+types). `X-Levy-Key-Id` names the key. The signing key is loaded
 from `LEVY_WEBHOOK_KEY_PATH`, or created there on first boot (or passed inline via
 `LEVY_WEBHOOK_KEY`); the public key is served at `GET /api/webhooks/public-key`.
 

@@ -94,11 +94,11 @@ errors.
 
 Every delivery POSTs canonical JSON with headers:
 
-- `X-Levy-Signature`: base64 Ed25519 signature over `{timestamp}.{deliveryId}.{body}`
+- `X-Levy-Signature`: base64 Ed25519 signature over `{timestamp}.{deliveryId}.{event}.{body}`
 - `X-Levy-Timestamp`: unix seconds when this attempt was signed
 - `X-Levy-Delivery`: delivery id (signed, so safe to dedupe on)
 - `X-Levy-Key-Id`: signing key id, also returned by the public-key endpoint
-- `X-Levy-Event`: event type, e.g. `charge.succeeded` (not signed)
+- `X-Levy-Event`: event type, e.g. `charge.succeeded` (signed; reject unknown types)
 
 Verify with the public key from `GET /api/webhooks/public-key`, reject
 timestamps more than 5 minutes off, and drop delivery ids already seen.

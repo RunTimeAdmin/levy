@@ -234,5 +234,8 @@ Reviewed independently on 2026-09-25; details in `api/README.md` and
 - **Open:** rate limiting of `POST /api/auth/challenge` is left to the
   reverse proxy (done in `ops/nginx-app.conf.example`); sign-in supports EOA
   wallets only (no ERC-1271); merchant
-  backends sign in with their payout wallet (no scoped API keys yet); the
-  `X-Levy-Event` header is not covered by the signature.
+  backends sign in with their payout wallet (no scoped API keys yet).
+- **Fixed (L-10 in docs/REVIEW_2026-09-25.md):** the signature now covers the
+  `X-Levy-Event` header: `{timestamp}.{deliveryId}.{event}.{body}`. Receivers
+  reject unknown event types, so the signed text cannot be split at a
+  different dot (event names contain dots).
