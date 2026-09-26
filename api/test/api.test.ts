@@ -203,6 +203,85 @@ describe("sign-in", () => {
   });
 });
 
+describe("cookie sessions (the pages)", () => {
+  // What auth.js does: verify with cookie: true, then rely on the cookie.
+  async function cookieSignIn(acct: PrivateKeyAccount, url = base) {
+    const post = (path: string, body: unknown) => fetch(url + path, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+    const { nonce, message } = await (await post("/api/auth/challenge", { address: acct.address })).json();
+    const signature = await acct.signMessage({ message });
+    const r = await post("/api/auth/verify", { nonce, signature, cookie: true });
+    assert.equal(r.status, 200);
+    return { json: await r.json(), setCookie: r.headers.get("set-cookie") ?? "" };
+  }
+  function withCookie(cookie: string, method: string, path: string, extra: Record<string, string> = {}, body?: unknown) {
+    const headers: Record<string, string> = { cookie: cookie.split(";")[0], ...extra };
+    if (body !== undefined) headers["content-type"] = "application/json";
+    return fetch(base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  }
+
+  it("sets an HttpOnly, Secure, SameSite=Strict __Host- cookie and returns no token", async () => {
+    const { json, setCookie } = await cookieSignIn(merchantAcct);
+    assert.equal(json.address, MERCHANT);
+    assert.equal(json.token, undefined);
+    assert.match(setCookie, /^__Host-levy_session=[\w-]{43}; /);
+    const attrs = setCookie.split("; ");
+    for (const attr of ["Path=/", "Max-Age=86400", "HttpOnly", "SameSite=Strict", "Secure"]) {
+      assert.ok(attrs.includes(attr), `${attr} missing: ${setCookie}`);
+    }
+    assert.ok(!/domain=/i.test(setCookie), "a Domain attribute would share it with sibling hosts");
+  });
+
+  it("authenticates reads with the cookie alone, and only under its own name", async () => {
+    const { setCookie } = await cookieSignIn(merchantAcct);
+    const s = await withCookie(setCookie, "GET", "/api/auth/session");
+    assert.equal(s.status, 200);
+    assert.equal((await s.json()).address, MERCHANT);
+    assert.equal((await withCookie(setCookie, "GET", `/api/subscriptions?merchant=${MERCHANT}`)).status, 200);
+    // A cookie a sibling host could set (no __Host- prefix) is ignored.
+    const token = setCookie.split(";")[0].split("=")[1];
+    assert.equal((await withCookie(`levy_session=${token}`, "GET", "/api/auth/session")).status, 401);
+    // An Authorization header wins over the cookie, even a bad one.
+    assert.equal((await withCookie(setCookie, "GET", "/api/auth/session", { authorization: "Bearer garbage" })).status, 401);
+  });
+
+  it("refuses cookie-authenticated writes that do not come from this origin", async () => {
+    const { setCookie } = await cookieSignIn(merchantAcct);
+    for (const origin of [undefined, "https://getlevy.xyz", "null"]) {
+      const extra: Record<string, string> = origin === undefined ? {} : { origin };
+      const patch = await withCookie(setCookie, "PATCH", "/api/webhooks/999999", extra, { active: false });
+      assert.equal(patch.status, 403, `PATCH from ${origin}`);
+      assert.equal((await withCookie(setCookie, "POST", "/api/auth/logout", extra)).status, 403, `logout from ${origin}`);
+    }
+    // The session survived the refused logouts, and the app's own origin gets through
+    // to the handler (404: there is no such webhook).
+    assert.equal((await withCookie(setCookie, "GET", "/api/auth/session")).status, 200);
+    const own = await withCookie(setCookie, "PATCH", "/api/webhooks/999999", { origin: ORIGIN }, { active: false });
+    assert.equal(own.status, 404);
+  });
+
+  it("logs out: revokes the session and clears the cookie", async () => {
+    const { setCookie } = await cookieSignIn(merchantAcct);
+    const r = await withCookie(setCookie, "POST", "/api/auth/logout", { origin: ORIGIN });
+    assert.equal(r.status, 200);
+    assert.match(r.headers.get("set-cookie") ?? "", /^__Host-levy_session=; Path=\/; Max-Age=0; HttpOnly/);
+    assert.equal((await withCookie(setCookie, "GET", "/api/auth/session")).status, 401);
+  });
+
+  it("drops the __Host- prefix and Secure on a local http origin", async () => {
+    const local = buildServer({ dbPath: DB, webhookKeyPath: KEY, origin: "http://localhost:3001", chainId: 5042002 });
+    await local.listen({ port: 0, host: "127.0.0.1" });
+    try {
+      const addr = local.server.address() as { port: number };
+      const { setCookie } = await cookieSignIn(merchantAcct, `http://127.0.0.1:${addr.port}`);
+      assert.match(setCookie, /^levy_session=[\w-]{43}; Path=\/; Max-Age=86400; HttpOnly; SameSite=Strict$/);
+    } finally {
+      await local.close();
+    }
+  });
+});
+
 describe("public endpoints", () => {
   it("GET /api/health", async () => {
     const r = await get("/api/health");

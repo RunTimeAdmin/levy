@@ -146,4 +146,4 @@ async function load() {
 
 $("signIn").onclick = () => LevyAuth.signIn().then(load).catch(e => alert("Sign-in failed: " + e.message));
 $("signOut").onclick = () => LevyAuth.signOut().then(() => location.reload());
-load().catch(e => { showSession(); if (LevyAuth.address) alert("Load failed: " + e.message); });
+LevyAuth.ready.then(load).catch(e => { showSession(); if (LevyAuth.address) alert("Load failed: " + e.message); });

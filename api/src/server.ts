@@ -11,7 +11,7 @@ import {
   loadSigningKey,
   publicKeyPem,
 } from "../../keeper/src/webhooks.js";
-import { registerAuthRoutes, requireSession } from "./auth.js";
+import { registerAuthRoutes } from "./auth.js";
 
 const API_DIR = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(API_DIR, "..", "public");
@@ -106,7 +106,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   // Every endpoint below except health, plans and the webhook public key
   // needs a session, and only returns the signed-in address's own data: as
   // merchant (dashboard) or as subscriber (portal).
-  registerAuthRoutes(app, db, { origin: opts.origin, chainId: opts.chainId });
+  const requireSession = registerAuthRoutes(app, db, { origin: opts.origin, chainId: opts.chainId });
 
   // ---- health ----
 
@@ -133,7 +133,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   // ---- subscriptions ----
 
   app.get("/api/subscriptions", async (req) => {
-    const me = requireSession(db, req);
+    const me = requireSession(req);
     const q = req.query as { merchant?: string; subscriber?: string; status?: string };
     checkOwnAddress(q.merchant, me, "merchant");
     checkOwnAddress(q.subscriber, me, "subscriber");
@@ -158,7 +158,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
 
   // The signed-in subscriber's allowance runway, as of the keeper's last check.
   app.get("/api/funds", async (req) => {
-    const me = requireSession(db, req);
+    const me = requireSession(req);
     const f = db.getFunds(me);
     if (!f) return { checked: false };
     return {
@@ -175,7 +175,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   });
 
   app.get("/api/subscriptions/:id", async (req) => {
-    const me = requireSession(db, req);
+    const me = requireSession(req);
     const { id } = req.params as { id: string };
     const sub = db.getSubscription(id);
     // Someone else's subscription looks the same as a missing one.
@@ -199,7 +199,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   // ---- metrics ----
 
   app.get("/api/metrics", async (req) => {
-    const me = requireSession(db, req);
+    const me = requireSession(req);
     const q = req.query as { merchant?: string };
     checkOwnAddress(q.merchant, me, "merchant");
     const merchant = me;
@@ -245,7 +245,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   // ---- dunning queue ----
 
   app.get("/api/dunning", async (req) => {
-    const me = requireSession(db, req);
+    const me = requireSession(req);
     const q = req.query as { merchant?: string };
     checkOwnAddress(q.merchant, me, "merchant");
     return db.listDunning(me).map((r) => ({
@@ -258,7 +258,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   // ---- charges / invoices (invoices are charge records) ----
 
   async function chargesHandler(req: any, reply: any) {
-    const me = requireSession(db, req);
+    const me = requireSession(req);
     const q = req.query as { subscription?: string; merchant?: string; format?: string };
     checkOwnAddress(q.merchant, me, "merchant");
     const filter: { subId?: string; merchant?: string } = { merchant: me };
@@ -283,14 +283,14 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   // ---- webhooks ----
 
   app.get("/api/webhooks", async (req) => {
-    const me = requireSession(db, req);
+    const me = requireSession(req);
     const q = req.query as { merchant?: string };
     checkOwnAddress(q.merchant, me, "merchant");
     return db.listWebhooks(me).map((w) => ({ ...w, events: JSON.parse(w.events) }));
   });
 
   app.post("/api/webhooks", async (req) => {
-    const me = requireSession(db, req);
+    const me = requireSession(req);
     const body = req.body as { merchant?: string; url?: string; events?: string[] };
     checkOwnAddress(body?.merchant, me, "merchant");
     if (db.listWebhooks(me).length >= MAX_WEBHOOKS_PER_MERCHANT) {
@@ -309,7 +309,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   });
 
   app.delete("/api/webhooks/:id", async (req) => {
-    const me = requireSession(db, req);
+    const me = requireSession(req);
     const { id } = req.params as { id: string };
     const n = Number(id);
     if (!Number.isInteger(n)) return bad(400, "invalid id");
@@ -319,7 +319,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   });
 
   app.patch("/api/webhooks/:id", async (req) => {
-    const me = requireSession(db, req);
+    const me = requireSession(req);
     const { id } = req.params as { id: string };
     const body = req.body as { active?: boolean };
     const n = Number(id);
@@ -341,7 +341,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   });
 
   app.get("/api/deliveries", async (req) => {
-    const me = requireSession(db, req);
+    const me = requireSession(req);
     const q = req.query as { webhookId?: string; status?: string; limit?: string };
     const filter: { webhookId?: number; status?: string; limit?: number; merchant: string } = { merchant: me };
     if (q.webhookId !== undefined) {
@@ -391,10 +391,11 @@ const MIME: Record<string, string> = {
 
 /**
  * Headers for the dashboard, portal and checkout pages. Scripts load only from
- * this origin and never inline, so an injected script cannot run and read the
- * session token in localStorage. Inline styles stay allowed: an injected style
- * cannot read the token. Wallets inject their provider as extension content
- * scripts, which a page's CSP does not govern.
+ * this origin and never inline, so an injected script cannot run and act with
+ * the signed-in session (the session cookie is HttpOnly, so no script can read
+ * it). Inline styles stay allowed: an injected style cannot run code.
+ * Wallets inject their provider as extension content scripts, which a page's
+ * CSP does not govern.
  */
 export const PAGE_HEADERS: Record<string, string> = {
   "content-security-policy":

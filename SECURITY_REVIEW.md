@@ -229,8 +229,14 @@ Reviewed independently on 2026-09-25; details in `api/README.md` and
 - **Pages:** since 2026-09-26 the dashboard, portal and checkout send a
   Content-Security-Policy that allows scripts only from the app's own origin
   and never inline (the page scripts moved to `/public/*.js`), so an injected
-  script cannot run and read the session token in localStorage. They also
-  refuse framing. Inline styles stay allowed; they cannot read the token.
+  script cannot run. They also refuse framing. Inline styles stay allowed;
+  they cannot run code.
+- **Page sessions (L-9 in docs/REVIEW_2026-09-25.md):** since 2026-09-26 the
+  pages keep the session in an HttpOnly, SameSite=Strict, `__Host-` cookie
+  instead of a bearer token in localStorage, so no script can read or steal
+  it. Cookie-authenticated writes must carry the app's `Origin` (else 403),
+  which also stops sibling sites such as getlevy.xyz that SameSite treats as
+  the same site. Backends still use bearer tokens.
 - **Open:** rate limiting of `POST /api/auth/challenge` is left to the
   reverse proxy (done in `ops/nginx-app.conf.example`); sign-in supports EOA
   wallets only (no ERC-1271); merchant

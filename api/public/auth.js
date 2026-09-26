@@ -1,31 +1,25 @@
 // Sign-in for the dashboard and portal: Sign-In with Ethereum (EIP-4361)
 // through the browser wallet (window.ethereum). The server writes the message;
-// the wallet signs it; the server returns a 24h bearer token, kept in
-// localStorage and sent on every API call.
+// the wallet signs it; the server sets a 24h session cookie that page scripts
+// cannot read (HttpOnly), which the browser sends on every API call. Who is
+// signed in is asked from the server, so pages wait for LevyAuth.ready.
 const LevyAuth = (() => {
-  const KEY = "levy_session";
-  let session = null;
-  try { session = JSON.parse(localStorage.getItem(KEY) || "null"); } catch {}
-  if (session && session.expiresAt * 1000 <= Date.now()) session = null;
-
-  function save(s) {
-    session = s;
-    try { s ? localStorage.setItem(KEY, JSON.stringify(s)) : localStorage.removeItem(KEY); } catch {}
-  }
+  let address = null;
+  // Earlier versions kept a bearer token in localStorage; remove it.
+  try { localStorage.removeItem("levy_session"); } catch {}
 
   const hexUtf8 = (text) =>
     "0x" + [...new TextEncoder().encode(text)].map((b) => b.toString(16).padStart(2, "0")).join("");
 
   async function send(path, opts = {}) {
     const headers = { ...(opts.headers || {}) };
-    if (session) headers.authorization = `Bearer ${session.token}`;
     if (opts.body !== undefined) headers["content-type"] = "application/json";
     const r = await fetch(path, {
       method: opts.method || "GET",
       headers,
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     });
-    if (r.status === 401 && session) save(null);
+    if (r.status === 401) address = null;
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
       throw new Error(err.message || `HTTP ${r.status}`);
@@ -33,24 +27,28 @@ const LevyAuth = (() => {
     return (r.headers.get("content-type") || "").includes("json") ? r.json() : r.text();
   }
 
+  // A 401 here just means nobody is signed in.
+  const ready = send("/api/auth/session").then((s) => { address = s.address; }, () => {});
+
   async function signIn() {
     if (!window.ethereum) throw new Error("No browser wallet found. Install one (for example MetaMask) to sign in.");
-    const [address] = await window.ethereum.request({ method: "eth_requestAccounts" });
-    const { nonce, message } = await send("/api/auth/challenge", { method: "POST", body: { address } });
-    const signature = await window.ethereum.request({ method: "personal_sign", params: [hexUtf8(message), address] });
-    save(await send("/api/auth/verify", { method: "POST", body: { nonce, signature } }));
-    return session.address;
+    const [account] = await window.ethereum.request({ method: "eth_requestAccounts" });
+    const { nonce, message } = await send("/api/auth/challenge", { method: "POST", body: { address: account } });
+    const signature = await window.ethereum.request({ method: "personal_sign", params: [hexUtf8(message), account] });
+    address = (await send("/api/auth/verify", { method: "POST", body: { nonce, signature, cookie: true } })).address;
+    return address;
   }
 
   async function signOut() {
-    if (session) await send("/api/auth/logout", { method: "POST" }).catch(() => {});
-    save(null);
+    if (address) await send("/api/auth/logout", { method: "POST" }).catch(() => {});
+    address = null;
   }
 
   return {
     signIn,
     signOut,
     api: send,
-    get address() { return session ? session.address : null; },
+    ready,
+    get address() { return address; },
   };
 })();

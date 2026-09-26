@@ -8,8 +8,16 @@ import type { LevyDb } from "../../keeper/src/db.js";
  * Sign-In with Ethereum (EIP-4361). The server writes the whole message, bound
  * to the configured origin, so a phishing site cannot obtain a signature that
  * works here (wallets also warn when the message's domain is not the page's).
- * A valid signature buys a 24h bearer token; only its SHA-256 is stored.
+ * A valid signature buys a 24h session token; only its SHA-256 is stored.
  * EOA signatures only for now: contract wallets (ERC-1271) need an RPC call.
+ *
+ * Backends send the token as `Authorization: Bearer`. The pages ask for a
+ * cookie instead (`cookie: true` on verify): HttpOnly, so page scripts never
+ * see the token, and SameSite=Strict. A cookie is sent without the page asking,
+ * so a write authenticated by one must also carry this origin in `Origin`;
+ * that stops sibling sites such as getlevy.xyz, which SameSite counts as the
+ * same site. Over https the cookie is `__Host-` prefixed, which stops a sibling
+ * subdomain from planting its own.
  */
 export interface AuthOptions {
   /** Origin the dashboard is served from, e.g. https://app.getlevy.xyz. */
@@ -32,17 +40,46 @@ function fail(status: number, message: string): never {
 }
 
 /** The signed-in address (checksummed), or a 401. */
-export function requireSession(db: LevyDb, req: FastifyRequest): string {
-  const header = req.headers.authorization ?? "";
-  const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-  if (!token) fail(401, "sign in required");
-  const session = db.getSession(sha256(token), now());
-  if (!session) fail(401, "session expired or invalid");
-  return session.address;
+export type RequireSession = (req: FastifyRequest) => string;
+
+/** One cookie from the Cookie header, or "". */
+function readCookie(req: FastifyRequest, name: string): string {
+  for (const part of (req.headers.cookie ?? "").split(";")) {
+    const eq = part.indexOf("=");
+    if (eq > 0 && part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
+  }
+  return "";
 }
 
-export function registerAuthRoutes(app: FastifyInstance, db: LevyDb, opts: AuthOptions): void {
-  const domain = new URL(opts.origin).host;
+/** Registers the sign-in routes and returns the session check for every other route. */
+export function registerAuthRoutes(app: FastifyInstance, db: LevyDb, opts: AuthOptions): RequireSession {
+  const { host: domain, origin, protocol } = new URL(opts.origin);
+  const secure = protocol === "https:";
+  // Plain http is local development only; browsers refuse __Host- without Secure.
+  const cookieName = secure ? "__Host-levy_session" : "levy_session";
+  const cookie = (value: string, maxAge: number) =>
+    `${cookieName}=${value}; Path=/; Max-Age=${maxAge}; HttpOnly; SameSite=Strict${secure ? "; Secure" : ""}`;
+
+  /** The request's token and whether it came from the cookie. */
+  function tokenOf(req: FastifyRequest): { token: string; fromCookie: boolean } {
+    const header = req.headers.authorization;
+    if (header !== undefined) {
+      return { token: header.startsWith("Bearer ") ? header.slice(7).trim() : "", fromCookie: false };
+    }
+    return { token: readCookie(req, cookieName), fromCookie: true };
+  }
+
+  /** The signed-in address (checksummed), or a 401 (403 for a cross-origin cookie write). */
+  function requireSession(req: FastifyRequest): string {
+    const { token, fromCookie } = tokenOf(req);
+    if (!token) fail(401, "sign in required");
+    const session = db.getSession(sha256(token), now());
+    if (!session) fail(401, "session expired or invalid");
+    if (fromCookie && req.method !== "GET" && req.method !== "HEAD" && req.headers.origin !== origin) {
+      fail(403, "cross-origin request refused");
+    }
+    return session.address;
+  }
 
   app.post("/api/auth/challenge", async (req) => {
     const body = req.body as { address?: unknown };
@@ -71,8 +108,8 @@ export function registerAuthRoutes(app: FastifyInstance, db: LevyDb, opts: AuthO
     return { nonce, message };
   });
 
-  app.post("/api/auth/verify", async (req) => {
-    const body = req.body as { nonce?: unknown; signature?: unknown };
+  app.post("/api/auth/verify", async (req, reply) => {
+    const body = req.body as { nonce?: unknown; signature?: unknown; cookie?: unknown };
     if (typeof body?.nonce !== "string" || typeof body?.signature !== "string" || !isHex(body.signature)) {
       fail(400, "nonce and hex signature required");
     }
@@ -93,17 +130,24 @@ export function registerAuthRoutes(app: FastifyInstance, db: LevyDb, opts: AuthO
     const token = randomBytes(32).toString("base64url");
     const expiresAt = now() + SESSION_TTL_SEC;
     db.createSession(sha256(token), challenge.address, expiresAt, now());
+    if (body.cookie === true) {
+      reply.header("set-cookie", cookie(token, SESSION_TTL_SEC));
+      return { address: challenge.address, expiresAt };
+    }
     return { token, address: challenge.address, expiresAt };
   });
 
   app.get("/api/auth/session", async (req) => {
-    return { address: requireSession(db, req) };
+    return { address: requireSession(req) };
   });
 
-  app.post("/api/auth/logout", async (req) => {
-    requireSession(db, req);
-    const token = (req.headers.authorization ?? "").slice(7).trim();
+  app.post("/api/auth/logout", async (req, reply) => {
+    requireSession(req);
+    const { token, fromCookie } = tokenOf(req);
     db.deleteSession(sha256(token));
+    if (fromCookie) reply.header("set-cookie", cookie("", 0));
     return { ok: true };
   });
+
+  return requireSession;
 }

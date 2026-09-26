@@ -42,6 +42,15 @@ Sign-In with Ethereum (EIP-4361), EOA wallets only for now:
    only their SHA-256 is stored. `GET /api/auth/session` checks one,
    `POST /api/auth/logout` revokes it.
 
+The dashboard and portal send `{nonce, signature, cookie: true}` to verify
+instead. The session then goes into an HttpOnly, SameSite=Strict cookie
+(`__Host-levy_session` over https, `levy_session` on a local http origin) and
+the response has no `token`, so page scripts never hold it. A write (any method
+but GET) authenticated by the cookie must carry an `Origin` header equal to
+`LEVY_PUBLIC_ORIGIN`, or it gets 403: SameSite alone would still let a sibling
+site such as getlevy.xyz send the cookie. A request with an `Authorization`
+header is judged by that header alone.
+
 Set `LEVY_PUBLIC_ORIGIN` to the exact origin the pages are served from
 (e.g. `https://app.getlevy.xyz`). Wallets warn when the page's domain differs
 from the message's, and the server never takes the domain from the request.
@@ -129,5 +138,5 @@ differs from the keeper's makes every merchant's signature check fail.
 ## Tests
 
 ```bash
-npm test   # 34 tests, seeded temp DB, ephemeral port, real wallet signatures
+npm test   # 39 tests, seeded temp DB, ephemeral port, real wallet signatures
 ```

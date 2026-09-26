@@ -117,7 +117,7 @@ async function loadInvoices(m) {
 
 $("signIn").onclick = () => LevyAuth.signIn().then(load).catch(e => alert("Sign-in failed: " + e.message));
 $("signOut").onclick = () => LevyAuth.signOut().then(() => location.reload());
-// The CSV needs the session header, so it is fetched and saved rather than linked.
+// The CSV is fetched and saved rather than linked, so a failure shows as an alert.
 $("csvLink").onclick = async (e) => {
   e.preventDefault();
   const csv = await api("/api/invoices?format=csv").catch(err => { alert(err.message); return null; });
@@ -140,4 +140,4 @@ $("addHook").onclick = async () => {
   $("hookUrl").value = "";
   loadHooks(m);
 };
-load().catch(e => { showSession(); if (merchant()) alert("Load failed: " + e.message); });
+LevyAuth.ready.then(load).catch(e => { showSession(); if (merchant()) alert("Load failed: " + e.message); });
