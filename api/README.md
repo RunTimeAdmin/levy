@@ -114,7 +114,10 @@ the host's `127.0.0.1` only. Point a TLS reverse proxy (nginx, Caddy) at it.
 Outside Docker the server listens on `LEVY_API_HOST` (default `127.0.0.1`).
 
 `LEVY_PUBLIC_ORIGIN` is required when `NODE_ENV=production`, which the image
-sets. Put the API behind a reverse proxy that rate-limits
+sets. The pages are sent with a Content-Security-Policy that allows scripts
+only from the origin (never inline) and refuses framing (`PAGE_HEADERS` in
+`src/server.ts`), so keep page scripts in `public/*.js`. Put the API behind a
+reverse proxy that rate-limits
 `POST /api/auth/challenge` per client IP: it is the one unauthenticated endpoint
 that writes. The server also caps pending challenges at 10,000 and answers 503
 beyond that.

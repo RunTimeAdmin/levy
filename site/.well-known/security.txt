@@ -1,0 +1,7 @@
+# Levy: how to report a security issue. See the policy for scope and rules.
+Contact: mailto:hello@getlevy.xyz
+Expires: 2027-09-25T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://getlevy.xyz/.well-known/security.txt
+Canonical: https://app.getlevy.xyz/.well-known/security.txt
+Policy: https://getlevy.xyz/security.html

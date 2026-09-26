@@ -226,8 +226,13 @@ Reviewed independently on 2026-09-25; details in `api/README.md` and
 - **Keeper:** fetches only Levy's logs, backs off charges that revert, and
   must run as a single instance (two keepers would each record a failure for
   the same missed charge, doubling the pace of dunning).
-- **Open:** no Content Security Policy on the pages (the session token is in
-  localStorage); rate limiting of `POST /api/auth/challenge` is left to the
-  reverse proxy; sign-in supports EOA wallets only (no ERC-1271); merchant
+- **Pages:** since 2026-09-26 the dashboard, portal and checkout send a
+  Content-Security-Policy that allows scripts only from the app's own origin
+  and never inline (the page scripts moved to `/public/*.js`), so an injected
+  script cannot run and read the session token in localStorage. They also
+  refuse framing. Inline styles stay allowed; they cannot read the token.
+- **Open:** rate limiting of `POST /api/auth/challenge` is left to the
+  reverse proxy (done in `ops/nginx-app.conf.example`); sign-in supports EOA
+  wallets only (no ERC-1271); merchant
   backends sign in with their payout wallet (no scoped API keys yet); the
   `X-Levy-Event` header is not covered by the signature.

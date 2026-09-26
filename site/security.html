@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Levy Security Policy</title>
+<meta name="description" content="How to report a security vulnerability in Levy, what is in scope, and what Levy commits to in return.">
+<link rel="canonical" href="https://getlevy.xyz/security.html">
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#0e1116">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Levy">
+<meta property="og:url" content="https://getlevy.xyz/security.html">
+<meta property="og:title" content="Levy Security Policy">
+<meta property="og:description" content="How to report a security vulnerability in Levy, and what Levy commits to in return.">
+<meta property="og:image" content="https://getlevy.xyz/og-image.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:site" content="@LevyOnArc">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="paper.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html" aria-label="Levy home"><img src="logo.svg" alt="" width="22" height="24"><span class="wordmark">levy</span></a>
+    <nav>
+      <a href="index.html">Home</a>
+      <a href="whitepaper.html">Whitepaper</a>
+      <a class="social" href="https://x.com/LevyOnArc" target="_blank" rel="noopener noreferrer" aria-label="Levy on X (@LevyOnArc)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg></a>
+      <a class="btn btn-small" href="index.html#access">Get early access</a>
+    </nav>
+  </div>
+</header>
+
+<main class="paper">
+  <p class="kicker">Security</p>
+  <h1>Reporting a vulnerability</h1>
+  <p class="lede">How to tell us about a security problem in Levy, what is in scope, and what we commit to in return.</p>
+
+  <div class="status">
+    <p><strong>Status.</strong> Levy runs on Arc testnet and has not been audited yet. No real money flows through it, and its contracts never hold funds at rest. Reports now still matter: everything found before mainnet gets fixed before mainnet.</p>
+  </div>
+
+  <h2>How to report</h2>
+  <p>Email <a href="mailto:hello@getlevy.xyz?subject=Security%20report">hello@getlevy.xyz</a> with "Security" in the subject. Please include:</p>
+  <ul>
+    <li>what is affected: a contract address, a URL or a component;</li>
+    <li>the steps to reproduce it, or a proof of concept;</li>
+    <li>the impact you see, and anything you already know about a fix.</li>
+  </ul>
+  <p>Please keep it private until it is fixed or we have agreed a date to publish together. This address is also listed in our <a href="/.well-known/security.txt">security.txt</a>.</p>
+
+  <h2>Scope</h2>
+  <ul>
+    <li>The Levy contracts on Arc testnet: SubscriptionManager <code>0x33c8e7e46583bdfd2e001f55ac1c58bd84eb739f</code> and FeeRouter <code>0xa6efee5f5a2eb2afae102f790b4889fcc01fe848</code>, and the mainnet contracts once they are deployed.</li>
+    <li>The app at <a href="https://app.getlevy.xyz">app.getlevy.xyz</a>: the API, merchant dashboard, customer portal and checkout.</li>
+    <li>The keeper: charging, dunning, and the signing and delivery of webhooks.</li>
+    <li>This website, getlevy.xyz.</li>
+  </ul>
+  <p>Out of scope: Arc itself, USDC, Permit2 and wallets (please report those to their owners), denial of service and load testing, social engineering, and scanner output or missing headers without a demonstrated impact.</p>
+
+  <h2>Rules for testing</h2>
+  <ul>
+    <li>Test on Arc testnet with your own wallets, plans and subscriptions. Do not touch anyone else's subscriptions, wallets or webhook endpoints.</li>
+    <li>Keep automated requests slow; the API is rate-limited, and flooding it helps nobody.</li>
+    <li>Stop once you can show the impact, and do not keep or share data that is not yours.</li>
+  </ul>
+
+  <h2>What we commit to</h2>
+  <ul>
+    <li>We acknowledge every report within 3 business days and keep you updated until it is resolved.</li>
+    <li>We fix confirmed issues before mainnet, and credit you in our security review if you would like that.</li>
+    <li>We will not pursue or support legal action against research that follows this policy in good faith.</li>
+  </ul>
+  <p>Levy does not run a paid bug bounty yet.</p>
+
+  <p class="disclaimer">Levy &copy; 2026 &middot; <a href="mailto:hello@getlevy.xyz">hello@getlevy.xyz</a></p>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <span>Levy &copy; 2026 &middot; <a href="mailto:hello@getlevy.xyz">hello@getlevy.xyz</a> &middot; <a href="https://x.com/LevyOnArc" target="_blank" rel="noopener noreferrer">X @LevyOnArc</a></span>
+    <span class="fine"><a href="index.html">Home</a> &middot; <a href="whitepaper.html">Whitepaper</a></span>
+  </div>
+</footer>
+
+</body>
+</html>

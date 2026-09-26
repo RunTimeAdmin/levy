@@ -450,4 +450,25 @@ describe("static frontend", () => {
     assert.ok(checkout.body.includes("Levy Checkout"));
     assert.equal((await get("/public/wallet.js")).status, 200);
   });
+
+  it("sends a CSP on every page that forbids inline scripts, and the pages have none", async () => {
+    for (const [path, script] of [["/", "dashboard.js"], ["/portal.html", "portal.js"], ["/checkout.html", "checkout.js"]]) {
+      const page = await get(path);
+      const csp = page.headers.get("content-security-policy") ?? "";
+      assert.ok(csp.includes("script-src 'self'"), `${path}: CSP ${csp}`);
+      assert.ok(!/script-src[^;]*unsafe-inline/.test(csp), `${path}: inline scripts allowed`);
+      assert.ok(csp.includes("frame-ancestors 'none'"), path);
+      assert.equal(page.headers.get("x-frame-options"), "DENY", path);
+      // Every <script> loads from a file; an inline one would be blocked by the CSP.
+      const tags = page.body.match(/<script[^>]*>/g) ?? [];
+      assert.ok(tags.length > 0 && tags.every((t) => /\ssrc="\/public\/[a-z-]+\.js"/.test(t)), `${path}: ${tags}`);
+      assert.ok(page.body.includes(`/public/${script}`), path);
+      assert.equal((await get(`/public/${script}`)).status, 200, script);
+    }
+  });
+
+  it("does not send the page CSP on API responses", async () => {
+    const health = await get("/api/health");
+    assert.equal(health.headers.get("content-security-policy"), null);
+  });
 });

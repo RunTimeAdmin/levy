@@ -389,6 +389,22 @@ const MIME: Record<string, string> = {
   ".svg": "image/svg+xml",
 };
 
+/**
+ * Headers for the dashboard, portal and checkout pages. Scripts load only from
+ * this origin and never inline, so an injected script cannot run and read the
+ * session token in localStorage. Inline styles stay allowed: an injected style
+ * cannot read the token. Wallets inject their provider as extension content
+ * scripts, which a page's CSP does not govern.
+ */
+export const PAGE_HEADERS: Record<string, string> = {
+  "content-security-policy":
+    "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+    "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  "x-frame-options": "DENY",
+  "cross-origin-opener-policy": "same-origin",
+  "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+};
+
 async function sendFile(reply: FastifyReply, name: string) {
   const safe = normalize(name).replace(/^(\.\.(\/|\\|$))+/, "");
   const full = join(PUBLIC_DIR, safe);
@@ -399,6 +415,7 @@ async function sendFile(reply: FastifyReply, name: string) {
     const data = await readFile(full);
     const ext = safe.slice(safe.lastIndexOf("."));
     reply.header("content-type", MIME[ext] ?? "application/octet-stream");
+    if (ext === ".html") reply.headers(PAGE_HEADERS);
     return reply.send(data);
   } catch {
     return reply.code(404).send({ error: "not found" });

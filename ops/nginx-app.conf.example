@@ -28,6 +28,13 @@ server {
         include /etc/nginx/proxy_params;
     }
 
+    # RFC 9116 security contact, the same file the site serves at
+    # https://getlevy.xyz/.well-known/security.txt (site/.well-known/).
+    location = /.well-known/security.txt {
+        alias /docker/levy/site/.well-known/security.txt;
+        default_type text/plain;
+    }
+
     location / {
         proxy_pass http://127.0.0.1:3001;
         include /etc/nginx/proxy_params;
@@ -35,6 +42,10 @@ server {
 
     add_header X-Content-Type-Options nosniff always;
     add_header Referrer-Policy strict-origin-when-cross-origin always;
+    # HTTPS only on return visits. Browsers ignore it until certbot has added TLS.
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    # The API sends the pages' Content-Security-Policy itself (PAGE_HEADERS in
+    # api/src/server.ts), so it travels with the code.
 
     # certbot --nginx adds the TLS listener and the redirect. Until it runs, the
     # ACME challenge needs plain port 80.

@@ -54,6 +54,9 @@
 
 .pdf-link { margin: 0 0 32px; font-size: 15.5px; }
 
+/* Holds the arrow markers the figures share; takes no space. */
+.svg-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+
 /* Contents */
 
 .toc {

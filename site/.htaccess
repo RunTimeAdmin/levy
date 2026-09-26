@@ -1,0 +1,27 @@
+# Levy static site on Hostinger (LiteSpeed/Apache). If public_html already has
+# an .htaccess, add this block to it rather than replacing it.
+# Security headers, www to the bare domain, no directory listings, no dotfiles.
+
+Options -Indexes
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  # www.getlevy.xyz -> getlevy.xyz
+  RewriteCond %{HTTP_HOST} ^www\.getlevy\.xyz$ [NC]
+  RewriteRule ^ https://getlevy.xyz%{REQUEST_URI} [R=301,L]
+  # Refuse dotfiles and dot-directories, except /.well-known/ (security.txt).
+  RewriteRule (^|/)\.(?!well-known(/|$)) - [F]
+</IfModule>
+
+<IfModule mod_headers.c>
+  Header always set Strict-Transport-Security "max-age=31536000"
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+  Header always set Cross-Origin-Opener-Policy "same-origin"
+  # The pages run no scripts and load nothing from other sites.
+  <FilesMatch "\.html$">
+    Header always set Content-Security-Policy "default-src 'none'; img-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests"
+    Header always set X-Frame-Options "DENY"
+  </FilesMatch>
+</IfModule>
