@@ -2,7 +2,7 @@
 
 Pull-based USDC subscription billing for Arc. Merchants define plans, subscribers approve a USDC allowance and subscribe, and a keeper triggers each cycle's pull. The protocol takes a 1% fee on collected payments.
 
-**Status:** contracts, keeper (charging, dunning, webhooks, allowance warnings), API with wallet sign-in, merchant dashboard, customer portal and checkout page are built and tested. Contracts: 61 tests green (53 unit + 8 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 55 tests green. API: 42 tests green. **Deployed on Arc testnet on 2026-09-26 for the M4 soak (see Deployments). Not on mainnet. Not audited.** Known open issues are listed in `SECURITY_REVIEW.md` §9.
+**Status:** contracts, keeper (charging, dunning, webhooks, allowance warnings), API with wallet sign-in, merchant dashboard, customer portal and checkout page are built and tested. Contracts: 61 tests green (53 unit + 8 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 55 tests green. API: 51 tests green. **Deployed on Arc testnet on 2026-09-26 for the M4 soak (see Deployments). Not on mainnet. Not audited.** Known open issues are listed in `SECURITY_REVIEW.md` §9.
 
 ## What's in the repo
 
@@ -20,7 +20,7 @@ Pull-based USDC subscription billing for Arc. Merchants define plans, subscriber
 
 ## How charging works
 
-1. A merchant calls `createPlan(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed)` from their wallet (there is no plan-creation UI yet). The cycle can be 1 day to 10 years. Price is immutable; repricing means a new plan.
+1. A merchant calls `createPlan(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed)` from their wallet, most simply through the dashboard's New plan form. The cycle can be 1 day to 10 years. Price is immutable; repricing means a new plan.
 2. A subscriber approves a USDC allowance to the SubscriptionManager and calls `subscribe(planId, ref)`, or calls `subscribeWithPermit2(planId, ref, permit, signature)` with a Permit2 signature (submitted by the subscriber themselves). The checkout page (`/checkout.html?plan=<id>&ref=<ref>`) does the approve-and-subscribe flow for them. Billing is in advance: without a trial, the first cycle is pulled at subscribe, and the subscribe reverts if that pull fails. `ref` is the merchant's own reference for the customer (bytes32, zero for none), stored on-chain and carried on every webhook.
 3. Anyone can call `charge(subId)` once `block.timestamp >= nextChargeAt`; it pays for the cycle that starts then. The contract spends any proration credit first, pulls the rest via `transferFrom`, sends 99% to the merchant and 1% to the FeeRouter, advances the cycle and emits `Charged`. It is permissionless by design: it can only move the subscriber's pre-approved funds to that plan's merchant.
 4. A failed pull does not revert: the contract records it (`ChargeFailed`), marks the subscription `PAST_DUE` at `maxFailed` failures, and auto-pauses it at twice that. It records at most one failure per subscription per day (`MIN_RETRY_INTERVAL`); a failing call sooner reverts `RetryTooSoon`, so nobody can rush a subscription to paused by calling `charge()` repeatedly. The keeper retries 1, 3 and then 7 days after each failure (then every 7 days).
@@ -50,8 +50,8 @@ Pull-based USDC subscription billing for Arc. Merchants define plans, subscriber
 
 **API** (`api/`, Fastify). Merchants and subscribers sign in with their wallet (Sign-In with Ethereum, 24h sessions) and only ever see their own data. It serves:
 
-- the merchant dashboard (`/`): metrics, subscriptions with references and allowance runway, dunning queue, webhooks, invoice CSV;
-- the customer portal (`/portal.html`): subscriptions and invoices, pause, resume and cancel from the wallet, and an allowance top-up when it runs low;
+- the merchant dashboard (`/`): metrics, plans with their checkout links and a New plan form, subscriptions with references and allowance runway (each can be paused, resumed or cancelled), dunning queue, webhooks with their delivery log, invoice CSV;
+- the customer portal (`/portal.html`): subscriptions and invoices; pause, resume, cancel and plan changes from the wallet; and the Levy allowance, with a top-up and a revoke;
 - the checkout page (`/checkout.html?plan=<id>&ref=<ref>`).
 
 Webhook URLs must be https on port 443 at a public address (checked at registration and again at every delivery). The merchant guide (`docs/merchant-guide.md`) covers plans, webhooks and signature verification, checkout links and references, and dunning.
@@ -123,7 +123,7 @@ To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file 
 
 - **M1:** contracts + tests (done; testnet deploy moves to M4)
 - **M2:** keeper service, indexer, dunning engine (done)
-- **M3:** signed webhooks, API, merchant dashboard, customer portal, checkout, invoicing (done, except a plan-creation UI)
+- **M3:** signed webhooks, API, merchant dashboard, customer portal, checkout, invoicing (done)
 - **M4:** testnet deploy (done 2026-09-26) and soak, then mainnet deploy
 - **M5:** LEVY token: fee split to buyback-and-burn and staking, staking fee-tier discounts, premium feature gating
 

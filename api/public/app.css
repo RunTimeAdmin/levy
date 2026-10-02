@@ -147,7 +147,7 @@ button.danger:hover:not(:disabled) { background: rgba(229, 96, 79, 0.12); border
 button.small, .button.small { padding: 7px 14px; font-size: 14px; }
 button:disabled { opacity: 0.45; cursor: default; transform: none; }
 
-input[type=text], input[type=url], input[type=number] {
+input[type=text], input[type=url], input[type=number], select {
   font: inherit;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -205,10 +205,12 @@ tbody tr:last-child td { border-bottom: 0; }
 /* Text */
 
 .muted { color: var(--muted); }
+.warn-text { color: var(--warn); }
 .empty { color: var(--muted); padding: 12px 0; margin: 0; }
 .note { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 13px; color: var(--muted); }
 .banner { background: rgba(229, 165, 75, 0.08); border: 1px solid rgba(229, 165, 75, 0.6); border-radius: 12px; padding: 14px 18px; display: grid; gap: 10px; }
 .banner button { justify-self: start; }
+.banner h2 { font-size: 16px; margin: 0; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
 /* Loading: a spinner before text that is waiting, and shimmering placeholders. */

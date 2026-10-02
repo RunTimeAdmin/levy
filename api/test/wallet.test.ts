@@ -28,6 +28,9 @@ describe("wallet.js encodings match the contracts", () => {
     ["pause", "pauseSubscription", "SubscriptionManager"],
     ["resume", "resumeSubscription", "SubscriptionManager"],
     ["cancel", "cancelSubscription", "SubscriptionManager"],
+    ["createPlan", "createPlan", "SubscriptionManager"],
+    ["changePlan", "changePlan", "SubscriptionManager"],
+    ["subscriptions", "subscriptions", "SubscriptionManager"],
   ] as const) {
     it(`${key} selector`, () => {
       const m = src.match(new RegExp(`${key}: "(0x[0-9a-f]{8})"`));
@@ -48,6 +51,26 @@ describe("wallet.js encodings match the contracts", () => {
     assert.equal(data[0].name, "nextChargeAt");
     assert.equal(data[0].type, "uint64");
   });
+
+  it("PlanCreated topic, with planId as the first indexed topic", () => {
+    const event = abi("SubscriptionManager").find((e) => e.type === "event" && e.name === "PlanCreated") as AbiEvent;
+    const m = src.match(/PLAN_CREATED_TOPIC = "(0x[0-9a-f]{64})"/);
+    assert.ok(m);
+    assert.equal(m[1], toEventSelector(event));
+    assert.equal(event.inputs[0].name, "planId");
+    assert.equal(event.inputs[0].indexed, true);
+  });
+
+  it("subscriptions() getter fields are in the order subscription() decodes", () => {
+    const getter = fn("subscriptions", "SubscriptionManager");
+    assert.deepEqual(getter.outputs.map((o) => o.name),
+      ["subscriber", "planId", "start", "nextChargeAt", "failedAttempts", "credit", "chargeCount", "status"]);
+  });
+
+  it("createPlan takes price, cycle, trial, grace, maxFailed in that order", () => {
+    assert.deepEqual(fn("createPlan", "SubscriptionManager").inputs.map((i) => i.name),
+      ["price", "cycleSeconds", "trialSeconds", "graceSeconds", "maxFailed"]);
+  });
 });
 
 describe("wallet.js chain names and explorer links", () => {
@@ -58,6 +81,42 @@ describe("wallet.js chain names and explorer links", () => {
     assert.equal(wallet.chainName(5042), "Arc");
     assert.equal(wallet.chainName(5042002), "Arc Testnet");
     assert.equal(wallet.chainName(31337), "chain 31337");
+  });
+
+  it("quotes a plan change the way SubscriptionManager.changePlan computes it", () => {
+    const now = 1_000_000;
+    const month = { price: "30000000", cycleSeconds: 2_592_000 };
+    const pro = { price: "60000000", cycleSeconds: 2_592_000 };
+    // Paid cycle with half of it left: 15 USDC credit, so 45 USDC due on the 60 USDC plan.
+    const half = { credit: 0n, chargeCount: 1n, nextChargeAt: now + 1_296_000 };
+    // Spread: the result comes from the vm sandbox's realm, with a different Object prototype.
+    assert.deepEqual({ ...wallet.changePlanQuote(half, month, pro, now) },
+      { credit: 15_000_000n, due: 45_000_000n, creditLeft: 0n, nextChargeAt: now + 2_592_000 });
+    // Downgrade with most of the cycle left: credit covers the cheaper plan and the rest carries.
+    const cheap = { price: "10000000", cycleSeconds: 604_800 };
+    const most = { credit: 0n, chargeCount: 1n, nextChargeAt: now + 2_160_000 };
+    const q = wallet.changePlanQuote(most, month, cheap, now);
+    assert.equal(q.credit, 25_000_000n);
+    assert.equal(q.due, 0n);
+    assert.equal(q.creditLeft, 15_000_000n);
+    // An unpaid trial earns no credit: the full price is due.
+    const trial = { credit: 0n, chargeCount: 0n, nextChargeAt: now + 600_000 };
+    assert.equal(wallet.changePlanQuote(trial, month, pro, now).due, 60_000_000n);
+    // Stored credit is spent first, and remaining time is capped at one cycle.
+    const stored = { credit: 5_000_000n, chargeCount: 2n, nextChargeAt: now + 9_999_999 };
+    assert.equal(wallet.changePlanQuote(stored, month, pro, now).credit, 35_000_000n);
+  });
+
+  it("turns wallet errors into plain messages", () => {
+    assert.equal(wallet.friendly({ code: 4001, message: "User rejected the request." }), "You cancelled the request in your wallet.");
+    assert.match(wallet.friendly({ code: -32002, message: "already pending" }), /already has a request waiting/);
+    assert.match(wallet.friendly({ message: "insufficient funds for gas * price + value" }), /not have enough USDC/);
+    assert.equal(wallet.friendly({ message: "something else" }), "something else");
+  });
+
+  it("points to the faucet on Arc testnet only", () => {
+    assert.equal(wallet.faucet(5042002), "https://faucet.circle.com");
+    assert.equal(wallet.faucet(5042), null);
   });
 
   it("links transactions only on chains with an explorer, and only real hashes", () => {

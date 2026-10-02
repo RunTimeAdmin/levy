@@ -101,9 +101,18 @@ $("connect").onclick = async () => {
     $("go").hidden = false;
     if (plan.trialSeconds === 0 && bal < BigInt(plan.price)) {
       status(`Your USDC balance does not cover the first charge (${usdc(plan.price)}), which is due today.`, "warn");
+      const faucet = LevyWallet.faucet(cfg.chainId);
+      if (faucet) {
+        const a = document.createElement("a");
+        a.href = faucet; a.target = "_blank"; a.rel = "noopener"; a.textContent = "Get test USDC";
+        $("status").append(" ", a, " (choose Arc Testnet), then connect again.");
+        $("connect").hidden = false;
+        $("go").hidden = true;
+      }
       $("go").disabled = true;
     } else {
       status("");
+      $("go").disabled = false;
     }
   } catch (e) { status(e.message || String(e), "bad"); }
 };

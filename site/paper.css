@@ -181,6 +181,9 @@
     --warn: #d4912c;
   }
   body { background: #fff; font-size: 10.5pt; line-height: 1.55; }
+  /* Print the settled page: style.css fades the kicker and lede in, and a print
+     taken during that fade would show them faint or blank. */
+  *, *::before, *::after { animation: none !important; transition: none !important; }
   .site-header, .site-footer, .pdf-link { display: none; }
   .paper { max-width: none; padding: 0; }
   .paper h1 { font-size: 24pt; }

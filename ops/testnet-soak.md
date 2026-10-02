@@ -47,10 +47,11 @@ Testnet to the wallet if it is missing (chain 5042002, RPC
 
 ### 1. Plans (you, from the merchant wallet)
 
-Plans can only be created by a transaction (there is no plan page yet). In
-PowerShell, set the three variables once, then run each `createPlan` line. Each
-one asks for the **merchant's** private key, hidden, then sends the
-transaction.
+Either sign in to the dashboard as the merchant and create each plan in the
+table below with **New plan** (cycle and trial in days; plan 3 is a custom
+2-day cycle with a 1-day trial), or use `cast`: in PowerShell, set the three
+variables once, then run each `createPlan` line. Each one asks for the
+**merchant's** private key, hidden, then sends the transaction.
 
 ```powershell
 $cast = 'Z:\Sentinal Engine\foundry-bin\cast.exe'
@@ -130,13 +131,13 @@ unguessable ones (docs/merchant-guide.md).
 | Day 2 | keeper | S3's third charge | Fails: `charge.failed`, `dunning.started`, PAST_DUE (plan 4 allows one failure) |
 | Day 2 | you | Right after that failure: `& $cast call $mgr "charge(uint256)" <S3 id> --rpc-url $rpc` | Reverts `RetryTooSoon`: nobody can record a second failure within a day (the H-1 fix) |
 | Day 2 | you | Portal as S2: **Pause** | PAUSED; no charge while paused |
-| Day 2.5 | you | S4 upgrades: `& $cast send $mgr "changePlan(uint256,uint256)" <S4 id> 2 --rpc-url $rpc --interactive` (S4's key) | About half a day of plan 1 left becomes about 0.5 USDC of credit, about 1.5 USDC pulled, next charge in 1 day, `subscription.updated` |
+| Day 2.5 | you | S4 upgrades: portal as S4, **Change plan** to plan 2 (check the quoted price), or `& $cast send $mgr "changePlan(uint256,uint256)" <S4 id> 2 --rpc-url $rpc --interactive` (S4's key) | About half a day of plan 1 left becomes about 0.5 USDC of credit, about 1.5 USDC pulled, next charge in 1 day, `subscription.updated` |
 | Day 3 | keeper | S3 retry | Fails again: auto-paused (`subscription.paused` with `auto: true`) |
 | Day 3 | (none) | S2's billing date passes while paused | No charge |
 | Day 4 | you | Portal as S2: **Resume** | Fresh start: charged at resume, next charge 2 days later |
 | Day 4 | you | Portal as S3: **Top up**, then **Resume** | Charged at resume, daily again, `allowance.low` clears |
 | Day 4 | Claude | `docker restart levy-keeper` just before a due charge | Charge collected once, no double charge, sync resumes |
-| Day 4.75 | you | S4 downgrades, six hours after plan 2's day-4.5 charge: `& $cast send $mgr "changePlan(uint256,uint256)" <S4 id> 1 --rpc-url $rpc --interactive` | 0.75 of a day of plan 2 left becomes 1.5 USDC of credit. Plan 1's first cycle is paid from it (a charge of 0 USDC); the 0.5 left carries, so the next charge a day later pulls only 0.5 USDC |
+| Day 4.75 | you | S4 downgrades, six hours after plan 2's day-4.5 charge: portal as S4, **Change plan** to plan 1, or `& $cast send $mgr "changePlan(uint256,uint256)" <S4 id> 1 --rpc-url $rpc --interactive` | 0.75 of a day of plan 2 left becomes 1.5 USDC of credit. Plan 1's first cycle is paid from it (a charge of 0 USDC); the 0.5 left carries, so the next charge a day later pulls only 0.5 USDC |
 | Day 7 | you | Portal as S2: **Cancel** | CANCELLED; nothing charged after this |
 | Day 7 | you | `& $cast send 0xa6efee5f5a2eb2afae102f790b4889fcc01fe848 "sweep()" --rpc-url $rpc --interactive` (any funded wallet) | The treasury's USDC rises by exactly the fees collected |
 | Day 7 | you | Dashboard: Export CSV | One row per charge; totals match the chain |

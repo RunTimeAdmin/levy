@@ -56,8 +56,8 @@
 - **Keeper:** two independent loops. The charge loop (every 30s) syncs events, charges due subscriptions, runs dunning retries, backs off charges that revert, and checks allowance runway; the delivery loop (every 5s) sends webhooks, so a slow merchant endpoint never delays charging. Pays its own gas in USDC. Single instance.
 - **Indexer:** reads every SubscriptionManager event plus only the USDC Transfers into or out of the manager and Approvals to it, in chunks of `LEVY_LOG_CHUNK_BLOCKS`. Charge truth comes from `Charged` / `ChargeFailed`, not transfer sums; the transfer table is kept for visibility only.
 - **Webhook dispatcher:** Ed25519 signature over `{timestamp}.{deliveryId}.{event}.{body}`, with `X-Levy-Timestamp`, `X-Levy-Delivery`, `X-Levy-Key-Id` and `X-Levy-Event` headers. Ten events: subscription.created, subscription.updated, charge.succeeded, charge.failed, dunning.started, subscription.paused, subscription.resumed, subscription.cancelled, invoice.ready, allowance.low. Every payload carries `subId`, `merchant` and `ref`. Up to 8 deliveries in parallel, one in flight per webhook; retries at 1m, 5m, 15m, 1h, 6h; dead-letter after 24h. URLs must be https on port 443 at a public address (checked at registration and at connect time); at most 5 per merchant.
-- **API + merchant dashboard:** Sign-In with Ethereum (24h sessions), every endpoint scoped to the signed-in address. Plans are a read-only mirror (merchants call `createPlan` from their wallet; there is no plan-creation UI yet). Metrics: MRR normalized to 30 days, counts per status, totals, charge success rate, dunning depth. Also the subscriber list with references and allowance runway, dunning queue, invoice CSV and webhook config.
-- **Customer portal:** subscriptions and invoice history, pause, resume and cancel from the wallet, allowance top-up when it runs low. White-label is a Phase 2 premium feature.
+- **API + merchant dashboard:** Sign-In with Ethereum (24h sessions), every endpoint scoped to the signed-in address. Plans mirror the on-chain registry; merchants create them from the dashboard (a `createPlan` transaction from their wallet) and copy each plan's checkout link there. Metrics: MRR normalized to 30 days, counts per status, totals, charge success rate, dunning depth. Also the subscriber list with references and allowance runway, dunning queue, invoice CSV and webhook config.
+- **Customer portal:** subscriptions and invoice history; pause, resume, cancel and plan changes from the wallet; the allowance, with top-up and revoke. White-label is a Phase 2 premium feature.
 - **Checkout page:** `/checkout.html?plan=<id>&ref=<ref>`: plan summary, approve N cycles (default 12, added to the existing allowance) and subscribe.
 
 ## Money math (read twice before writing contracts)
@@ -100,7 +100,7 @@ Open issues and the self-review are in `SECURITY_REVIEW.md`; the math audit is i
 
 **M2: Keeper + indexer.** Keeper service, indexer, dunning engine with retry schedule. Done (tested against anvil; testnet run is part of M4).
 
-**M3: SaaS layer.** Merchant dashboard, customer portal, checkout, Ed25519 webhook dispatcher, invoice records and CSV export, wallet sign-in. Done, except a plan-creation UI (merchants call `createPlan` from their wallet).
+**M3: SaaS layer.** Merchant dashboard, customer portal, checkout, Ed25519 webhook dispatcher, invoice records and CSV export, wallet sign-in. Done.
 
 **M4: Hardening + mainnet.** Testnet deploy and soak, verification checklist cleared (Permit2 flow on Arc, treasury multisig), open security items addressed, external audit, mainnet deploy with the treasury multisig. Acceptance: first real USDC subscription billed on mainnet.
 

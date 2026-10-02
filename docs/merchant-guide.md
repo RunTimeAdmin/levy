@@ -24,8 +24,10 @@ createPlan(
 )
 ```
 
-There is no plan-creation page yet: call it from your wallet (for example with
-`cast send` or a block explorer's write tab). Rules the contract enforces:
+The simplest way is the dashboard: sign in with the wallet that should receive
+the payments and use **New plan** under Plans. It shows what customers will pay,
+checks the limits below, and sends the transaction from your wallet. You can
+also call it directly (for example with `cast send`). Rules the contract enforces:
 `price` above 0, `cycleSeconds` from 1 day (86400) up to 10 years, `trialSeconds`
 shorter than `cycleSeconds`, `maxFailed` from 1 to 255.
 
@@ -204,7 +206,7 @@ Create a new plan with the new price and point new subscribers at it. Plans are 
 Refunds are your policy and happen off-chain: send USDC back to the subscriber from your own wallet. The contract has no refund function, and cancelled subscriptions are terminal.
 
 **How do I cancel a subscriber?**
-Call `cancelSubscription(subId)` as the merchant, or have the subscriber do it themselves: the customer portal (`/portal.html`) has Pause, Resume and Cancel buttons that send the transaction from their wallet. Cancellation is terminal; the subscription cannot be resumed. For a temporary stop, use `pauseSubscription` instead. Nothing is charged while paused. On `resumeSubscription`, if the next charge date has passed, billing restarts from the resume date; paused cycles are never billed. Days already paid for keep running during the pause.
+Use Pause, Resume or Cancel on the subscription in your dashboard (each is a transaction from your wallet), or call `cancelSubscription(subId)` directly. Subscribers can do the same themselves: the customer portal (`/portal.html`) has Pause, Resume and Cancel buttons, and Change plan for moving to another of your plans. Cancellation is terminal; the subscription cannot be resumed. For a temporary stop, use `pauseSubscription` instead. Nothing is charged while paused. On `resumeSubscription`, if the next charge date has passed, billing restarts from the resume date; paused cycles are never billed. Days already paid for keep running during the pause.
 
 **What does the 1% fee apply to?**
 Each collected payment. The contract sends 99% to the merchant address on the plan and 1% to the FeeRouter in the same transaction. Failed pulls cost nothing.

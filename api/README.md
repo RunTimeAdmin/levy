@@ -20,8 +20,8 @@ For production use the Docker image (see Deploying); it is compiled with `tsc`.
 
 ## Pages
 
-- `/`: merchant dashboard. Metrics, subscriptions (with the merchant's reference and each subscriber's allowance runway), dunning queue, webhooks, invoice CSV.
-- `/portal.html`: customer portal. Subscriptions and invoice history; pause, resume and cancel from the wallet; an allowance top-up when it runs low.
+- `/`: merchant dashboard. Metrics; plans with copyable checkout links and a New plan form (a `createPlan` transaction from the merchant's wallet); subscriptions (with the merchant's reference and each subscriber's allowance runway) that the merchant can pause, resume or cancel; dunning queue; webhooks with a per-endpoint delivery log; invoice CSV.
+- `/portal.html`: customer portal. Subscriptions and invoice history; pause, resume and cancel; plan changes to another plan from the same merchant, priced from the contract's own state before signing; and the Levy allowance, with a top-up and a revoke.
 - `/checkout.html?plan=<planId>&ref=<reference>`: where a customer subscribes. It shows the plan, explains the allowance, adds 12 cycles (adjustable, 1 to 120) to the customer's USDC allowance for Levy, calls `subscribe` and ends on a receipt. `ref` is optional: `0x` plus 64 hex digits, or up to 31 ASCII characters (see the merchant guide). Needs `LEVY_MANAGER_ADDRESS` and `LEVY_USDC_ADDRESS` set for the API; the examples' zero address counts as unset, and the page then says checkout is not configured.
 
 The dashboard and portal sign in with a browser wallet. The pages load no
@@ -138,5 +138,5 @@ differs from the keeper's makes every merchant's signature check fail.
 ## Tests
 
 ```bash
-npm test   # 42 tests, seeded temp DB, ephemeral port, real wallet signatures
+npm test   # 51 tests, seeded temp DB, ephemeral port, real wallet signatures
 ```

@@ -8,6 +8,16 @@ const LevyAuth = (() => {
   // Earlier versions kept a bearer token in localStorage; remove it.
   try { localStorage.removeItem("levy_session"); } catch {}
 
+  // Plain wallet errors from wallet.js when the page loads it.
+  const friendly = (e) => (typeof LevyWallet !== "undefined" ? LevyWallet.friendly(e) : e?.message || String(e));
+  async function wallet(method, params) {
+    try {
+      return await window.ethereum.request({ method, params });
+    } catch (e) {
+      throw new Error(friendly(e));
+    }
+  }
+
   const hexUtf8 = (text) =>
     "0x" + [...new TextEncoder().encode(text)].map((b) => b.toString(16).padStart(2, "0")).join("");
 
@@ -32,9 +42,9 @@ const LevyAuth = (() => {
 
   async function signIn() {
     if (!window.ethereum) throw new Error("No browser wallet found. Install one (for example MetaMask) to sign in.");
-    const [account] = await window.ethereum.request({ method: "eth_requestAccounts" });
+    const [account] = await wallet("eth_requestAccounts");
     const { nonce, message } = await send("/api/auth/challenge", { method: "POST", body: { address: account } });
-    const signature = await window.ethereum.request({ method: "personal_sign", params: [hexUtf8(message), account] });
+    const signature = await wallet("personal_sign", [hexUtf8(message), account]);
     address = (await send("/api/auth/verify", { method: "POST", body: { nonce, signature, cookie: true } })).address;
     return address;
   }
