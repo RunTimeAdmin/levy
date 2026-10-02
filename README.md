@@ -15,7 +15,7 @@ Pull-based USDC subscription billing for Arc. Merchants define plans, subscriber
 | `api/` | Fastify API plus the merchant dashboard, customer portal and checkout page. See `api/README.md` |
 | `ops/` | Dockerfiles, docker-compose, systemd unit, env example, monitoring runbook, treasury multisig plan, and the testnet soak checklist (`testnet-soak.md`) with its tools |
 | `docs/` | Merchant guide and dunning email copy |
-| `site/` | Static landing page and whitepaper (`whitepaper.html`, with a PDF built from it) |
+| `site/` | Static landing page, whitepaper (`whitepaper.html`, with a PDF built from it), public merchant docs (`docs.html`, from `docs/merchant-guide.md`) and security policy |
 | `SPEC.md`, `SECURITY_REVIEW.md`, `FEE_MATH_AUDIT.md`, `VERIFICATION.md` | Design spec, adversarial self-review, math audit, verified Arc facts |
 
 ## How charging works

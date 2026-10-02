@@ -106,6 +106,17 @@ main.wrap { flex: 1; padding-top: 28px; padding-bottom: 48px; display: grid; gri
   main.wrap { padding-top: 20px; }
 }
 
+/* Every non-mainnet deployment says so under the header (network.js). */
+.testnet-bar {
+  background: rgba(229, 165, 75, 0.1);
+  border-bottom: 1px solid rgba(229, 165, 75, 0.45);
+  color: var(--warn);
+  font-size: 13px;
+  text-align: center;
+  padding: 7px 16px;
+}
+.testnet-bar a { color: inherit; text-decoration: underline; white-space: nowrap; }
+
 .app-footer { border-top: 1px solid var(--border); padding: 20px 0; font-size: 13px; color: var(--muted); }
 .app-footer .wrap { display: flex; gap: 8px 16px; flex-wrap: wrap; justify-content: space-between; }
 .app-footer a { color: var(--muted); }

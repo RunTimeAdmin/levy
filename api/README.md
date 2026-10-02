@@ -24,6 +24,8 @@ For production use the Docker image (see Deploying); it is compiled with `tsc`.
 - `/portal.html`: customer portal. Subscriptions and invoice history; pause, resume and cancel; plan changes to another plan from the same merchant, priced from the contract's own state before signing; and the Levy allowance, with a top-up and a revoke.
 - `/checkout.html?plan=<planId>&ref=<reference>`: where a customer subscribes. It shows the plan, explains the allowance, adds 12 cycles (adjustable, 1 to 120) to the customer's USDC allowance for Levy, calls `subscribe` and ends on a receipt. `ref` is optional: `0x` plus 64 hex digits, or up to 31 ASCII characters (see the merchant guide). Needs `LEVY_MANAGER_ADDRESS` and `LEVY_USDC_ADDRESS` set for the API; the examples' zero address counts as unset, and the page then says checkout is not configured.
 
+On any chain other than Arc mainnet, all three pages show a bar under the header saying it is a test network (`public/network.js`, from `/api/config`).
+
 The dashboard and portal sign in with a browser wallet. The pages load no
 third-party code; their contract calls are encoded in `public/wallet.js`, checked
 against the ABI by `test/wallet.test.ts`.

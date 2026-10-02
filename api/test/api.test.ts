@@ -540,10 +540,12 @@ describe("static frontend", () => {
     assert.ok(checkout.body.includes("Levy Checkout"));
     assert.equal((await get("/public/wallet.js")).status, 200);
 
-    // The shared stylesheet and logo every page links.
+    // The shared stylesheet and logo every page links, and the testnet bar.
     for (const page of [dash, portal, checkout]) {
       assert.ok(page.body.includes(`href="/public/app.css"`) && page.body.includes(`src="/public/logo.svg"`));
+      assert.ok(page.body.includes(`id="testnetBar"`) && page.body.includes(`src="/public/network.js"`));
     }
+    assert.equal((await get("/public/network.js")).status, 200);
     const css = await get("/public/app.css");
     assert.equal(css.status, 200);
     assert.ok(css.headers.get("content-type")?.includes("text/css"));

@@ -2,6 +2,8 @@
 
 How to accept recurring USDC subscriptions on Arc with Levy.
 
+The public version of this guide is `site/docs.html` (getlevy.xyz/docs.html), which adds a testnet quickstart and the deployed addresses. Change both together.
+
 ## Prerequisites
 
 - A wallet with USDC on Arc (for gas and for receiving payments).
