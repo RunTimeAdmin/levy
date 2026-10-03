@@ -31,7 +31,7 @@ import { privateKeyToAccount } from "viem/accounts";
 const DEFAULTS = {
   rpc: "https://rpc.testnet.arc.io",
   chainId: 5042002,
-  manager: "0x33c8e7e46583bdfd2e001f55ac1c58bd84eb739f",
+  manager: "0x62a6512335d630ef19fcadb497adf98d883f77c6",
   usdc: "0x3600000000000000000000000000000000000000",
   permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3",
   explorer: "https://explorer.testnet.arc.io",

@@ -91,17 +91,19 @@ To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file 
 
 ## Deployments
 
-**Arc testnet** (chain 5042002), deployed 2026-09-26 in block 64031023, with the fix for H-1 (`SECURITY_REVIEW.md` §9). The record is `broadcast/Deploy.s.sol/5042002/run-1790390636694.json` (also `run-latest.json`).
+**Arc testnet** (chain 5042002), deployed 2026-10-03 in block 65201372 from `08991fa`, which enforces the dunning schedule on-chain (`retryGap`; `SECURITY_REVIEW.md` §9). The record is `broadcast/Deploy.s.sol/5042002/run-1790987718240.json` (also `run-latest.json`).
 
 | Contract | Address | Transaction |
 |---|---|---|
-| SubscriptionManager | `0x33c8e7e46583bdfd2e001f55ac1c58bd84eb739f` | `0x5c273208a2f72874936f2bfb1e0d7247e01148c2c4fb08db809deae81d4c07fe` |
-| FeeRouter | `0xa6efee5f5a2eb2afae102f790b4889fcc01fe848` | `0x30295b52c2bfb961cc886f5335c1c54dd420b683ed811b93d5b17812fba64388` |
+| SubscriptionManager | `0x62a6512335d630ef19fcadb497adf98d883f77c6` | `0x10c796c8dcb1be605a979792db25104f94fc4f11e39618cb91af64721de23a4c` |
+| FeeRouter | `0x4819975f4fa3a693ec67539bcb121eb06f280541` | `0x390f2308baa57fd862ccb34a45b39c0c85d527077eff16b63aba8b97ee74f0c4` |
 
 - Deployer and treasury: `0xe305652DB35Ed45A567538438c9B29ede7097162` (testnet only; mainnet uses the Safe).
-- Code: the on-chain runtime bytecode of both contracts matches a local build of the contract sources at `08dd7b7` byte for byte, outside the constructor-set immutables (the build metadata, which hashes the sources, matches too). The record's `commit` field says `58ed3ba` because forge was run before the fix was committed. Source is not yet verified on the explorer.
+- Code: the on-chain runtime bytecode of both contracts matches a local build of the contract sources at `08991fa` byte for byte, outside the constructor-set immutables (the build metadata, which hashes the sources, matches too), and `retryGap` reads 1, 3 and 7 days on-chain. Source is not yet verified on the explorer.
 - Soak host: keeper and API at `https://app.getlevy.xyz`.
-- **Superseded:** the first deployment the same day, in block 64020204 (SubscriptionManager `0x9df75ab83bde215f773af982af95b00646318189`, FeeRouter `0x79c6bb4030c688e64efdd2d33f0178e63fdf0b9f`, record `run-1790385119083.json`), predates the H-1 fix. It was never used for billing and nothing points at it.
+- **Superseded**, never used for billing, and nothing points at them:
+  - 2026-09-26, block 64031023 (SubscriptionManager `0x33c8e7e46583bdfd2e001f55ac1c58bd84eb739f`, FeeRouter `0xa6efee5f5a2eb2afae102f790b4889fcc01fe848`, record `run-1790390636694.json`, code `08dd7b7`): recorded failures only a day apart, so a caller could pause a subscription on day 3 instead of day 11 (finding 2 of the 2026-10-02 review). No plan or subscription was ever created on it.
+  - 2026-09-26, block 64020204 (SubscriptionManager `0x9df75ab83bde215f773af982af95b00646318189`, FeeRouter `0x79c6bb4030c688e64efdd2d33f0178e63fdf0b9f`, record `run-1790385119083.json`): predates the H-1 fix.
 
 ## Arc facts (verified 2026-09-25, see `VERIFICATION.md`)
 
