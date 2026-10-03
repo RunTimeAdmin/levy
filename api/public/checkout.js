@@ -1,10 +1,7 @@
 // Page script for checkout.html, kept out of the HTML so the Content-Security-Policy
 // can forbid inline scripts. Loaded after the shared helpers it uses.
 const $ = (id) => document.getElementById(id);
-const usdc = (units) => {
-  const v = BigInt(units);
-  return `$${v / 1_000_000n}.${(v % 1_000_000n).toString().padStart(6, "0").slice(0, 2)}`;
-};
+const usdc = (units) => LevyWallet.usdcText(units); // exact, never rounded to cents
 const every = (sec) => ({ 604800: "week", 2592000: "month (30 days)", 7776000: "quarter (90 days)", 31536000: "year" })[sec]
   ?? `${+(sec / 86400).toFixed(2)} days`;
 function status(text, cls = "") { $("status").textContent = text; $("status").className = cls; }
@@ -18,6 +15,27 @@ function row(dl, term, value, mono) {
 }
 
 let cfg, plan, account, ref, approved = false;
+
+/**
+ * Transactions this page sent for this plan and wallet, kept across reloads:
+ * { approveTarget, approveHash, subscribeHash, at }. A subscribe whose result
+ * is unknown must never be sent again blind (it could create a second paid
+ * subscription), and an approval is a fixed total, so a retry cannot add the
+ * cycles twice. Kept for a day.
+ */
+const pendingKey = () => `levy-checkout:${cfg.chainId}:${plan.planId}:${account.toLowerCase()}`;
+function loadPending() {
+  try {
+    const p = JSON.parse(localStorage.getItem(pendingKey()) || "null");
+    return p && Date.now() - p.at < 86_400_000 ? p : {};
+  } catch { return {}; }
+}
+function savePending(p) {
+  try { localStorage.setItem(pendingKey(), JSON.stringify({ ...p, at: Date.now() })); } catch {}
+}
+function clearPending() {
+  try { localStorage.removeItem(pendingKey()); } catch {}
+}
 
 /**
  * The merchant's reference from the link (?ref=), as bytes32: either 0x plus
@@ -96,6 +114,16 @@ $("connect").onclick = async () => {
   try {
     status("Connecting to your wallet...", "busy");
     account = await LevyWallet.connect(cfg.chainId);
+    // Something sent from this page earlier (before a reload, say): settle it first.
+    const p = loadPending();
+    if (p.subscribeHash || p.approveHash) {
+      await refreshWallet();
+      $("connect").hidden = true;
+      $("go").hidden = false;
+      if (p.approveHash) $("cycles").disabled = true;
+      await checkPending();
+      return;
+    }
     const { bal } = await refreshWallet();
     $("connect").hidden = true;
     $("go").hidden = false;
@@ -118,34 +146,107 @@ $("connect").onclick = async () => {
 };
 
 $("go").onclick = async () => {
-  if (cycles() === null) { status("Enter a whole number of billing cycles from 1 to 120.", "bad"); return; }
+  if (!approved && cycles() === null) { status("Enter a whole number of billing cycles from 1 to 120.", "bad"); return; }
   $("go").disabled = true;
   try {
+    let p = loadPending();
     if (!approved) {
+      // The total is fixed when the approval is sent; approve() sets the
+      // allowance to it, so sending the same approval again changes nothing.
       const { allow } = await refreshWallet();
       const total = allow + BigInt(plan.price) * BigInt(cycles());
       status("Step 1 of 2: approve the USDC allowance in your wallet...", "busy");
-      await LevyWallet.approve(account, cfg.usdcAddress, cfg.managerAddress, total);
+      await LevyWallet.approve(account, cfg.usdcAddress, cfg.managerAddress, total, (hash) => {
+        p = { ...p, approveTarget: total.toString(), approveHash: hash };
+        savePending(p);
+        $("cycles").disabled = true;
+      });
       approved = true; // a retry after a failed subscribe must not approve again
       await refreshWallet();
     }
     status("Step 2 of 2: confirm the subscription in your wallet...", "busy");
-    const result = await LevyWallet.subscribe(account, cfg.managerAddress, plan.planId, ref.hex);
-    status("Subscribed. Loading your receipt...", "busy");
-    const allow = await LevyWallet.allowance(cfg.usdcAddress, account, cfg.managerAddress).catch(() => null);
-    try {
-      showReceipt(result, allow);
-    } catch {
-      // Subscribed either way: never fall through to the error path, which re-enables Subscribe.
-      status(`Subscribed${result.subId ? `: subscription #${result.subId}` : ""}. Transaction ${result.txHash}.`, "ok");
-      $("go").hidden = true;
-    }
+    const result = await LevyWallet.subscribe(account, cfg.managerAddress, plan.planId, ref.hex, (hash) => {
+      p = { ...p, subscribeHash: hash };
+      savePending(p);
+    });
+    clearPending();
+    await subscribed(result);
   } catch (e) {
+    if (e.unknown) { unknownOutcome(e.hash); return; } // Subscribe stays disabled until checked
+    if (e.failed) forget(e.hash);
     status(e.message || String(e), "bad");
     $("go").disabled = false;
     $("go").textContent = approved ? "Subscribe" : "Approve and subscribe";
   }
 };
+
+async function subscribed(result) {
+  status("Subscribed. Loading your receipt...", "busy");
+  const allow = await LevyWallet.allowance(cfg.usdcAddress, account, cfg.managerAddress).catch(() => null);
+  try {
+    showReceipt(result, allow);
+  } catch {
+    // Subscribed either way: never fall through to the error path, which re-enables Subscribe.
+    status(`Subscribed${result.subId ? `: subscription #${result.subId}` : ""}. Transaction ${result.txHash}.`, "ok");
+    $("go").hidden = true;
+  }
+}
+
+/** Drops a transaction that failed on-chain from the record: it changed nothing. */
+function forget(hash) {
+  const p = loadPending();
+  if (p.subscribeHash === hash) delete p.subscribeHash;
+  if (p.approveHash === hash) { delete p.approveHash; delete p.approveTarget; $("cycles").disabled = false; }
+  if (p.subscribeHash || p.approveHash) savePending(p); else clearPending();
+}
+
+/**
+ * Reads how the recorded transactions ended. A confirmed subscribe shows the
+ * receipt; a confirmed approval moves on to step 2; a failed one is forgotten
+ * so the customer can try again; one still unknown keeps Subscribe disabled.
+ */
+async function checkPending() {
+  const p = loadPending();
+  const hash = p.subscribeHash || p.approveHash;
+  if (!hash) return;
+  status("Checking the transaction you sent earlier...", "busy");
+  const r = await LevyWallet.receipt(hash);
+  if (!r) { unknownOutcome(hash); return; }
+  if (r.status !== "0x1") {
+    forget(hash);
+    status("That transaction failed on-chain, so nothing changed. You can try again.", "warn");
+    $("go").disabled = false;
+    $("go").textContent = approved ? "Subscribe" : "Approve and subscribe";
+    return;
+  }
+  if (hash === p.subscribeHash) {
+    clearPending();
+    await subscribed(LevyWallet.subscribedFrom(r, cfg.managerAddress));
+    return;
+  }
+  approved = true; // the approval landed: only the subscription is left
+  await refreshWallet();
+  status("Your approval is confirmed. Now confirm the subscription.", "ok");
+  $("go").disabled = false;
+  $("go").textContent = "Subscribe";
+}
+
+/** The wallet sent it but its result is not known yet: never invite a blind retry. */
+function unknownOutcome(hash) {
+  status("Your transaction was sent, but its result is not confirmed yet. Do not pay again until it is. ", "warn");
+  const url = LevyWallet.txUrl(cfg.chainId, hash);
+  if (url) {
+    const a = document.createElement("a");
+    a.href = url; a.target = "_blank"; a.rel = "noopener"; a.textContent = "See it on the explorer";
+    $("status").append(a, " ");
+  }
+  const again = document.createElement("button");
+  again.className = "ghost small";
+  again.textContent = "Check again";
+  again.onclick = () => { again.disabled = true; checkPending(); };
+  $("status").append(again);
+  $("go").disabled = true;
+}
 
 /**
  * Replaces the plan and payment cards with a receipt: what was bought, what was

@@ -103,12 +103,14 @@ themselves. See SECURITY_REVIEW.md §9.
   document; fixed, with a regression test and the invariant fuzzer now covering
   the full 1..255 range (it was bounded to 1..10, which is why it never hit
   this).
-- A failure is recorded at most once per `MIN_RETRY_INTERVAL` (1 day) per
-  subscription: `lastFailedAt[subId]` holds the last one, and a failing
-  `charge()` sooner reverts `RetryTooSoon`. So `failedAttempts` can rise by
-  at most one a day whoever calls `charge()`, and reaching the pause threshold
-  takes at least `2 × maxFailed - 1` days. `lastFailedAt` is a uint64 of
-  `block.timestamp`; `last + MIN_RETRY_INTERVAL` is computed in uint256.
+- Failures are recorded on the dunning schedule: `lastFailedAt[subId]` holds
+  the last one, and a failing `charge()` before `lastFailedAt +
+  retryGap(failedAttempts)` (1 day after the first failure, 3 after the
+  second, 7 after each later one; 0 with no failure since the last success)
+  reverts `RetryTooSoon`. So reaching the pause threshold takes at least
+  `1 + 3 + 7 × (2 × maxFailed - 3)` days whoever calls `charge()` (1 day for
+  `maxFailed` 1). `lastFailedAt` is a uint64 of `block.timestamp`; the sum is
+  computed in uint256.
 - `failedAttempts` resets to 0 on any successful charge, plan change or resume.
   A resume therefore starts a full new dunning run instead of re-pausing on the
   next failure. (Before 2026-09-25 resume kept the count, so `failedAttempts`

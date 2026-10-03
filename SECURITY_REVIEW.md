@@ -48,12 +48,15 @@ there is no repricing or merchant-swap attack.
   keeper transactions per resume. Resume resets the failure count and a
   subscriber can resume their own subscription, so each resume (paid by the
   attacker) buys another round.
-- The contract records at most one failure per subscription per
-  `MIN_RETRY_INTERVAL` (1 day); a failing `charge()` sooner than that reverts
-  `RetryTooSoon`. `charge()` is permissionless, so without this a third party
-  could call it repeatedly while a pull fails and pause the subscription in
-  one block (H-1, §9). Auto-pause now takes at least `2 × maxFailed - 1` days
-  after the first failure, whoever calls `charge()`.
+- The contract records failures only on the dunning schedule: `retryGap`
+  requires 1 day before the second failure, 3 days before the third and 7
+  before each later one; a failing `charge()` sooner reverts `RetryTooSoon`.
+  `charge()` is permissionless, so without this a third party could call it
+  repeatedly while a pull fails and pause the subscription in one block (H-1,
+  §9), and with only a flat 1-day gap still pause it on day 3 instead of day
+  11 (finding 2 of the 2026-10-02 review). Auto-pause now takes at least
+  `1 + 3 + 7 × (2 × maxFailed - 3)` days after the first failure (1 day for
+  `maxFailed` 1), whoever calls `charge()`.
 - Allowance front-running (revoke just before the keeper's `charge()`): the
   charge fails gracefully and dunning handles it. No theft; same bound.
 - **Mitigated: self-funded spam subscriptions.** Anyone can create a plan
@@ -83,7 +86,7 @@ live in `_collect`, shared with `subscribe` and `changePlan`):
 
 The caller never receives or redirects tokens; front-running `charge()` changes
 nothing. The one thing a caller does control is when a failing pull is
-recorded, and the contract spaces those at least a day apart (§3).
+recorded, and the contract spaces those on the dunning schedule (§3).
 
 ## 5. FeeRouter trust assumptions
 
@@ -187,13 +190,27 @@ recorded, and the contract spaces those at least a day apart (§3).
   is permissionless and a failed pull did not move `nextChargeAt`, so anyone
   could call it `2 × maxFailed` times in one block while a subscriber's pull
   was failing and push the subscription from ACTIVE to PAUSED at once,
-  skipping the off-chain dunning schedule. No funds could move. Fixed by
-  `MIN_RETRY_INTERVAL` (§3): at most one recorded failure per subscription
-  per day, a sooner failing call reverts `RetryTooSoon`, successful charges
-  are never held back, and resume clears the timer. The review's proof of
-  concept became regression tests (`test/FailureCooldown.t.sol`), and
+  skipping the off-chain dunning schedule. No funds could move. Fixed first
+  by a flat 1-day gap between recorded failures, then (2026-10-02 review,
+  finding 2) by the full schedule, `retryGap` (§3): 1, 3, then 7 days, a
+  sooner failing call reverts `RetryTooSoon`, successful charges are never
+  held back, and resume clears the timer. The review's proof of concept
+  became regression tests (`test/FailureCooldown.t.sol`, including a griefer
+  calling every day who cannot pause before day 11), and
   `invariant_failuresSpaced` fuzzes it with a griefing action. Found after
   the first testnet deploy; the contracts were redeployed before the soak.
+- **Second external review (2026-10-02, `docs/REVIEW_2026-10-02.md`).**
+  Fixed: the schedule above (finding 2); the deploy script now refuses any
+  USDC or Permit2 but the canonical ones on Arc mainnet (4); the checkout
+  shows exact amounts (7), never invites a blind retry after a transaction
+  whose result is unknown, keeps sent transactions across reloads and fixes
+  the approval total so a retry cannot add the cycles twice (8), and checks
+  the wallet really is on Arc after a switch (9). Open, before mainnet: a
+  keeper policy for uneconomic plans (3, open item 1 below), verified
+  merchant identity on the checkout (5), a Permit2 checkout path and Permit2
+  allowances in the runway check (6), and rebuilding dunning state from the
+  chain after keeper database loss (10). Finding 1 (the soak had not
+  started) is a status item.
 
 **Open** (for the paid audit and M4):
 

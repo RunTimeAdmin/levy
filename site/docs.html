@@ -212,7 +212,7 @@ GET /api/invoices?format=csv</code></pre>
   <p>The CSV columns are <code>id, invoiceRef, subId, subscriber, merchant, amountUsdc, feeUsdc, txHash, blockNumber, chargeCount</code>, with amounts in decimal USDC.</p>
 
   <h2 id="dunning">8. When a payment fails</h2>
-  <p>A payment fails when the customer's USDC balance or allowance is too low. The contract never reverts on a failed payment: it records the failure on-chain and emits <code>ChargeFailed</code>, at most once a day per subscription. Then:</p>
+  <p>A payment fails when the customer's USDC balance or allowance is too low. The contract never reverts on a failed payment: it records the failure on-chain and emits <code>ChargeFailed</code>, never sooner than the schedule below: the contract enforces its gaps, so nobody calling <code>charge</code> can pause a subscription faster. Then:</p>
   <ol>
     <li>Levy retries 1 day after the first failure, 3 days after the second, and every 7 days after that.</li>
     <li>When failures reach the plan's <code>maxFailed</code>, the subscription is past due. It stays chargeable, and Levy keeps retrying.</li>

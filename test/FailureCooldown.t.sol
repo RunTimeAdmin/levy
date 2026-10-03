@@ -14,11 +14,12 @@ contract ChargeLoop {
     }
 }
 
-/// @notice Regression tests for the permissionless-failure finding (H-1 in the
-///         2026-09-25 external review): charge() is callable by anyone, so
-///         without a minimum gap between recorded failures a griefer could
-///         push a subscription whose pull fails to PAST_DUE and PAUSED in one
-///         block. Adapted from the review's proof of concept, which now fails.
+/// @notice Regression tests for the permissionless-failure findings: charge() is
+///         callable by anyone, so without gaps between recorded failures a
+///         griefer could push a subscription whose pull fails to PAST_DUE and
+///         PAUSED in one block (H-1, 2026-09-25 review; adapted from its proof
+///         of concept, which now fails), and with a flat 1-day gap still pause
+///         it on day 3 instead of day 11 (finding 2, 2026-10-02 review).
 contract FailureCooldownTest is Test {
     MockUSDC usdc;
     SubscriptionManager manager;
@@ -78,27 +79,74 @@ contract FailureCooldownTest is Test {
         assertEq(uint256(status), uint256(SubscriptionManager.Status.ACTIVE));
     }
 
-    function test_failuresAreAtLeastADayApart() public {
+    function test_retryGapIsTheDunningSchedule() public view {
+        assertEq(manager.retryGap(0), 0);
+        assertEq(manager.retryGap(1), 1 days);
+        assertEq(manager.retryGap(2), 3 days);
+        assertEq(manager.retryGap(3), 7 days);
+        assertEq(manager.retryGap(200), 7 days);
+    }
+
+    function test_failuresFollowTheDunningSchedule() public {
         manager.charge(subId); // failure 1 at t0
         uint256 t0 = block.timestamp;
 
         vm.warp(t0 + 1 days - 1);
         vm.expectRevert(SubscriptionManager.RetryTooSoon.selector);
         manager.charge(subId);
-
         vm.warp(t0 + 1 days);
         manager.charge(subId); // failure 2: PAST_DUE
         (uint64 failed, SubscriptionManager.Status status) = _state();
         assertEq(failed, 2);
         assertEq(uint256(status), uint256(SubscriptionManager.Status.PAST_DUE));
 
-        vm.warp(t0 + 2 days);
-        manager.charge(subId); // failure 3
-        vm.warp(t0 + 3 days);
-        manager.charge(subId); // failure 4: auto-paused, three days after the first
+        vm.warp(t0 + 4 days - 1);
+        vm.expectRevert(SubscriptionManager.RetryTooSoon.selector);
+        manager.charge(subId);
+        vm.warp(t0 + 4 days);
+        manager.charge(subId); // failure 3, three days after the second
+
+        vm.warp(t0 + 11 days - 1);
+        vm.expectRevert(SubscriptionManager.RetryTooSoon.selector);
+        manager.charge(subId);
+        vm.warp(t0 + 11 days);
+        manager.charge(subId); // failure 4: auto-paused, eleven days after the first
         (failed, status) = _state();
         assertEq(failed, 4);
         assertEq(uint256(status), uint256(SubscriptionManager.Status.PAUSED));
+    }
+
+    /// @dev Calling every day is the best a griefer can do, and it records
+    ///      failures only when the keeper would: days 0, 1, 4 and 11.
+    function test_dailyGrieferCannotPauseBeforeTheSchedule() public {
+        uint256 t0 = block.timestamp;
+        uint256 recorded;
+        for (uint256 d = 0; d <= 11; d++) {
+            vm.warp(t0 + d * 1 days);
+            vm.prank(attacker);
+            try manager.charge(subId) {
+                recorded++;
+            } catch {}
+            (, SubscriptionManager.Status status) = _state();
+            if (d < 11) assertTrue(status != SubscriptionManager.Status.PAUSED, "paused before day 11");
+        }
+        assertEq(recorded, 4);
+        (, SubscriptionManager.Status finalStatus) = _state();
+        assertEq(uint256(finalStatus), uint256(SubscriptionManager.Status.PAUSED));
+    }
+
+    function test_topUpDuringTheGapIsCollected() public {
+        uint256 t0 = block.timestamp;
+        manager.charge(subId); // failure 1
+        vm.warp(t0 + 1 days);
+        manager.charge(subId); // failure 2: PAST_DUE, next failure not before day 4
+        vm.warp(t0 + 2 days);
+        vm.prank(subscriber);
+        usdc.approve(address(manager), PRICE * 3);
+        manager.charge(subId); // a top-up inside the 3-day gap is collected at once
+        (uint64 failed, SubscriptionManager.Status status) = _state();
+        assertEq(failed, 0);
+        assertEq(uint256(status), uint256(SubscriptionManager.Status.ACTIVE));
     }
 
     function test_successIsNeverHeldBack() public {
@@ -119,8 +167,9 @@ contract FailureCooldownTest is Test {
 
     function test_resumeResetsTheTimer() public {
         uint256 t0 = block.timestamp;
-        for (uint256 d = 0; d < 4; d++) {
-            vm.warp(t0 + d * 1 days);
+        uint256[4] memory days_ = [uint256(0), 1, 4, 11]; // the schedule's failure days
+        for (uint256 i = 0; i < 4; i++) {
+            vm.warp(t0 + days_[i] * 1 days);
             manager.charge(subId);
         }
         (, SubscriptionManager.Status status) = _state();

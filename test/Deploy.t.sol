@@ -68,6 +68,18 @@ contract DeployTest is Test {
         assertEq(router.treasury(), safe);
     }
 
+    function testMainnetRequiresCanonicalUsdcAndPermit2() public {
+        vm.chainId(5042);
+        address safe = address(new Token18());
+        address otherUsdc = address(new MockUSDC()); // six decimals, has code: passes every other check
+        vm.expectRevert(abi.encodeWithSelector(Deploy.NotCanonical.selector, otherUsdc, ARC_USDC));
+        script.deploy(otherUsdc, PERMIT2, safe);
+
+        address otherPermit2 = address(new MockPermit2());
+        vm.expectRevert(abi.encodeWithSelector(Deploy.NotCanonical.selector, otherPermit2, PERMIT2));
+        script.deploy(ARC_USDC, otherPermit2, safe);
+    }
+
     function testTestnetAllowsKeyTreasury() public {
         vm.chainId(5042002);
         (FeeRouter router, ) = script.deploy(ARC_USDC, PERMIT2, treasury);

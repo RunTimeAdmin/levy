@@ -34,6 +34,7 @@ contract Deploy is Script {
     error NoCode(address account);
     error WrongDecimals(uint8 decimals);
     error TreasuryNotContract(address treasury);
+    error NotCanonical(address given, address expected);
 
     function run() external returns (FeeRouter router, SubscriptionManager manager) {
         address usdc = vm.envOr("LEVY_USDC", ARC_USDC);
@@ -63,8 +64,12 @@ contract Deploy is Script {
         if (permit2.code.length == 0) revert NoCode(permit2);
         uint8 decimals = IERC20Metadata(usdc).decimals();
         if (decimals != 6) revert WrongDecimals(decimals);
-        if (block.chainid == ARC_MAINNET && treasury.code.length == 0) {
-            revert TreasuryNotContract(treasury);
+        if (block.chainid == ARC_MAINNET) {
+            // Both become immutable in the manager: on mainnet only Arc's own
+            // USDC and the canonical Permit2 are accepted, whatever the env says.
+            if (usdc != ARC_USDC) revert NotCanonical(usdc, ARC_USDC);
+            if (permit2 != PERMIT2) revert NotCanonical(permit2, PERMIT2);
+            if (treasury.code.length == 0) revert TreasuryNotContract(treasury);
         }
 
         router = new FeeRouter(usdc, treasury);

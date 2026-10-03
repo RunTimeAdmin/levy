@@ -25,7 +25,7 @@ contract LevyHandler is Test {
     mapping(uint256 => uint256) public chargeCountAtCancel;
     mapping(uint256 => uint256) public paid; // USDC pulled per subscription, summed from Charged
     mapping(uint256 => uint256) public lastFailureSeen; // from ChargeFailed; cleared on resume, as the contract does
-    bool public failuresTooClose; // two recorded failures of one subscription under MIN_RETRY_INTERVAL apart
+    bool public failuresTooClose; // two recorded failures of one subscription closer than retryGap allows
 
     constructor(MockUSDC _usdc, FeeRouter _router, SubscriptionManager _manager, address _treasury) {
         usdc = _usdc;
@@ -56,8 +56,11 @@ contract LevyHandler is Test {
                 (uint256 amount, , ) = abi.decode(logs[i].data, (uint256, uint256, uint256));
                 paid[id] += amount;
             } else if (logs[i].topics[0] == SubscriptionManager.ChargeFailed.selector) {
+                // The event carries the count including this failure; the gap
+                // depends on how many came before it since the last success.
+                uint256 before = abi.decode(logs[i].data, (uint256)) - 1;
                 uint256 last = lastFailureSeen[id];
-                if (last != 0 && block.timestamp < last + manager.MIN_RETRY_INTERVAL()) failuresTooClose = true;
+                if (before > 0 && block.timestamp < last + manager.retryGap(before)) failuresTooClose = true;
                 lastFailureSeen[id] = block.timestamp;
             }
         }
@@ -245,7 +248,7 @@ contract LevyInvariantTest is Test {
     }
 
     /// @notice Anyone can call charge(), but a subscription's recorded failures are
-    ///         never less than MIN_RETRY_INTERVAL apart (H-1 in the 2026-09-25 review).
+    ///         always spaced by the dunning schedule (retryGap: 1, 3, then 7 days).
     function invariant_failuresSpaced() public view {
         assertFalse(handler.failuresTooClose());
     }

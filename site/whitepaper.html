@@ -323,7 +323,7 @@
       s.failedAttempts = 0
       if s.status in {TRIAL, PAST_DUE}: s.status = ACTIVE
   else:
-      require now &gt;= lastFailedAt[s] + 1 day  // else revert RetryTooSoon
+      require now &gt;= lastFailedAt[s] + retryGap(s.failedAttempts)  // 0, 1, 3, then 7 days; else revert RetryTooSoon
       lastFailedAt[s] = now
       s.failedAttempts += 1                    // emits ChargeFailed; no revert
       if s.failedAttempts &gt;= maxFailed:     s.status = PAST_DUE
@@ -345,13 +345,13 @@ collect(s, plan):                               // shared by subscribe, charge, 
   <ul>
     <li><strong>No funds at rest.</strong> The pull goes into the contract and straight back out to the merchant and the fee router in the same transaction.</li>
     <li><strong>The schedule does not drift.</strong> A successful charge moves the billing date forward by exactly one cycle from its previous value. A late call does not shift later dates. If the keeper misses several billing dates, each needs its own call and each collects one cycle.</li>
-    <li><strong>Failures are recorded, not reverted, and at most once a day.</strong> A pull fails when the subscriber lacks the balance or the allowance. The call still succeeds, the failure count goes up and <code>ChargeFailed</code> is emitted, so the failure is on the record and the keeper's transaction is not wasted on a revert. Because anyone can call <code>charge</code>, the contract records at most one failure per subscription per day: a failing call sooner reverts with <code>RetryTooSoon</code> and changes nothing, so nobody can rush a subscription through dunning. Successful charges are never held back.</li>
+    <li><strong>Failures are recorded, not reverted, on the dunning schedule.</strong> A pull fails when the subscriber lacks the balance or the allowance. The call still succeeds, the failure count goes up and <code>ChargeFailed</code> is emitted, so the failure is on the record and the keeper's transaction is not wasted on a revert. Because anyone can call <code>charge</code>, the contract enforces the schedule's gaps: the next failure can be recorded 1 day after the first, 3 days after the second and 7 days after each later one. A failing call sooner reverts with <code>RetryTooSoon</code> and changes nothing, so nobody can rush a subscription through dunning. Successful charges are never held back.</li>
     <li><strong>Two allowance sources.</strong> The pull tries the direct ERC-20 allowance first, then a Permit2 allowance, and stops at the first that succeeds.</li>
     <li><strong>Every charge has an invoice reference.</strong> <code>Charged(subId, amount, fee, invoiceRef, chargeCount)</code> carries <code>invoiceRef = keccak256(abi.encode(subId, chargeCount))</code>, a deterministic reference unique to that charge.</li>
   </ul>
 
   <h3>4.6 Dunning</h3>
-  <p>Dunning, the process of recovering failed payments, is split between the chain and the keeper. The contract holds the thresholds: at <code>maxFailed</code> failures a subscription becomes PAST_DUE and can still be charged; at twice that, <code>charge</code> itself pauses it. No off-chain service decides to stop billing a customer, and because failures are recorded at most a day apart, nobody can make that happen faster than the thresholds allow: a plan with <code>maxFailed</code> of 2 cannot pause itself sooner than three days after the first failure. The keeper holds the schedule: by default it retries 1 day after the first failure, 3 days after the second and 7 days after each later one (configurable per deployment). A success at any point resets the failure count, returns the subscription to ACTIVE and moves the billing date one cycle past the missed one.</p>
+  <p>Dunning, the process of recovering failed payments, is split between the chain and the keeper. The contract holds the thresholds: at <code>maxFailed</code> failures a subscription becomes PAST_DUE and can still be charged; at twice that, <code>charge</code> itself pauses it. No off-chain service decides to stop billing a customer, and because the contract enforces the schedule's gaps, nobody can make that happen faster than the schedule allows: a plan with <code>maxFailed</code> of 2 cannot pause itself sooner than 11 days after the first failure. The keeper retries on that schedule, 1 day after the first failure, 3 days after the second and 7 days after each later one; a deployment can lengthen the gaps but not shorten them. A success at any point resets the failure count, returns the subscription to ACTIVE and moves the billing date one cycle past the missed one.</p>
 
   <figure class="fig">
     <svg viewBox="0 0 720 140" role="img" aria-labelledby="fig3t">
@@ -417,13 +417,13 @@ credit = credit + floor(price_old * r / cycle_old)</div>
     <li><strong>Conservation:</strong> every USDC unit minted in the test sits in exactly one tracked account.</li>
     <li><strong>No funds at rest:</strong> the SubscriptionManager's balance is always zero.</li>
     <li><strong>Bounded failures:</strong> <code>failedAttempts</code> never exceeds twice <code>maxFailed</code>.</li>
-    <li><strong>Spaced failures:</strong> a subscription's recorded failures are never less than a day apart.</li>
+    <li><strong>Spaced failures:</strong> a subscription's recorded failures always follow the dunning schedule's gaps.</li>
     <li><strong>Cancel is terminal:</strong> a cancelled subscription's charge count never changes again.</li>
     <li><strong>Monotonic schedule:</strong> a billing date never falls before the subscription's start.</li>
     <li><strong>Credit is backed:</strong> a subscription never holds more credit than the USDC it has paid.</li>
     <li><strong>Credit is bounded:</strong> credit never exceeds the largest plan price.</li>
   </ol>
-  <p>Continuous integration runs 1,000 sequences of 40 calls on every push, alongside 53 unit tests. The keeper has 55 tests, including an end-to-end run against a local chain; the API has 32.</p>
+  <p>Continuous integration runs 1,000 sequences of 40 calls on every push, alongside 57 unit tests. The keeper has 55 tests, including an end-to-end run against a local chain; the API has 55.</p>
 
   <!-- 6 -->
   <h2 id="security">6. Security model</h2>
@@ -454,7 +454,7 @@ credit = credit + floor(price_old * r / cycle_old)</div>
   <p>Every function that moves tokens is guarded against reentrancy. State is written after the transfers in these functions, the reverse of the usual checks-effects-interactions order. That is safe with USDC, which makes no callbacks on transfer, but it would matter with a token that did, and pause, resume and cancel are not guarded. This is flagged for the audit.</p>
 
   <h3>6.5 Denial of service and keeper cost</h3>
-  <p>A customer who revokes their allowance cannot make the keeper's transaction revert; the failure is recorded and costs one transaction. Each subscription can fail at most twice <code>maxFailed</code> times before it pauses itself, at most once a day, and only a resume, which the attacker must pay for, buys another round.</p>
+  <p>A customer who revokes their allowance cannot make the keeper's transaction revert; the failure is recorded and costs one transaction. Each subscription can fail at most twice <code>maxFailed</code> times before it pauses itself, no faster than the dunning schedule, and only a resume, which the attacker must pay for, buys another round.</p>
   <p>A cheaper attack is a self-funded subscription: create a plan priced at one unit and subscribe to it. The attacker pays themselves, so charges never fail and never pause, and the keeper pays gas for each one. The one-day minimum cycle limits every such subscription to one charge a day, but the number of subscriptions is unbounded. The mitigation is keeper policy, for example skipping subscriptions whose fee does not cover their gas (&sect;8.4), and the keeper's gas spend is on the monitoring list.</p>
 
   <h3>6.6 Permit2</h3>
@@ -471,7 +471,7 @@ credit = credit + floor(price_old * r / cycle_old)</div>
     <li><strong>Resume billed paused cycles</strong> and kept the failure count. Resume is now a fresh start.</li>
     <li><strong>An overflow in the auto-pause check.</strong> For <code>maxFailed</code> of 128 or more, doubling it in 8-bit arithmetic overflowed and made every failed charge revert. The fuzzer's range was widened to 1 to 255.</li>
     <li><strong>No minimum cycle.</strong> A one-second plan let a customer's mistaken approval be drained in seconds and let spam subscriptions cost the keeper gas every 30 seconds. The minimum is now one day.</li>
-    <li><strong>Failures recorded back to back.</strong> Found by an external review after the first testnet deployment. Since <code>charge</code> is permissionless and a failed pull does not move the billing date, anyone could call it repeatedly while a customer's payment was failing and pause the subscription in one block, skipping the dunning schedule. No funds could move. Failures are now recorded at most once a day (&sect;4.5), the review's attack is a regression test, and the fuzzer checks it with a griefing action. The contracts were redeployed on testnet before the soak.</li>
+    <li><strong>Failures recorded back to back.</strong> Found by an external review after the first testnet deployment. Since <code>charge</code> is permissionless and a failed pull does not move the billing date, anyone could call it repeatedly while a customer's payment was failing and pause the subscription in one block, skipping the dunning schedule. No funds could move. Failures are now recorded only on the dunning schedule, 1, 3, then 7 days apart (&sect;4.5); a flat one-day gap, the first fix, still let a caller pause a subscription on day 3 instead of day 11, which a second review pointed out. The review's attack is a regression test, and the fuzzer checks the spacing with a griefing action. The contracts were redeployed on testnet before the soak.</li>
   </ol>
   <p>Open items, all tracked for the audit and the testnet soak:</p>
   <ul>
@@ -598,7 +598,7 @@ credit = credit + floor(price_old * r / cycle_old)</div>
       <tr><td><code>createPlan(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed)</code></td><td>Anyone (becomes the merchant)</td><td>Creates an immutable plan; emits <code>PlanCreated</code></td></tr>
       <tr><td><code>subscribe(planId, ref)</code></td><td>The subscriber</td><td>Starts a subscription; charges the first cycle unless the plan has a trial</td></tr>
       <tr><td><code>subscribeWithPermit2(planId, ref, permit, signature)</code></td><td>The permit's signer</td><td>Grants a Permit2 allowance and subscribes in one transaction</td></tr>
-      <tr><td><code>charge(subId)</code></td><td>Anyone, once due</td><td>Collects one cycle, or records a failure (at most one a day; sooner reverts <code>RetryTooSoon</code>)</td></tr>
+      <tr><td><code>charge(subId)</code></td><td>Anyone, once due</td><td>Collects one cycle, or records a failure (on the 1, 3, 7-day schedule; sooner reverts <code>RetryTooSoon</code>)</td></tr>
       <tr><td><code>changePlan(subId, newPlanId)</code></td><td>The subscriber</td><td>Moves to a same-merchant plan, billed now, less credit</td></tr>
       <tr><td><code>pauseSubscription(subId)</code></td><td>Subscriber or merchant</td><td>Stops charges until resumed</td></tr>
       <tr><td><code>resumeSubscription(subId)</code></td><td>Subscriber or merchant</td><td>Fresh start; resets failures</td></tr>

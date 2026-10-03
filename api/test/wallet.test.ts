@@ -74,7 +74,10 @@ describe("wallet.js encodings match the contracts", () => {
 });
 
 describe("wallet.js chain names and explorer links", () => {
-  const wallet = runInNewContext(`${src}; LevyWallet`, { window: {} });
+  // setTimeout runs at once here, so a two-minute receipt wait finishes instantly.
+  const ctx: { window: { ethereum?: unknown }; setTimeout: (fn: () => void) => void } =
+    { window: {}, setTimeout: (fn) => setImmediate(fn) };
+  const wallet = runInNewContext(`${src}; LevyWallet`, ctx);
   const hash = `0x${"ab".repeat(32)}`;
 
   it("names the Arc chains, and falls back to the chain id", () => {
@@ -112,6 +115,79 @@ describe("wallet.js chain names and explorer links", () => {
     assert.match(wallet.friendly({ code: -32002, message: "already pending" }), /already has a request waiting/);
     assert.match(wallet.friendly({ message: "insufficient funds for gas * price + value" }), /not have enough USDC/);
     assert.equal(wallet.friendly({ message: "something else" }), "something else");
+  });
+
+  it("shows USDC amounts exactly, never rounded to cents", () => {
+    assert.equal(wallet.usdcText(29_000_000n), "$29.00");
+    assert.equal(wallet.usdcText(29_500_000n), "$29.50");
+    assert.equal(wallet.usdcText(29_000_001n), "$29.000001");
+    assert.equal(wallet.usdcText(9_999n), "$0.009999");
+    assert.equal(wallet.usdcText(1n), "$0.000001");
+    assert.equal(wallet.usdcText(0n), "$0.00");
+  });
+
+  /** A fake EIP-1193 wallet: `chain` is what eth_chainId answers, `on` handles the rest. */
+  function fakeWallet(chain: { id: string }, on: (method: string, params: unknown[]) => unknown) {
+    ctx.window.ethereum = {
+      request: async ({ method, params }: { method: string; params: unknown[] }) => {
+        if (method === "eth_requestAccounts") return ["0x00000000000000000000000000000000000000aa"];
+        if (method === "eth_chainId") return chain.id;
+        return on(method, params);
+      },
+    };
+  }
+  const ARC_TESTNET = "0x" + (5042002).toString(16);
+
+  it("connects only once the wallet is really on Arc", async () => {
+    const chain = { id: "0x1" };
+    fakeWallet(chain, (method) => {
+      if (method === "wallet_switchEthereumChain") { chain.id = ARC_TESTNET; return null; }
+      throw new Error(method);
+    });
+    assert.equal(await wallet.connect(5042002), "0x00000000000000000000000000000000000000aa");
+
+    // Accepts the add request but stays on the other chain: refused.
+    const stuck = { id: "0x1" };
+    fakeWallet(stuck, (method) => {
+      if (method === "wallet_switchEthereumChain") throw Object.assign(new Error("unknown chain"), { code: 4902 });
+      if (method === "wallet_addEthereumChain") return null;
+      throw new Error(method);
+    });
+    await assert.rejects(wallet.connect(5042002), /still on another network/);
+  });
+
+  it("reports a transaction whose receipt never arrives as unknown, with its hash", async () => {
+    const hash = "0x" + "cd".repeat(32);
+    let receiptCalls = 0;
+    fakeWallet({ id: ARC_TESTNET }, (method) => {
+      if (method === "eth_sendTransaction") return hash;
+      if (method === "eth_getTransactionReceipt") {
+        receiptCalls++;
+        if (receiptCalls % 2) throw new Error("RPC timeout"); // flaky RPC: not a failure either
+        return null;
+      }
+      throw new Error(method);
+    });
+    let sent: string | null = null;
+    const err = await wallet.approve("0xaa", "0xbb", "0xcc", 5n, (h: string) => { sent = h; }).then(
+      () => null, (e: { hash?: string; unknown?: boolean; failed?: boolean }) => e);
+    assert.equal(sent, hash, "the page learns the hash as soon as it is broadcast");
+    assert.ok(err, "it does not resolve");
+    assert.equal(err.unknown, true);
+    assert.equal(err.failed, undefined);
+    assert.equal(err.hash, hash);
+    assert.equal(receiptCalls, 120);
+  });
+
+  it("reports a reverted transaction as failed", async () => {
+    const hash = "0x" + "ef".repeat(32);
+    fakeWallet({ id: ARC_TESTNET }, (method) => {
+      if (method === "eth_sendTransaction") return hash;
+      if (method === "eth_getTransactionReceipt") return { status: "0x0", transactionHash: hash, logs: [] };
+      throw new Error(method);
+    });
+    await assert.rejects(wallet.approve("0xaa", "0xbb", "0xcc", 5n),
+      (e: { failed?: boolean; hash?: string }) => e.failed === true && e.hash === hash);
   });
 
   it("points to the faucet on Arc testnet only", () => {

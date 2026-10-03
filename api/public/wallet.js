@@ -33,6 +33,16 @@ const LevyWallet = (() => {
   const txUrl = (chainId, hash) =>
     explorer(chainId) && /^0x[0-9a-fA-F]{64}$/.test(hash) ? `${explorer(chainId)}/tx/${hash}` : null;
 
+  /**
+   * A 6-decimal USDC amount, exactly: cents, plus any further digits that are
+   * not zero ($29.00, $29.50, $29.000001, $0.009999). Never rounds.
+   */
+  const usdcText = (units) => {
+    const v = BigInt(units);
+    const frac = (v % 1_000_000n).toString().padStart(6, "0").replace(/0+$/, "").padEnd(2, "0");
+    return `$${v / 1_000_000n}.${frac}`;
+  };
+
   const word = (n) => BigInt(n).toString(16).padStart(64, "0");
   const addr = (a) => a.toLowerCase().replace(/^0x/, "").padStart(64, "0");
 
@@ -71,6 +81,11 @@ const LevyWallet = (() => {
           chainId: hex, nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 }, ...known,
         }]);
       }
+      // A wallet can accept the add or switch request and still not move: check
+      // again, or reads and transactions would go to another chain.
+      if (String(await rpc("eth_chainId")).toLowerCase() !== hex) {
+        throw new Error(`Your wallet is still on another network. Switch it to ${chainName(chainId)} and try again.`);
+      }
     }
     return account;
   }
@@ -79,30 +94,36 @@ const LevyWallet = (() => {
   const balanceOf = (token, owner) => call(token, SEL.balanceOf + addr(owner));
   const allowance = (token, owner, spender) => call(token, SEL.allowance + addr(owner) + addr(spender));
 
-  /** Send and wait for the receipt (Arc finalizes in one ~0.5s block). */
-  async function send(from, to, data) {
+  /** The receipt of `hash`, or null while it cannot be read (pending, or the RPC failed). */
+  const receipt = (hash) => rpc("eth_getTransactionReceipt", [hash]).catch(() => null);
+
+  /**
+   * Send and wait for the receipt (Arc finalizes in one ~0.5s block). `onSent`
+   * gets the hash the moment the wallet broadcasts, so a page can remember it.
+   * If the receipt cannot be read within two minutes the outcome is unknown,
+   * not failed: the error carries `hash` and `unknown`, and the caller must not
+   * send again until receipt(hash) says how it ended. A transaction that
+   * reverted throws with `hash` and `failed`.
+   */
+  async function send(from, to, data, onSent) {
     const hash = await rpc("eth_sendTransaction", [{ from, to, data }]);
+    if (onSent) onSent(hash);
     for (let i = 0; i < 120; i++) {
-      const r = await rpc("eth_getTransactionReceipt", [hash]);
+      const r = await receipt(hash);
       if (r) {
-        if (r.status !== "0x1") throw new Error(`Transaction ${hash} failed on-chain.`);
+        if (r.status !== "0x1") throw Object.assign(new Error(`Transaction ${hash} failed on-chain, so nothing changed.`), { hash, failed: true });
         return r;
       }
       await new Promise((ok) => setTimeout(ok, 1000));
     }
-    throw new Error(`Transaction ${hash} is still pending. Check your wallet before retrying.`);
+    throw Object.assign(new Error(`Transaction ${hash} was sent, but its result could not be confirmed yet.`), { hash, unknown: true });
   }
 
-  const approve = (from, token, spender, amount) =>
-    send(from, token, SEL.approve + addr(spender) + word(amount));
+  const approve = (from, token, spender, amount, onSent) =>
+    send(from, token, SEL.approve + addr(spender) + word(amount), onSent);
 
-  /**
-   * subscribe(planId, ref); `ref` is a 0x-prefixed bytes32 (the merchant's
-   * reference, or zero). Returns the new subscription id and its first charge
-   * time (unix seconds) from Subscribed, whose data is nextChargeAt then ref.
-   */
-  async function subscribe(from, manager, planId, ref) {
-    const r = await send(from, manager, SEL.subscribe + word(planId) + ref.replace(/^0x/, ""));
+  /** The new subscription in a subscribe receipt, from Subscribed (data: nextChargeAt, then ref). */
+  function subscribedFrom(r, manager) {
     const log = r.logs.find(
       (l) => l.address.toLowerCase() === manager.toLowerCase() && l.topics[0] === SUBSCRIBED_TOPIC
     );
@@ -111,6 +132,16 @@ const LevyWallet = (() => {
       nextChargeAt: log ? Number(BigInt(log.data.slice(0, 66))) : null,
       txHash: r.transactionHash,
     };
+  }
+
+  /**
+   * subscribe(planId, ref); `ref` is a 0x-prefixed bytes32 (the merchant's
+   * reference, or zero). Returns the new subscription id and its first charge
+   * time (unix seconds) from Subscribed, whose data is nextChargeAt then ref.
+   */
+  async function subscribe(from, manager, planId, ref, onSent) {
+    const r = await send(from, manager, SEL.subscribe + word(planId) + ref.replace(/^0x/, ""), onSent);
+    return subscribedFrom(r, manager);
   }
 
   /**
@@ -172,6 +203,7 @@ const LevyWallet = (() => {
 
   return {
     connect, balanceOf, allowance, approve, subscribe, manage, createPlan, changePlan,
-    subscription, changePlanQuote, explorer, chainName, txUrl, faucet, friendly,
+    subscription, changePlanQuote, receipt, subscribedFrom, usdcText,
+    explorer, chainName, txUrl, faucet, friendly,
   };
 })();

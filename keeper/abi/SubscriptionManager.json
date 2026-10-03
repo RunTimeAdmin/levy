@@ -61,7 +61,20 @@
   },
   {
     "type": "function",
-    "name": "MIN_RETRY_INTERVAL",
+    "name": "PERMIT2_ARC",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "RETRY_GAP_FIRST",
     "inputs": [],
     "outputs": [
       {
@@ -74,13 +87,26 @@
   },
   {
     "type": "function",
-    "name": "PERMIT2_ARC",
+    "name": "RETRY_GAP_LATER",
     "inputs": [],
     "outputs": [
       {
         "name": "",
-        "type": "address",
-        "internalType": "address"
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "RETRY_GAP_SECOND",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -319,6 +345,25 @@
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "retryGap",
+    "inputs": [
+      {
+        "name": "failures",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "pure"
   },
   {
     "type": "function",

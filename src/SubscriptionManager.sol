@@ -11,10 +11,10 @@ import {IPermit2} from "./IPermit2.sol";
 ///         grant an allowance once, and anyone (the keeper in practice) triggers
 ///         per-cycle pulls. Billing is in advance: each pull pays for the cycle
 ///         that starts at it, and without a trial the first cycle is paid at
-///         subscribe. A failed pull is recorded on-chain instead of reverting (at
-///         most once per MIN_RETRY_INTERVAL) so the off-chain dunning engine can
-///         retry; the subscription goes PAST_DUE at maxFailed failures and
-///         auto-pauses at twice that.
+///         subscribe. A failed pull is recorded on-chain instead of reverting, on
+///         the dunning schedule (retryGap: 1, 3, then 7 days apart) so the
+///         off-chain keeper can retry; the subscription goes PAST_DUE at
+///         maxFailed failures and auto-pauses at twice that.
 /// @dev Money math: ALL amounts are 6-decimal USDC units via the ERC-20 interface.
 ///      Native 18-decimal values must never enter this contract. Integer arithmetic
 ///      only; division rounds down and dust stays with the merchant.
@@ -27,12 +27,16 @@ contract SubscriptionManager is ReentrancyGuard {
     ///         charge a subscription (a self-paying one never fails, so never
     ///         auto-pauses) and how fast a mistaken approval can be drained.
     uint256 public constant MIN_CYCLE = 1 days;
-    /// @notice Shortest gap between two recorded failures of one subscription.
-    ///         charge() is permissionless, so without it anyone could call it
-    ///         repeatedly while a pull fails and push the subscription to
-    ///         PAST_DUE and PAUSED within one block, skipping the dunning
-    ///         schedule. Successful charges are never held back by it.
-    uint256 public constant MIN_RETRY_INTERVAL = 1 days;
+    /// @notice Shortest gaps between recorded failures of one subscription: the
+    ///         dunning schedule the keeper retries on, enforced here. charge() is
+    ///         permissionless, so without them anyone could record failures as
+    ///         fast as allowed and pause a subscription long before its schedule
+    ///         says (H-1 in the 2026-09-25 review, then finding 2 of the
+    ///         2026-10-02 review against a flat 1-day gap). Successful charges
+    ///         are never held back by them.
+    uint256 public constant RETRY_GAP_FIRST = 1 days; // before the 2nd failure
+    uint256 public constant RETRY_GAP_SECOND = 3 days; // before the 3rd
+    uint256 public constant RETRY_GAP_LATER = 7 days; // before the 4th and every one after
 
     enum Status {
         TRIAL,
@@ -221,9 +225,9 @@ contract SubscriptionManager is ReentrancyGuard {
     /// @notice Pull one cycle's payment. Permissionless: the pull can only move
     ///         the subscriber's pre-approved funds to the correct merchant, so
     ///         there is nothing for an attacker to gain by calling it.
-    /// @dev A failed pull is recorded for dunning instead of reverting, at most
-    ///      once per MIN_RETRY_INTERVAL; a failing call sooner than that reverts
-    ///      RetryTooSoon and changes nothing.
+    /// @dev A failed pull is recorded for dunning instead of reverting, no
+    ///      sooner than retryGap after the last recorded failure; a failing
+    ///      call before that reverts RetryTooSoon and changes nothing.
     function charge(uint256 subId) external nonReentrant {
         Subscription storage sub = subscriptions[subId];
         if (sub.subscriber == address(0)) revert UnknownSubscription();
@@ -288,9 +292,19 @@ contract SubscriptionManager is ReentrancyGuard {
         }
     }
 
+    /// @notice How long after the last recorded failure the next one may be
+    ///         recorded, given `failures` recorded since the last success.
+    ///         With maxFailed = m, the earliest auto-pause is therefore
+    ///         1 + 3 + 7 * (2m - 3) days after the first failure (1 day for m = 1).
+    function retryGap(uint256 failures) public pure returns (uint256) {
+        if (failures == 0) return 0;
+        if (failures == 1) return RETRY_GAP_FIRST;
+        if (failures == 2) return RETRY_GAP_SECOND;
+        return RETRY_GAP_LATER;
+    }
+
     function _recordFailure(uint256 subId, Subscription storage sub, Plan memory plan) internal {
-        uint256 last = lastFailedAt[subId];
-        if (last != 0 && block.timestamp < last + MIN_RETRY_INTERVAL) revert RetryTooSoon();
+        if (block.timestamp < lastFailedAt[subId] + retryGap(sub.failedAttempts)) revert RetryTooSoon();
         lastFailedAt[subId] = uint64(block.timestamp);
         sub.failedAttempts += 1;
         emit ChargeFailed(subId, sub.failedAttempts);
