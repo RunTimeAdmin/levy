@@ -5,9 +5,15 @@ on:
     branches: [main]
   pull_request:
 
+# A newer push to the same pull request cancels the run in progress. Other runs always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   contracts:
     name: Contracts (forge)
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -39,6 +45,7 @@ jobs:
 
   keeper:
     name: Keeper (node --test)
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -63,6 +70,7 @@ jobs:
   # build both images and start the API for real.
   docker:
     name: Docker images
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -90,6 +98,7 @@ jobs:
 
   api:
     name: API (node --test)
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     defaults:
       run:
