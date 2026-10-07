@@ -4,8 +4,15 @@
 #   mkdir -p ops/soak/data && chown 1000:1000 ops/soak/data
 #   docker compose -f ops/soak/docker-compose.yml up -d
 #
-# nginx on the host proxies https://app.getlevy.xyz/soak-hooks to 127.0.0.1:3002
-# (the location block is in ops/testnet-soak.md). Remove both after the soak.
+# nginx on the host proxies https://app.getlevy.xyz/soak-hooks to 127.0.0.1:3002.
+# Add this inside the app.getlevy.xyz server block, then `nginx -t && systemctl reload nginx`:
+#
+#     location ^~ /soak-hooks {
+#         proxy_pass http://127.0.0.1:3002;
+#         include /etc/nginx/proxy_params;
+#     }
+#
+# Remove both after the soak (ops/testnet-soak.md, After the soak).
 
 name: levy-soak
 

@@ -2,3 +2,4 @@ out/
 cache/
 broadcast/**/dry-run/
 ops/soak/data/
+ops/.env

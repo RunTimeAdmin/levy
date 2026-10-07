@@ -1,6 +1,6 @@
 # Levy Pre-Mainnet Verification
 
-Date checked: 2026-09-25. Each item verified against primary sources (Arc Docs, Circle/Arc GitHub, on-chain reads). Verdicts are adversarial: unconfirmed means unconfirmed.
+Date checked: 2026-09-25. The Osaka note in section 2 was corrected, and PUSH0 re-tested on both networks, on 2026-10-07. Each item verified against primary sources (Arc Docs, Circle/Arc GitHub, on-chain reads). Verdicts are adversarial: unconfirmed means unconfirmed.
 
 ---
 
@@ -26,9 +26,9 @@ Sources:
 
 Arc mainnet (chain 5042) runs an **Osaka-baseline EVM**. Osaka is three forks past Shanghai (Shanghai < Cancun < Prague < Osaka), and PUSH0 (`0x5f`) was introduced in Shanghai. An Osaka EVM supports PUSH0 by definition. Multiple independent sources agree:
 
-- On-chain read (2026-09-20): "Stack — Malachite BFT + Reth · Osaka EVM · L1" (dev.to, via `web3_clientVersion` = `arc/v1`)
+- On-chain read (2026-09-20, via `web3_clientVersion` = `arc/v1`): Malachite BFT + Reth on an Osaka EVM, as an L1 (dev.to)
 - Client hardfork tables: mainnet gets Zero3, Zero4, Osaka, Zero5, Zero6 all at genesis (shemnon/evm-directory, from arc-node source)
-- "EVM baseline: Osaka, active since block 44,287,067 (2026-05-27)"
+- On testnet (chain 5042002) Osaka activated at block 44,287,067 (2026-05-27). Mainnet has it from genesis; that block does not exist on mainnet, whose head was about 24.7M on 2026-10-07. A PUSH0 `eth_call` succeeds on both networks (2026-10-07), and a control with an invalid opcode reverts as expected.
 
 The PUSH0-rejection reports (GitHub issues circlefin/arc-node#109, osr21/arc-relay-bridge#4) are **testnet-only** (chain 5042002), from ~May 2026, pre-dating or coinciding with the Osaka activation. They do not describe mainnet.
 
@@ -96,4 +96,4 @@ Sources:
 
 ## Follow-ups for the Permit2 build (done 2026-09-25)
 
-`subscribeWithPermit2` is implemented and covered by Foundry unit tests against a mock Permit2 (the anvil integration test does not exercise it), using `0x000000000022D473030F116dDEE9F6B43aC78BA3` as the Permit2 address on both Arc mainnet and testnet. `eth_getCode` confirmed on 2026-09-25: Permit2 has code at that address on both Arc testnet and mainnet, and USDC at `0x3600...0000` has code and reports 6 decimals on both (`script/Deploy.s.sol` re-checks all of this before deploying). Still to do before mainnet: run the end-to-end Permit2 flow against Arc.
+`subscribeWithPermit2` is implemented and covered by Foundry unit tests against a mock Permit2 (the anvil integration test does not exercise it), using `0x000000000022D473030F116dDEE9F6B43aC78BA3` as the Permit2 address on both Arc mainnet and testnet. `eth_getCode` confirmed on 2026-09-25: Permit2 has code at that address on both Arc testnet and mainnet, and USDC at `0x3600...0000` has code and reports 6 decimals on both (`script/Deploy.s.sol` re-checks all of this before deploying). Update 2026-10-07: the testnet soak subscribed wallet S5 through Permit2 on the current manager (subscription #5), and its recurring charges are being checked there. Still to do before mainnet: confirm those recurring Permit2 charges and repeat the flow on mainnet.

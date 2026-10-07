@@ -3,7 +3,7 @@
 // docs/merchant-guide.md tells merchants to, written independently of the
 // keeper's own verifyDelivery, and appends one JSON line per delivery to
 // LOG_PATH. It answers 200 even when a check fails, so that the keeper's delivery
-// counts and the signature results can be read separately; ops/soak/status.mjs
+// counts and the signature results can be read separately; ops/soak-status.sh
 // reports any failure.
 //
 // No dependencies: Node 24's fetch and node:crypto.

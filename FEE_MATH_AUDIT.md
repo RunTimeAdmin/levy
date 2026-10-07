@@ -2,7 +2,7 @@
 
 Self-review of every arithmetic operation in `SubscriptionManager.sol` and
 `FeeRouter.sol`. Integer math only; no floating point anywhere. Last revised
-2026-09-25.
+2026-10-03.
 
 ## 1. Protocol fee: `fee = due / FEE_BPS`
 

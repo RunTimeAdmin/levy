@@ -1,14 +1,14 @@
 # Levy API + Pages
 
 Fastify API over the keeper's SQLite database, plus the merchant dashboard,
-customer portal and checkout page. The API never holds keys or signs
-transactions: on-chain writes (plan creation, subscribe, pause, resume,
+customer portal and checkout page. The API holds no on-chain key and signs no
+transactions (it keeps only the webhook signing key): on-chain writes (plan creation, subscribe, pause, resume,
 cancel, allowance changes) are signed in the user's wallet, and the pages
 build those transactions in the browser.
 
 ## Run
 
-Requires Node 24 (the API imports the keeper's `src/db.ts`, which uses the built-in `node:sqlite`).
+Requires Node 24 (22.13 or later also works; the API imports the keeper's `src/db.ts`, which uses the built-in `node:sqlite`).
 
 ```bash
 npm install
@@ -77,7 +77,7 @@ gets 404.
 | GET | `/api/subscriptions/:id` | session | + charges, dunning row; subscriber or merchant only |
 | GET | `/api/funds` | session | the subscriber's allowance runway as of the keeper's last check (`low`, `cyclesCovered`, allowance, balance) |
 | GET | `/api/metrics` | session | as merchant: MRR (trial + active, normalized to 30 days), counts per status, totals, charge success rate, dunning depth |
-| GET | `/api/dunning` | session | as merchant: retry queue with nextRetryAt |
+| GET | `/api/dunning` | session | as merchant: retry queue with nextRetryAt. A subscription that was then paused or cancelled stays listed until its retry time passes |
 | GET | `/api/charges?subscription=` | session | as merchant: charge records |
 | GET | `/api/invoices?format=csv` | session | alias of charges; `format=csv` downloads CSV |
 | GET/POST | `/api/webhooks` | session | list / register `{url, events[]}` (at most 5 per merchant) |

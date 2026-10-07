@@ -2,7 +2,7 @@
 
 Adversarial read of `SubscriptionManager.sol` and `FeeRouter.sol` before any
 paid audit, plus a short section on the off-chain services. Goal: find
-problems, not confirm correctness. Last revised 2026-09-26.
+problems, not confirm correctness. Last revised 2026-10-07.
 
 ## 1. Access control
 
@@ -39,9 +39,11 @@ there is no repricing or merchant-swap attack.
 
 ## 3. Keeper griefing and gas
 
-- A failed pull never reverts `charge()`: it records `ChargeFailed` and
-  returns. A subscriber who revokes their allowance cannot make the keeper's
-  transaction revert; each attempt wastes one keeper transaction.
+- A failed pull does not revert `charge()`: it records `ChargeFailed` and
+  returns, unless it falls inside the `retryGap` window, where `charge()`
+  reverts `RetryTooSoon` and changes nothing. A subscriber who revokes their
+  allowance cannot make the keeper's first attempt revert; each attempt wastes
+  one keeper transaction.
 - That is bounded per subscription: after `2 × maxFailed` failures the
   contract auto-pauses it, and the keeper stops retrying paused
   subscriptions. With `maxFailed = 2` (what the tests use) that is about 4
@@ -66,8 +68,8 @@ there is no repricing or merchant-swap attack.
   cycle (30s) per subscription. Since 2026-09-25 the contract enforces
   `MIN_CYCLE = 1 days`, so each such subscription costs the keeper at most one
   charge a day. It is still unbounded across many subscriptions and over time
-  (each costs the attacker one subscribe transaction). Watch keeper gas spend
-  (`ops/monitoring.md` alert 6); if it grows, add a keeper policy (skip
+  (each costs the attacker one subscribe transaction). Watch the keeper's
+  balance and spend (`ops/monitoring.md` alert 6); if it grows, add a keeper policy (skip
   subscriptions whose fee does not cover gas, or charge only listed merchants).
 
 ## 4. `charge()` permissionless safety: can it steal or misroute?
@@ -185,8 +187,9 @@ recorded, and the contract spaces those on the dunning schedule (§3).
 - **No minimum cycle length.** A 1-second plan let a self-paying subscription
   cost the keeper gas every cycle and let a mistaken approval be drained within
   seconds. `createPlan` now requires `cycleSeconds >= MIN_CYCLE` (1 day).
-- **Failures could be recorded back to back (H-1).** Found 2026-09-26 by an
-  external engineering review (`docs/REVIEW_2026-09-25.md`, PR #1). `charge()`
+- **Failures could be recorded back to back (H-1).** Found by an
+  external engineering review dated 2026-09-25 (`docs/REVIEW_2026-09-25.md`,
+  PR #1) and fixed on 2026-09-26, after the first testnet deploy. `charge()`
   is permissionless and a failed pull did not move `nextChargeAt`, so anyone
   could call it `2 × maxFailed` times in one block while a subscriber's pull
   was failing and push the subscription from ACTIVE to PAUSED at once,
@@ -211,6 +214,20 @@ recorded, and the contract spaces those on the dunning schedule (§3).
   allowances in the runway check (6), and rebuilding dunning state from the
   chain after keeper database loss (10). Finding 1 (the soak had not
   started) is a status item.
+- **Third external review (2026-10-06, `docs/REVIEW_2026-10-06.md`), checked
+  against the code and the live testnet on 2026-10-07.** None of it needs a
+  contract change, so the soak deployment's contracts stand. Confirmed in the
+  source and open before mainnet: items 7 to 12 below. Already open and raised
+  again: uneconomic plans (3, item 1), merchant identity on the checkout (5),
+  Permit2 allowances in the runway check (6, seen live: the keeper reports S5
+  as `covers 0`) and dunning after keeper database loss (10: `DUE_CHARGEABLE`
+  leaves `PAST_DUE` to the dunning table and `backfillAll` never writes it).
+  Not defects: "no CI run for `5a4527f`" (that merge commit says `[skip ci]`
+  on purpose; the next push runs CI), "zero plans and subscriptions" (true on
+  6 October; the soak's day 0 was 2026-10-07 03:30:56 UTC) and "Permit2 not
+  exercised on the current manager" (S5 subscribed through it as #5). The
+  soak host stays on `08991fa` until the soak ends; fixes land on `main` and
+  deploy afterwards.
 
 **Open** (for the paid audit and M4):
 
@@ -224,6 +241,42 @@ recorded, and the contract spaces those on the dunning schedule (§3).
 4. Permit nonce front-run makes `subscribeWithPermit2` revert (§6). Low.
 5. A USDC-blocklisted merchant makes every charge for their plans revert (§8).
 6. `setTreasury` can move the treasury to an EOA after deploy (§5).
+7. Checkout: a second tab that connected before the first tab's broadcast
+   does not stop at the pending record (the Go handler loads it but never
+   checks `subscribeHash`), and the record expires after a day or is lost when
+   storage is blocked. Fix: persist the order beyond a day, coordinate tabs,
+   reconcile with the chain before offering another subscribe. Do not ban
+   repeat subscriptions per wallet and plan; they can be legitimate.
+8. Portal Top up adds rounds to the allowance it reads at click time and is
+   re-enabled after an unknown outcome (`changeAllowance`), so an approval that
+   mined but whose receipt was unreadable can be topped up twice. Allowance
+   only, no funds move. Fix: persist the target total, as checkout does.
+9. Keeper replay. The cursor moves after each chunk, the `Charged` case
+   ignores `insertCharge`'s result and still queues webhooks, `charge_failures`
+   has no unique key, every enqueue gets a fresh delivery id, and a failure is
+   stamped with the sync time rather than its block time (a late catch-up
+   postpones retries). Fix: key events by transaction hash and log index, take
+   the failure time from the block, test a crash between handling and cursor
+   commit.
+10. Webhook retries stop earlier than documented. The schedule is 1 minute,
+    5 minutes, 15 minutes, 1 hour, then 6 hours, and a delivery whose next
+    retry would pass 24 hours is dead-lettered, so the last attempt is at
+    19 h 21 min. `docs/merchant-guide.md` and `site/docs.html` say "dropped
+    after 24 hours". Fix the wording or the schedule.
+11. The wallet checks the network at connect only; `send()` does not check it
+    again before each transaction. Low: the manager address has no code on
+    the other Arc network, so the wrong-network case wastes gas.
+12. Reproducible build. `foundry.toml` does not pin `solc`. The deployment used
+    0.8.33. Building the same sources with 0.8.30 reproduces the reviewer's
+    33-byte difference in the metadata tail, with the code body identical
+    apart from the immutables (tested 2026-10-07; line endings made no
+    difference). Pin 0.8.33, keep the standard JSON input, then verify the
+    source on the explorer, which publishes it and needs David's OK.
+13. A dunning row is cleared only when a charge succeeds, a subscription
+    resumes or its retry time passes with the subscription no longer
+    chargeable. Pausing or cancelling does not clear it, so the dashboard's
+    retry queue and `dunningDepth` still list those subscriptions until the
+    stale retry time arrives. Cosmetic: nothing is charged.
 
 ## 10. Off-chain services (keeper and API)
 
@@ -237,12 +290,13 @@ Reviewed independently on 2026-09-25; details in `api/README.md` and
 - **Webhooks:** URLs must be https on port 443 at a public address, checked at
   registration and again at connect time (no DNS-rebinding window); redirects
   are never followed; failures record coarse reasons only. Signatures cover
-  timestamp, delivery id and body, so captured deliveries cannot be replayed
-  later. Delivery runs in its own loop, so a hanging endpoint cannot stall
+  timestamp, delivery id, event type and body, so captured deliveries cannot be
+  replayed later. Delivery runs in its own loop, so a hanging endpoint cannot stall
   charging.
 - **Keeper:** fetches only Levy's logs, backs off charges that revert, and
-  must run as a single instance (two keepers would each record a failure for
-  the same missed charge, doubling the pace of dunning).
+  should run as a single instance. A second keeper cannot double-charge or
+  speed up dunning (its second failing call reverts `RetryTooSoon`); it only
+  wastes gas and log queries.
 - **Pages:** since 2026-09-26 the dashboard, portal and checkout send a
   Content-Security-Policy that allows scripts only from the app's own origin
   and never inline (the page scripts moved to `/public/*.js`), so an injected

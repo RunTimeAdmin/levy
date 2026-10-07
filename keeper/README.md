@@ -56,9 +56,11 @@ development only; see `src/webhook-url.ts`.
 
 Each delivery pass sends up to 8 requests at once with a 5s timeout, takes at
 most 200 deliveries (5 per webhook), serves every webhook's oldest delivery
-before anyone's second, and keeps one request in flight per webhook so its
-deliveries arrive in order. Failures retry with backoff (1m, 5m, 15m, 1h, 6h) and
-dead-letter after 24h. A deactivated or deleted webhook's pending deliveries are
+before anyone's second, and keeps one request in flight per webhook so a slow endpoint
+is never hit twice at once. Order is not guaranteed: a failed delivery waits for
+its backoff while later events can arrive first. Failures retry with backoff (1m,
+5m, 15m, 1h, then every 6h), and a delivery whose next retry would pass 24h of age
+is dead-lettered, so its last attempt is at about 19h21m. A deactivated or deleted webhook's pending deliveries are
 dead-lettered, not held. Delivery state lives in `webhook_deliveries`
 (`pending` / `sent` / `failed` / `dead`).
 
@@ -74,7 +76,7 @@ The integration test needs `anvil` (Foundry) on PATH. It starts a local chain, d
 ## Operational notes
 
 - **Key safety.** `LEVY_KEEPER_KEY` is a hot EOA that pays gas (USDC on Arc). Fund it minimally, rotate if exposed, never commit it.
-- **Single instance.** Run one keeper per deployment. A successful `charge()` is safe to race (the second call reverts `NotChargeable`), but a failed pull does not advance `nextChargeAt`, so two keepers would each record a failure for the same missed charge, doubling the pace of dunning and sending duplicate webhooks. Within one keeper, a subscription is charged at most once per cycle.
+- **Single instance.** Run one keeper per deployment. A successful `charge()` is safe to race (the second call reverts `NotChargeable`), and so is a failing one: the contract records one failure per retry gap and the second call reverts `RetryTooSoon`. A second keeper cannot speed up dunning or double-charge; it only wastes gas and log queries. Within one keeper, a subscription is charged at most once per cycle.
 - **Chain time, not wall time.** Due and dunning math uses the chain-head timestamp, so the keeper behaves correctly across clock skew and test time-warps. (Arc has deterministic finality with no reorgs; one block is final.) Webhook retry times use the wall clock.
 - **Allowance runway.** After charging, each cycle reads the USDC allowance and balance of up to 50 subscribers whose last check is over 6h old (see `src/funds.ts`). A charge, or an `Approval` to the manager (a top-up), makes that subscriber due for a recheck on the next cycle. When the allowance covers fewer than 2 rounds of all their chargeable subscriptions, each affected subscription's merchant gets one `allowance.low` webhook; it repeats only after the allowance recovers. Only the direct ERC-20 allowance is read, so Permit2 subscribers are flagged low.
 - **Stuck charges back off.** A charge that fails for any reason other than payment (a revert, an RPC error) re-reads the subscription from chain and is retried after 1m, 5m, 15m, 1h, then every 6h, instead of every cycle. The backoff is in memory, so a restart tries each once more.

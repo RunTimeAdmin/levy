@@ -1,13 +1,13 @@
 # LEVY: Subscription Billing on Arc
 
-**Status:** living build doc, updated 2026-09-26. Contracts, keeper, API, merchant dashboard, customer portal and checkout are built and tested. The contracts are deployed on Arc testnet for the M4 soak (addresses in README, Deployments); nothing is on mainnet. Verified chain facts are in `VERIFICATION.md`.
+**Status:** living build doc, updated 2026-10-07. Contracts, keeper, API, merchant dashboard, customer portal and checkout are built and tested. The contracts are deployed on Arc testnet for the M4 soak (addresses in README, Deployments); nothing is on mainnet. Verified chain facts are in `VERIFICATION.md`.
 **One-liner:** Stripe Billing for Arc. Merchants create plans, subscribers approve a USDC allowance once, Levy pulls USDC every cycle with dunning, proration, webhooks and invoice records built in.
 
 ## Why this, why Arc, why now
 
 - Circle names software billing a target Arc use case. Nothing live fills it; only testnet toys exist.
 - Arc is purpose-built for money movement: USDC gas, ~0.5s blocks, deterministic single-block finality (Malachite BFT, no reorgs; confirmed 2026-09-25, see VERIFICATION.md). Base-fee behavior is still unverified; do not quote a fixed gwei figure.
-- Chain facts (mainnet, chain ID 5042): Permit2 verified at the canonical `0x000000000022D473030F116dDEE9F6B43aC78BA3`, same as Ethereum. Multicall3, CREATE2 deployer and Safe v1.4.1 at canonical addresses are still unconfirmed; verify before mainnet.
+- Chain facts (mainnet, chain ID 5042): Permit2 verified at the canonical `0x000000000022D473030F116dDEE9F6B43aC78BA3`, same as Ethereum. Multicall3, the CREATE2 deployer and the Safe v1.4.1 singleton and proxy factory have code at their canonical addresses on mainnet (checked 2026-10-07); their exact versions are not verified, so verify them before mainnet.
 - Willingness to pay is proven: Request Finance charges $600 to $9,000/mo for crypto billing ops. No competitor (Request, Superfluid, Sablier, Diagonal) supports Arc.
 - Defense: keep the on-chain pull primitive free and open-source; monetize the SaaS layer (dunning engine, webhooks, reconciliation, dashboards).
 
@@ -15,7 +15,7 @@
 
 **Actors:** Merchant (creates plans, receives USDC minus the 1% fee), Subscriber (approves a USDC allowance, gets charged per cycle), Keeper (off-chain service that triggers the pulls).
 
-**Plan** (on-chain, immutable): merchant, price per cycle (6-decimal USDC units), cycle length (seconds, 1 day to 10 years), trial (seconds, shorter than the cycle, optional), graceSeconds (informational only; the retry schedule lives in the keeper), maxFailed (PAST_DUE at that many failures, auto-pause at twice that). There is no plan name on-chain.
+**Plan** (on-chain, immutable): merchant, price per cycle (6-decimal USDC units), cycle length (seconds, 1 day to 10 years), trial (seconds, shorter than the cycle, optional), graceSeconds (unused; the keeper schedules retries and the contract enforces their minimum gaps), maxFailed (PAST_DUE at that many failures, auto-pause at twice that). There is no plan name on-chain.
 
 **Subscription:** links a subscriber to a plan. States: TRIAL, ACTIVE, PAST_DUE, PAUSED, CANCELLED. Fields: subscriber, planId, start, nextChargeAt, failedAttempts, credit, chargeCount, status; plus the merchant's reference in `subscriptionRef`.
 
@@ -44,7 +44,7 @@
 - `charge(subId)`: permissionless; spend credit, pull, split, advance, emit
 - `pauseSubscription(subId)` / `resumeSubscription(subId)` / `cancelSubscription(subId)`: subscriber or merchant only. Auto-pause at `2 × maxFailed` happens inside `charge()` and emits `AutoPaused`
 - `changePlan(subId, newPlanId)`: subscriber only, same-merchant plans only; bills the new plan now, less proration credit; reverts with `PaymentFailed` if the pull fails
-- Views: `plans(id)`, `subscriptions(id)`, `subscriptionRef(id)`, `isChargeable(id)`, `planCount`, `subCount`
+- Views: `plans(id)`, `subscriptions(id)`, `subscriptionRef(id)`, `isChargeable(id)`, `lastFailedAt(id)`, `retryGap(failures)`, `planCount`, `subCount`
 - Events: `PlanCreated(planId, merchant, price, cycleSeconds)`, `Subscribed(subId, subscriber, planId, nextChargeAt, ref)`, `Charged(subId, amount, fee, invoiceRef, chargeCount)` (amount is what was pulled, 0 when credit covered the cycle), `ChargeFailed(subId, failedAttempts)`, `AutoPaused(subId)`, `Paused(subId)`, `Resumed(subId)`, `Cancelled(subId)`, `PlanChanged(subId, oldPlanId, newPlanId, credit)`
 
 **FeeRouter:** receives the 1% at charge time and holds it until anyone calls `sweep()`, which sends the whole balance to the treasury (a Safe multisig on mainnet). Phase 2: split 50% buyback-and-burn LEVY / 50% staking rewards (not built).
@@ -55,7 +55,7 @@
 
 - **Keeper:** two independent loops. The charge loop (every 30s) syncs events, charges due subscriptions, runs dunning retries, backs off charges that revert, and checks allowance runway; the delivery loop (every 5s) sends webhooks, so a slow merchant endpoint never delays charging. Pays its own gas in USDC. Single instance.
 - **Indexer:** reads every SubscriptionManager event plus only the USDC Transfers into or out of the manager and Approvals to it, in chunks of `LEVY_LOG_CHUNK_BLOCKS`. Charge truth comes from `Charged` / `ChargeFailed`, not transfer sums; the transfer table is kept for visibility only.
-- **Webhook dispatcher:** Ed25519 signature over `{timestamp}.{deliveryId}.{event}.{body}`, with `X-Levy-Timestamp`, `X-Levy-Delivery`, `X-Levy-Key-Id` and `X-Levy-Event` headers. Ten events: subscription.created, subscription.updated, charge.succeeded, charge.failed, dunning.started, subscription.paused, subscription.resumed, subscription.cancelled, invoice.ready, allowance.low. Every payload carries `subId`, `merchant` and `ref`. Up to 8 deliveries in parallel, one in flight per webhook; retries at 1m, 5m, 15m, 1h, 6h; dead-letter after 24h. URLs must be https on port 443 at a public address (checked at registration and at connect time); at most 5 per merchant.
+- **Webhook dispatcher:** Ed25519 signature over `{timestamp}.{deliveryId}.{event}.{body}`, with `X-Levy-Timestamp`, `X-Levy-Delivery`, `X-Levy-Key-Id` and `X-Levy-Event` headers. Ten events: subscription.created, subscription.updated, charge.succeeded, charge.failed, dunning.started, subscription.paused, subscription.resumed, subscription.cancelled, invoice.ready, allowance.low. Every payload carries `subId`, `merchant` and `ref`. Up to 8 deliveries in parallel, one in flight per webhook; retries at 1m, 5m, 15m, 1h, then every 6h; a delivery is dead-lettered when its next retry would pass 24h, so the last attempt is at about 19h21m. URLs must be https on port 443 at a public address (checked at registration and at connect time); at most 5 per merchant.
 - **API + merchant dashboard:** Sign-In with Ethereum (24h sessions), every endpoint scoped to the signed-in address. Plans mirror the on-chain registry; merchants create them from the dashboard (a `createPlan` transaction from their wallet) and copy each plan's checkout link there. Metrics: MRR normalized to 30 days, counts per status, totals, charge success rate, dunning depth. Also the subscriber list with references and allowance runway, dunning queue, invoice CSV and webhook config.
 - **Customer portal:** subscriptions and invoice history; pause, resume, cancel and plan changes from the wallet; the allowance, with top-up and revoke. White-label is a Phase 2 premium feature.
 - **Checkout page:** `/checkout.html?plan=<id>&ref=<ref>`: plan summary, approve N cycles (default 12, added to the existing allowance) and subscribe.
@@ -86,7 +86,7 @@ Phase 1 ships with fees to treasury. The token launches with traction, not befor
 
 This is not a security product, but it holds other people's money rails. Non-negotiables:
 - Reentrancy guards on every function that moves tokens (`subscribe`, `subscribeWithPermit2`, `charge`, `changePlan`).
-- `transferFrom` failures are caught and recorded, never allowed to revert `charge()`; transfers out use SafeERC20.
+- `transferFrom` failures are caught and recorded rather than reverting `charge()` (a failing call inside the `retryGap` window reverts `RetryTooSoon` and changes nothing); transfers out use SafeERC20.
 - Access control: subscriber-or-merchant pause, resume and cancel; plans immutable; `charge()` permissionless by design. The keeper never force-pauses; auto-pause happens inside `charge()`.
 - Allowance hygiene: never request unlimited allowance in the default UX. The checkout approves `price × N` cycles (N chosen by the subscriber, default 12) on top of the existing allowance, and the portal offers a top-up when it runs low.
 - Invariant fuzzing in Foundry: fee math, proration bounds, state machine transitions.
@@ -112,7 +112,7 @@ Open issues and the self-review are in `SECURITY_REVIEW.md`; the math audit is i
 - [x] Finality assumptions: single-block deterministic, ~0.5s, no reorgs
 - [x] PUSH0 behavior: Osaka EVM; paris pin kept as harmless default
 - [x] Permit2 mainnet address: canonical `0x000000000022D473030F116dDEE9F6B43aC78BA3`; subscribeWithPermit2 built against it
-- [ ] Permit2 end to end against Arc (Foundry-tested against a mock only)
+- [ ] Permit2 end to end against Arc (subscribe exercised on testnet by soak wallet S5, 2026-10-07; recurring charges still to confirm in the soak)
 - [ ] FeeRouter treasury multisig signers set
 - [x] Dunning copy reviewed (revised 2026-09-25 to match actual dunning behaviour; see docs/dunning-copy.md)
 - [ ] Thin-liquidity assumption documented for launch comms
@@ -123,7 +123,7 @@ Open issues and the self-review are in `SECURITY_REVIEW.md`; the math audit is i
 levy/
 ├── src/                # Foundry: SubscriptionManager, FeeRouter, IPermit2
 ├── script/             # Deploy.s.sol (Arc testnet / mainnet)
-├── test/               # 61 tests: 53 unit (incl. deploy script), 8 invariants
+├── test/               # 65 tests: 57 unit (incl. deploy script), 8 invariants
 ├── foundry.toml
 ├── FEE_MATH_AUDIT.md   # fee + proration math audit
 ├── SECURITY_REVIEW.md  # adversarial self-review and open issues

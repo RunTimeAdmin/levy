@@ -22,7 +22,7 @@ and analytics sold as monthly USDC plans. The merchant gets plans,
 proration, dunning, and webhooks instead of building retry logic.
 
 **Oracle and data feed subscriptions.** A fixed monthly pull for a data
-stream. The subscriber cancels by revoking the allowance.
+stream. The subscriber cancels in the customer portal.
 
 ## Creators and communities
 
@@ -36,8 +36,10 @@ payments.
 
 ## Commerce
 
-**On-chain installment plans.** A fixed number of scheduled pulls, then the
-plan ends. Buy-now-pay-later without a lender in the middle.
+**On-chain installment plans (not built yet).** A fixed number of scheduled
+pulls, then the plan ends. Plans have no cycle count or end date today; a
+subscription runs until someone cancels it. Buy-now-pay-later without a lender
+in the middle would need a cycle limit in the contract.
 
 **Domain and hosting renewals.** Recurring renewals for portfolios of
 domains and servers. The pull fails safe: missed payment triggers dunning,
@@ -50,5 +52,5 @@ cycle.
 ## Public goods
 
 **Recurring donations.** Monthly pulls to a project or maintainer. The donor
-cancels any time by revoking the allowance; the recipient sees predictable
+cancels any time in the customer portal; the recipient sees predictable
 inflow.

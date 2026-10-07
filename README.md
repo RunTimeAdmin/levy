@@ -2,7 +2,7 @@
 
 Pull-based USDC subscription billing for Arc. Merchants define plans, subscribers approve a USDC allowance and subscribe, and a keeper triggers each cycle's pull. The protocol takes a 1% fee on collected payments.
 
-**Status:** contracts, keeper (charging, dunning, webhooks, allowance warnings), API with wallet sign-in, merchant dashboard, customer portal and checkout page are built and tested. Contracts: 65 tests green (57 unit + 8 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 55 tests green. API: 55 tests green. **Deployed on Arc testnet on 2026-09-26 for the M4 soak (see Deployments). Not on mainnet. Not audited.** Known open issues are listed in `SECURITY_REVIEW.md` §9.
+**Status:** contracts, keeper (charging, dunning, webhooks, allowance warnings), API with wallet sign-in, merchant dashboard, customer portal and checkout page are built and tested. Contracts: 65 tests green (57 unit + 8 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 55 tests green. API: 55 tests green. **On Arc testnet since 2026-10-03 (current deployment, see Deployments); the M4 soak started 2026-10-07. Not on mainnet. Not audited.** Known open issues are listed in `SECURITY_REVIEW.md` §9.
 
 ## What's in the repo
 
@@ -37,7 +37,7 @@ Pull-based USDC subscription billing for Arc. Merchants define plans, subscriber
 
 - Conservation: every minted unit sits in exactly one tracked account.
 - `failedAttempts <= 2 * maxFailed` for every subscription.
-- Recorded failures follow the dunning schedule (1, 3, then 7 days apart), even with a griefer calling `charge()` every day.
+- Recorded failures follow the dunning schedule (1, 3, then 7 days apart) however often a caller hits `charge()`. The fuzzer calls it several times back to back; a griefer calling every day is a unit test (`test_dailyGrieferCannotPauseBeforeTheSchedule`).
 - Cancel is terminal: `chargeCount` never moves after cancellation.
 - `nextChargeAt` never falls below the subscription's start. (It can move earlier on a switch to a shorter-cycle plan, which bills the new cycle immediately.)
 - Credit is backed: a subscription never holds more credit than the USDC it has paid.
@@ -46,7 +46,7 @@ Pull-based USDC subscription billing for Arc. Merchants define plans, subscriber
 
 ## Off-chain services
 
-**Keeper** (`keeper/`, viem + SQLite). Two independent loops: charge cycles (every 30s) and webhook delivery (every 5s), so a slow merchant endpoint can never delay charging. Each charge cycle syncs events (chunked, and only Levy's own logs plus USDC transfers into or out of the manager), charges due subscriptions, runs dunning retries, backs off charges that revert, and checks subscribers' allowance runway. Webhooks are Ed25519-signed over timestamp, delivery id and body, delivered in parallel, retried with backoff and dead-lettered after 24h. Ten event types, including `allowance.low` when a subscriber's allowance covers fewer than 2 more rounds of their subscriptions.
+**Keeper** (`keeper/`, viem + SQLite). Two independent loops: charge cycles (every 30s) and webhook delivery (every 5s), so a slow merchant endpoint can never delay charging. Each charge cycle syncs events (chunked, and only Levy's own logs plus USDC transfers into or out of the manager), charges due subscriptions, runs dunning retries, backs off charges that revert, and checks subscribers' allowance runway. Webhooks are Ed25519-signed over timestamp, delivery id, event type and body, delivered in parallel and retried with backoff (1 minute, rising to every 6 hours); a delivery still failing after about 19 hours is dead-lettered. Ten event types, including `allowance.low` when a subscriber's allowance covers fewer than 2 more rounds of their subscriptions.
 
 **API** (`api/`, Fastify). Merchants and subscribers sign in with their wallet (Sign-In with Ethereum, 24h sessions) and only ever see their own data. It serves:
 
@@ -74,7 +74,7 @@ CI (`.github/workflows/ci.yml`) runs the contract tests, the keeper and API type
 
 ## Deploy
 
-`script/Deploy.s.sol` deploys FeeRouter and SubscriptionManager and prints the `.env` lines the keeper and API need (the API passes the addresses to the checkout page via `/api/config`). It refuses to deploy unless USDC and Permit2 have code at their addresses and USDC reports 6 decimals, and on mainnet unless the treasury is a contract (the Safe from `ops/treasury-multisig.md`).
+`script/Deploy.s.sol` deploys FeeRouter and SubscriptionManager and prints the `.env` lines the keeper and API need (the API passes the addresses to the checkout page via `/api/config`). It refuses to deploy unless USDC and Permit2 have code at their addresses and USDC reports 6 decimals, and on mainnet unless USDC and Permit2 are the canonical Arc addresses and the treasury is a contract (the Safe from `ops/treasury-multisig.md`).
 
 ```bash
 export DEPLOYER_PRIVATE_KEY=0x...   # pays gas in USDC; testnet USDC from https://faucet.circle.com
@@ -85,7 +85,7 @@ forge script script/Deploy.s.sol --rpc-url arc_testnet --broadcast # deploy
 
 On Windows, `script/deploy-testnet.ps1` does the testnet broadcast for you: it asks for the deployer's key without echoing it, checks that the key belongs to the address you give and that the wallet holds enough USDC, and clears the key when forge exits.
 
-Use `--rpc-url arc_mainnet` for mainnet, and add `--legacy` if fee estimation fails. `LEVY_USDC` and `LEVY_PERMIT2` override the Arc defaults. The testnet deploy used 3.65M gas at 32.5 gwei, about 0.12 USDC (2026-09-26). Broadcast records land in `broadcast/`; commit the testnet and mainnet ones as the deployment record. If the keeper first starts more than `LEVY_LOOKBACK_BLOCKS` (default 5000, about 40 minutes) after the deploy, raise it to reach back to the deploy block.
+Use `--rpc-url arc_mainnet` for mainnet, and add `--legacy` if fee estimation fails. `LEVY_USDC` and `LEVY_PERMIT2` override the defaults on testnet; on mainnet the script accepts only the canonical USDC and Permit2. The current testnet deploy used 3.79M gas at 29.7 gwei, about 0.11 USDC (2026-10-03). Broadcast records land in `broadcast/`; commit the testnet and mainnet ones as the deployment record. If the keeper first starts more than `LEVY_LOOKBACK_BLOCKS` (default 5000, about 40 minutes) after the deploy, raise it to reach back to the deploy block.
 
 To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --build` (copy `ops/.env.example` first; `LEVY_PUBLIC_ORIGIN` is required). The API is published on the host's loopback only; put a TLS reverse proxy in front (`ops/nginx-app.conf.example` is the nginx site the testnet host uses). `ops/keeper.service` is the systemd alternative for the keeper.
 
@@ -99,7 +99,7 @@ To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file 
 | FeeRouter | `0x4819975f4fa3a693ec67539bcb121eb06f280541` | `0x390f2308baa57fd862ccb34a45b39c0c85d527077eff16b63aba8b97ee74f0c4` |
 
 - Deployer and treasury: `0xe305652DB35Ed45A567538438c9B29ede7097162` (testnet only; mainnet uses the Safe).
-- Code: the on-chain runtime bytecode of both contracts matches a local build of the contract sources at `08991fa` byte for byte, outside the constructor-set immutables (the build metadata, which hashes the sources, matches too), and `retryGap` reads 1, 3 and 7 days on-chain. Source is not yet verified on the explorer.
+- Code: built with solc 0.8.33 from the sources at `08991fa`, the runtime bytecode of both contracts matches the chain byte for byte outside the constructor-set immutables, build metadata included. A different solc version gives a different metadata tail (`foundry.toml` does not pin one yet; `SECURITY_REVIEW.md` §9, item 12). `retryGap` reads 1, 3 and 7 days on-chain. Source is not yet verified on the explorer.
 - Soak host: keeper and API at `https://app.getlevy.xyz`.
 - **Superseded**, never used for billing, and nothing points at them:
   - 2026-09-26, block 64031023 (SubscriptionManager `0x33c8e7e46583bdfd2e001f55ac1c58bd84eb739f`, FeeRouter `0xa6efee5f5a2eb2afae102f790b4889fcc01fe848`, record `run-1790390636694.json`, code `08dd7b7`): recorded failures only a day apart, so a caller could pause a subscription on day 3 instead of day 11 (finding 2 of the 2026-10-02 review). No plan or subscription was ever created on it.
@@ -115,9 +115,9 @@ To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file 
 
 ## Before mainnet
 
-- A soak of at least a week on the testnet deployment (M4; deployed 2026-09-26). Checklist and pass criteria: `ops/testnet-soak.md`.
+- A soak of at least a week on the current testnet deployment (M4; day 0 was 2026-10-07). Checklist and pass criteria: `ops/testnet-soak.md`.
 - Treasury multisig signers set (`ops/treasury-multisig.md`).
-- Permit2 end to end against Arc (tested against a mock only so far).
+- Permit2 end to end against Arc (subscribing through it worked on testnet, soak wallet S5 on 2026-10-07; its recurring charges are still being checked in the soak).
 - Open items in `SECURITY_REVIEW.md` §9, and an external audit.
 - Thin-liquidity note for launch comms.
 
@@ -126,7 +126,7 @@ To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file 
 - **M1:** contracts + tests (done; testnet deploy moves to M4)
 - **M2:** keeper service, indexer, dunning engine (done)
 - **M3:** signed webhooks, API, merchant dashboard, customer portal, checkout, invoicing (done)
-- **M4:** testnet deploy (done 2026-09-26) and soak, then mainnet deploy
+- **M4:** testnet deploy (done; current deployment 2026-10-03) and soak (day 0 2026-10-07), then mainnet deploy
 - **M5:** LEVY token: fee split to buyback-and-burn and staking, staking fee-tier discounts, premium feature gating
 
 ## License

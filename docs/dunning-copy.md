@@ -8,9 +8,13 @@ each placeholder comes from.
 Copy rules: short sentences, no blame, no jargon, one action per notice.
 
 **Placeholders**
-- `{amount}`: the plan price, `priceUsdc` from `GET /api/subscriptions/:id`
-  (not in the webhook payloads).
-- `{n}`: `failedAttempts` from the `charge.failed` payload.
+- `{amount}`: for notices 1 to 4, the plan price, `priceUsdc` from
+  `GET /api/subscriptions/:id` (`charge.failed` carries no amount). For notice 5,
+  `amount` in the `charge.succeeded` payload, in 6-decimal units (divide by
+  1,000,000); it is 0 when proration credit covered the cycle.
+- `{n}`: `failedAttempts` from the `charge.failed` payload. For notice 4 it is
+  `2 × maxFailed`, because the contract auto-pauses at exactly that failure (the
+  `subscription.paused` payload has no count).
 - `{days}`: days until the next retry, from `nextRetryAt` (in the
   `dunning.started` payload for the first failure; from
   `GET /api/subscriptions/:id` → `dunning.nextRetryAt` after that).
@@ -30,9 +34,12 @@ Subject: Your subscription payment did not go through
 
 ## 2. Retry scheduled
 
-Trigger: `charge.failed` with `failedAttempts` of 2 or more, unless it is also
-the auto-pause (see 4: skip this notice when a `subscription.paused` with
-`auto: true` arrives for the same subscription and transaction).
+Trigger: `charge.failed` with `failedAttempts` of 2 or more, unless a later
+notice covers that failure: 3 when `failedAttempts` equals `maxFailed`, 4 when it
+equals `2 × maxFailed`. Send one notice per failure, the highest-numbered that
+applies (4 beats 3, 3 beats 2, 2 beats 1). `subscription.paused` carries no
+transaction hash and can arrive after `charge.failed`, so decide from
+`failedAttempts` and the plan's `maxFailed`, not by waiting for it.
 
 Subject: We will retry your subscription payment
 

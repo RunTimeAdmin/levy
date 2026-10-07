@@ -22,8 +22,10 @@ sit TRIAL or ACTIVE with `nextChargeAt` in the past, and webhooks stop.
    AND nextChargeAt < strftime('%s','now') - 900
    AND subId NOT IN (SELECT subId FROM dunning);`
 - Threshold: process not running for more than 2 minutes, or the heartbeat
-  above 0 for 15 minutes. Both deploy modes restart on failure, so a sustained
-  down state means crash-looping: check `journalctl -u levy-keeper` or
+  above 0 for 15 minutes. Docker restarts the keeper indefinitely, so a sustained
+  down state there means crash-looping. systemd gives up after 5 failed starts
+  in 5 minutes (`StartLimitBurst`), after which `levy-keeper` shows `failed` and
+  `systemctl status` says `start-limit-hit`. Check `journalctl -u levy-keeper` or
   `docker logs levy-keeper` for the boot error. A non-zero heartbeat with a
   running process usually means charges are reverting (look for `! sub` lines
   in the log; the keeper backs those off for up to 6h).
@@ -56,17 +58,22 @@ Symptom: failed subscriptions are never retried.
 - `SELECT COUNT(*), MAX(attempts) FROM dunning;` shows depth.
 - Stuck retries: `SELECT COUNT(*) FROM dunning WHERE nextRetryAt < strftime('%s','now') - 3600;`
 - Threshold: stuck retries above 0 means the retry loop is not running (see
-  alert 1). A large but moving dunning count is subscribers not topping up, a
+  alert 1) or the retry is reverting and backing off for up to 6h (look for `! sub`
+  lines in the log). A large but moving dunning count is subscribers not topping up, a
   merchant matter.
 
 ## 5. Webhook dead-letters: INVESTIGATE
 
 Symptom: a merchant stopped receiving events (their endpoint down, or Levy's
 signing or delivery broken).
-- `SELECT webhook_id, event_type, last_error FROM webhook_deliveries
-   WHERE status='dead' AND created_at > strftime('%s','now','-24 hours');`
-- Threshold: any row: look at `last_error` (coarse reasons: `HTTP nnn`,
-  `timeout after 5s`, `connection failed`, `refused: ...`). If every merchant
+- `SELECT id, webhook_id, event_type, last_error FROM webhook_deliveries
+   WHERE status='dead' ORDER BY id DESC LIMIT 20;`
+- Threshold: the dead count grows, or the highest dead `id` passes the last one
+  you saw. Do not filter on age: a delivery is dead-lettered when its next retry
+  would pass 24 hours of age, so its last attempt is at about 19 h 21 min and a
+  24-hour window loses it within hours. Look at `last_error` (coarse reasons:
+  `HTTP nnn`, `timeout after 5s`, `connection failed`, `refused: ...`,
+  `invalid url`, `webhook deleted or deactivated`). If every merchant
   dead-letters at once, the bug is on Levy's side (signing key, egress). If one
   merchant, tell them; they can see deliveries via `GET /api/deliveries`.
 - Also watch the due backlog:
@@ -83,7 +90,10 @@ On Arc, USDC is the gas token: a dry keeper stops charging entirely.
 - `cast balance <KEEPER_ADDRESS> --ether --rpc-url $LEVY_RPC_URL`
   prints the balance in whole USDC (the native balance has 18 decimals; plain
   `cast balance` prints 18-decimal base units).
-- Threshold: below ~20 USDC. Refill from treasury; the keeper address is
+- Threshold: below 1 USDC pages (`ops/soak/status.mjs` alerts at that level); on
+  mainnet pick a level that covers several days of charges at about 0.003 USDC
+  each. For the daily spend, compare the balance with yesterday's. Refill from
+  treasury; the keeper address is
   printed on every boot (`levy keeper: ... keeper=0x...`).
 
 ## 7. API down: PAGE if the pages are customer-facing

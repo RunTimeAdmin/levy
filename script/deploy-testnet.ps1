@@ -17,7 +17,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Rpc = "https://rpc.testnet.arc.io"
-$MinBalance = 0.3   # USDC; the deploy costs about 0.22
+$MinBalance = 0.3   # USDC; the deploy costs about 0.11
 
 function Find-Tool([string]$name) {
     if ($Foundry) {

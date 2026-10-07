@@ -2,12 +2,12 @@
 
 How to accept recurring USDC subscriptions on Arc with Levy.
 
-The public version of this guide is `site/docs.html` (getlevy.xyz/docs.html), which adds a testnet quickstart and the deployed addresses. Change both together.
+The public version of this guide is `site/docs.html` (getlevy.xyz/docs.html), which adds a testnet quickstart with the deployed addresses, a backend sign-in section, an API reference table and one more FAQ answer. Change both together.
 
 ## Prerequisites
 
 - A wallet with USDC on Arc (for gas and for receiving payments).
-- The Levy API base URL from your deployment (the examples below use `http://127.0.0.1:3001`; replace with your host).
+- The Levy API base URL from your deployment (the examples below show paths only; put your host in front, for example `https://app.getlevy.xyz` on testnet).
 - The `SubscriptionManager` contract address for your deployment. Contract addresses are published at mainnet launch.
 
 All USDC amounts in this guide are in 6-decimal units: 1 USDC = 1,000,000.
@@ -21,7 +21,7 @@ createPlan(
   price,         // uint256, per-cycle price in 6-decimal USDC units
   cycleSeconds,  // uint256, billing cycle length in seconds
   trialSeconds,  // uint256, trial length in seconds (0 for none)
-  graceSeconds,  // uint256, informational only (the retry schedule lives in the keeper)
+  graceSeconds,  // uint256, informational only; the dashboard sends 0 (retry gaps of 1, 3 and 7 days are enforced on-chain)
   maxFailed      // uint8, failed pulls before the subscription goes PAST_DUE
 )
 ```
@@ -57,9 +57,9 @@ GET /api/plans
 
 ## 2. Register a webhook endpoint
 
-Levy signs every billing event with Ed25519 and POSTs it to your URL. The easiest way to register one is the merchant dashboard: sign in with the wallet that created your plans and use "Add endpoint".
+Levy signs every billing event with Ed25519 and POSTs it to your URL. The easiest way to register one is the merchant dashboard: sign in with the wallet that created your plans, open Webhooks, enter the URL under Add endpoint and click **Register webhook**.
 
-From your own backend, sign in first (the API README covers the three calls: challenge, wallet signature, verify), then send the session token:
+From your own backend, sign in first with the wallet that owns your plans, which must be an ordinary wallet (contract wallets are not supported yet). The API README covers the three calls: challenge, wallet signature, verify. Then send the session token:
 
 ```
 POST /api/webhooks
@@ -104,7 +104,7 @@ PATCH  /api/webhooks/:id        {"active": false}
 GET    /api/deliveries?webhookId=:id&status=failed
 ```
 
-Deliveries retry with backoff (1 minute, 5 minutes, 15 minutes, 1 hour, then every 6 hours) and are marked dead after 24 hours of failures. Check `/api/deliveries` for anything stuck. Setting `active: false` is not a pause: deliveries still queued for that endpoint are dead-lettered, and events while it is inactive are not queued, so nothing is replayed when you turn it back on.
+Deliveries retry with backoff (1 minute, 5 minutes, 15 minutes, 1 hour, then every 6 hours). A delivery whose next retry would pass 24 hours of age is marked dead instead, so the last attempt comes about 19 hours 21 minutes after the first and nothing is tried after that. Check `/api/deliveries` for anything stuck: `status` is `pending`, `sent`, `failed` (waiting for its next retry) or `dead` (given up). Setting `active: false` is not a pause: deliveries still queued for that endpoint are dead-lettered, and events while it is inactive are not queued, so nothing is replayed when you turn it back on.
 
 ## 3. Verify webhook signatures
 
@@ -137,6 +137,7 @@ Example in Node.js:
 ```js
 import { createPublicKey, verify } from "node:crypto";
 
+const API = "https://your-levy-host"; // your Levy API base URL
 const { publicKey } = await fetch(API + "/api/webhooks/public-key").then(r => r.json());
 const key = createPublicKey(publicKey);
 const EVENTS = new Set(["subscription.created", "subscription.updated", "charge.succeeded",
@@ -153,7 +154,7 @@ function isValid(rawBody, headers) {
 }
 ```
 
-`verifyDelivery` in `keeper/src/webhooks.ts` does the same checks.
+`verifyDelivery` in `keeper/src/webhooks.ts` does the same checks except the last: it does not remember delivery ids, so store them yourself.
 
 Rotate your trust only when the public key endpoint returns a new key. Levy signs with one key per deployment.
 
@@ -186,7 +187,7 @@ A subscriber fixes a failed subscription by topping up USDC or approving more in
 
 The easiest way: send the subscriber your checkout link, `https://<your Levy host>/checkout.html?plan=<planId>&ref=<reference>`. It shows the plan, connects their wallet, and walks them through the approval and the subscription (two wallet confirmations). Without a trial, the first cycle is charged right away.
 
-`ref` is how you match the subscription to your own customer. It is stored with the subscription on-chain and included in every webhook (`ref` in the payload; `null` when none was given). It can be `0x` plus 64 hex digits, or up to 31 plain ASCII characters. Two rules:
+`ref` is how you match the subscription to your own customer. It is stored with the subscription on-chain and included in every webhook (`ref` in the payload; `null` when none was given). It can be `0x` plus 64 hex digits, or up to 31 plain ASCII characters, which are left-aligned and zero-padded. The webhook payload always carries it as `0x` plus 64 lowercase hex digits, so `cust42` arrives as `0x637573743432` followed by zeros; decode it up to the first zero byte. Two rules:
 
 - **It is public.** Anyone can read it on-chain, so never use an email, name or anything personal. Use an opaque id.
 - **Whoever subscribes chooses it.** Someone could subscribe with another customer's reference and then cancel, making that customer look cancelled. Issue an unguessable reference per checkout (for example 32 random bytes you store against the customer), and once `subscription.created` links a reference to a customer, track that subscription by its `subId`.

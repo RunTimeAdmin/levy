@@ -112,7 +112,7 @@
   price,         // uint256, per-cycle price in 6-decimal USDC units
   cycleSeconds,  // uint256, billing cycle length in seconds
   trialSeconds,  // uint256, trial length in seconds (0 for none)
-  graceSeconds,  // uint256, informational only (the retry schedule lives in the keeper)
+  graceSeconds,  // uint256, informational only; the dashboard sends 0 (retry gaps of 1, 3 and 7 days are enforced on-chain)
   maxFailed      // uint8, failed payments before the subscription goes PAST_DUE
 )</code></pre>
   <p>The contract requires a price above 0, a cycle from 1 day (86400) to 10 years, a trial shorter than the cycle, and <code>maxFailed</code> from 1 to 255. Common cycles: weekly 604800, monthly 2592000 (30 days), quarterly 7776000 (90 days), yearly 31536000 (365 days). The call emits <code>PlanCreated</code> with your <code>planId</code>; <code>GET /api/plans</code> lists every plan.</p>
@@ -127,7 +127,7 @@
   <p>Send customers your plan's checkout link:</p>
 <pre><code>https://app.getlevy.xyz/checkout.html?plan=&lt;planId&gt;&amp;ref=&lt;reference&gt;</code></pre>
   <p>It shows the plan, connects the customer's wallet, explains the allowance and takes two wallet confirmations: an approval for the number of cycles they choose (12 by default, added to any Levy allowance they already have), then the subscription. Without a trial, the first cycle is charged right away. The page ends on a receipt.</p>
-  <p><code>ref</code> is how you match a subscription to your own customer. It is stored with the subscription on-chain and sent on every webhook (<code>null</code> when none was given). It can be <code>0x</code> plus 64 hex digits, or up to 31 plain ASCII characters. Two rules:</p>
+  <p><code>ref</code> is how you match a subscription to your own customer. It is stored with the subscription on-chain and sent on every webhook (<code>null</code> when none was given). It can be <code>0x</code> plus 64 hex digits, or up to 31 plain ASCII characters, which are left-aligned and zero-padded. The webhook payload always carries it as <code>0x</code> plus 64 lowercase hex digits, so <code>cust42</code> arrives as <code>0x637573743432</code> followed by zeros; decode it up to the first zero byte. Two rules:</p>
   <ul>
     <li><strong>It is public.</strong> Anyone can read it on-chain, so never use an email, a name or anything personal. Use an opaque id.</li>
     <li><strong>Whoever subscribes chooses it.</strong> Someone could subscribe with another customer's reference and then cancel, making that customer look cancelled. Issue an unguessable reference per checkout (for example 32 random bytes you store against the customer), and once <code>subscription.created</code> links a reference to a customer, track that subscription by its <code>subId</code>.</li>
@@ -157,14 +157,14 @@ Content-Type: application/json
       <tr><td><code>invoice.ready</code></td><td>the same body as <code>charge.succeeded</code>, sent alongside it</td></tr>
       <tr><td><code>charge.failed</code></td><td><code>failedAttempts</code>, <code>txHash</code>, <code>blockNumber</code></td></tr>
       <tr><td><code>dunning.started</code></td><td>first failure only: <code>nextRetryAt</code> (unix seconds)</td></tr>
-      <tr><td><code>subscription.paused</code></td><td><code>auto</code>: true when the contract paused it after repeated failures</td></tr>
+      <tr><td><code>subscription.paused</code></td><td><code>auto</code>: true when the contract paused it after repeated failures, false when you or the customer paused it</td></tr>
       <tr><td><code>subscription.resumed</code></td><td>none</td></tr>
       <tr><td><code>subscription.cancelled</code></td><td>none</td></tr>
       <tr><td><code>allowance.low</code></td><td><code>subscriber</code>, <code>allowance</code>, <code>balance</code>, <code>cyclesCovered</code>, <code>nextChargeAt</code></td></tr>
     </tbody>
   </table></div>
   <p><code>subscription.resumed</code> and <code>subscription.cancelled</code> have the same body: use the signed <code>X-Levy-Event</code> header to tell them apart. <code>allowance.low</code> is your cue to email the customer before payments start failing. The allowance is one pool shared by all of a customer's Levy subscriptions; the warning is sent once per subscription, and again only after a top-up runs low again. Allowances granted through Permit2 are not counted yet, so a Permit2 subscriber is flagged low from the start.</p>
-  <p>Failed deliveries are retried after 1 minute, 5 minutes, 15 minutes and 1 hour, then every 6 hours, and dropped after 24 hours. The dashboard shows each endpoint's delivery log. Disabling an endpoint drops what is queued for it, and nothing is queued while it is off.</p>
+  <p>Failed deliveries are retried after 1 minute, 5 minutes, 15 minutes and 1 hour, then every 6 hours. A delivery whose next retry would pass 24 hours of age is dropped instead, so the last attempt comes about 19 hours 21 minutes after the first. The dashboard shows each endpoint's delivery log. Disabling an endpoint drops what is queued for it, and nothing is queued while it is off.</p>
 
   <h2 id="verify">6. Verify webhook signatures</h2>
   <p>Every delivery carries these headers:</p>
@@ -250,7 +250,7 @@ then send on every call:   Authorization: Bearer &lt;token&gt;</code></pre>
       <tr><td><code>GET /api/invoices</code></td><td>signed in</td><td>charge records; <code>?format=csv</code> for CSV</td></tr>
       <tr><td><code>GET</code>, <code>POST /api/webhooks</code></td><td>signed in</td><td>list or register endpoints</td></tr>
       <tr><td><code>PATCH</code>, <code>DELETE /api/webhooks/:id</code></td><td>signed in</td><td>turn an endpoint on or off (<code>{"active": false}</code>), or remove it</td></tr>
-      <tr><td><code>GET /api/deliveries?webhookId=</code></td><td>signed in</td><td>the delivery log (<code>&amp;status=failed</code>, <code>&amp;limit=</code> up to 500)</td></tr>
+      <tr><td><code>GET /api/deliveries?webhookId=</code></td><td>signed in</td><td>the delivery log (<code>&amp;status=</code> pending, sent, failed or dead, <code>&amp;limit=</code> up to 500)</td></tr>
     </tbody>
   </table></div>
 

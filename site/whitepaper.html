@@ -30,8 +30,8 @@
   "headline": "Levy: pull-based subscription billing in USDC on Arc",
   "description": "How Levy collects recurring USDC payments from a one-time allowance, what the contract guarantees to customers and merchants, and what it does not.",
   "datePublished": "2026-09-25",
-  "dateModified": "2026-10-03",
-  "version": "0.8",
+  "dateModified": "2026-10-07",
+  "version": "0.9",
   "author": {
     "@type": "Organization",
     "name": "Levy",
@@ -85,7 +85,7 @@
 </header>
 
 <main id="main" role="main" class="paper">
-  <p class="kicker">Whitepaper &middot; Version 0.8 &middot; 3 October 2026</p>
+  <p class="kicker">Whitepaper &middot; Version 0.9 &middot; 7 October 2026</p>
   <h1>Levy: pull-based subscription billing in USDC on Arc</h1>
   <p class="lede">How Levy collects recurring payments from a one-time USDC allowance, what the contract guarantees to customers and merchants, and what it does not.</p>
 
@@ -260,7 +260,7 @@
       <tr><td><code>maxFailed</code></td><td>Failed charges before the subscription is past due</td><td>1 to 255</td></tr>
     </tbody>
   </table></div>
-  <p>Plans are immutable; there is no function to edit one. A merchant who wants a new price creates a new plan, and existing subscribers keep the old price unless they choose to switch (&sect;4.8). The one-day minimum cycle allows each subscription at most one billing date per day, which limits how quickly a mistaken approval could be spent (&sect;6.5). Cycles are fixed lengths in seconds, so a 30-day "month" drifts against calendar months.</p>
+  <p>Plans are immutable; there is no function to edit one. A merchant who wants a new price creates a new plan, and existing subscribers keep the old price unless they choose to switch (&sect;4.8). The one-day minimum cycle allows each subscription at most one billing date per day, which limits how quickly a mistaken approval could be spent (&sect;6.8). Cycles are fixed lengths in seconds, so a 30-day "month" drifts against calendar months.</p>
 
   <h3>4.3 Subscriptions</h3>
   <p>A subscription records its <code>subscriber</code>, <code>planId</code>, <code>start</code>, <code>nextChargeAt</code> (the next billing date), <code>failedAttempts</code>, proration <code>credit</code>, <code>chargeCount</code> and <code>status</code>. The status is one of TRIAL, ACTIVE, PAST_DUE, PAUSED or CANCELLED (Figure 2). A separate mapping, <code>subscriptionRef</code>, holds the merchant's 32-byte reference for the customer (&sect;4.10).</p>
@@ -451,7 +451,7 @@ credit = credit + floor(price_old * r / cycle_old)</div>
   <p>Consider <code>charge</code> called by an attacker. The subscription and plan are read from storage, so the caller influences nothing. Tokens move from the subscriber to the contract, then to the plan's merchant and the fee router, both fixed. The caller receives nothing, and calling first, or front-running the keeper, changes nothing but who paid the gas. A caller can charge a due subscription at the earliest moment it is due, which is the intended behaviour, and can record a failure when a pull fails, but no more than one a day per subscription (&sect;4.5). Before that limit existed, a caller could record failures back to back and pause a subscription in one block; see &sect;6.8.</p>
 
   <h3>6.4 Reentrancy</h3>
-  <p>Every function that moves tokens is guarded against reentrancy. State is written after the transfers in these functions, the reverse of the usual checks-effects-interactions order. That is safe with USDC, which makes no callbacks on transfer, but it would matter with a token that did, and pause, resume and cancel are not guarded. This is flagged for the audit.</p>
+  <p>Every SubscriptionManager function that moves tokens is guarded against reentrancy; the FeeRouter's <code>sweep</code> is not, and only forwards its balance. State is written after the transfers in the guarded functions, the reverse of the usual checks-effects-interactions order. That is safe with USDC, which makes no callbacks on transfer, but it would matter with a token that did, and pause, resume and cancel are not guarded. This is flagged for the audit.</p>
 
   <h3>6.5 Denial of service and keeper cost</h3>
   <p>A customer who revokes their allowance cannot make the keeper's transaction revert; the failure is recorded and costs one transaction. Each subscription can fail at most twice <code>maxFailed</code> times before it pauses itself, no faster than the dunning schedule, and only a resume, which the attacker must pay for, buys another round.</p>
@@ -461,7 +461,7 @@ credit = credit + floor(price_old * r / cycle_old)</div>
   <p>An earlier version let anyone relay a customer's Permit2 signature. Because a permit does not name a plan, a relayer, or anyone who read it from the mempool, could have subscribed the customer to a plan of their own. Only the signer can submit it now. A remaining low-severity issue: someone who sees the signed permit can submit it to Permit2 directly and use up its nonce, making the customer's subscribe fail. No funds are at risk, the allowance is still granted, and the customer can subscribe the ordinary way.</p>
 
   <h3>6.7 Off-chain services</h3>
-  <p>The API authenticates with Sign-In with Ethereum [10]. Messages are bound to the deployment's origin, challenges are single-use, and sessions last 24 hours and are stored hashed. The dashboard and portal hold the session in a cookie that page scripts cannot read, and a write carried by that cookie must come from the app's own origin. Every endpoint is scoped to the signed-in address, and another merchant's records return not-found. Webhook URLs must use https on port 443 at a public address, checked at registration and again at connection time so a DNS change cannot redirect deliveries to an internal network, and redirects are never followed. Deliveries are signed with Ed25519 [11] over the timestamp, delivery id, event type and body, so a captured delivery cannot be replayed later or relabelled as a different event. Delivery runs in its own loop, so a slow merchant endpoint cannot delay charging. The dashboard, portal and checkout send a Content-Security-Policy that allows scripts only from the app's own origin, so an injected script cannot run.</p>
+  <p>The API authenticates with Sign-In with Ethereum [10]. Messages are bound to the deployment's origin, challenges are single-use, and sessions last 24 hours and are stored hashed. The dashboard and portal hold the session in a cookie that page scripts cannot read, and a write carried by that cookie must come from the app's own origin. Every endpoint that returns merchant or subscriber data is scoped to the signed-in address, and another merchant's records return not-found. Webhook URLs must use https on port 443 at a public address, checked at registration and again at connection time so a DNS change cannot redirect deliveries to an internal network, and redirects are never followed. Deliveries are signed with Ed25519 [11] over the timestamp, delivery id, event type and body, so a captured delivery cannot be replayed later or relabelled as a different event. Delivery runs in its own loop, so a slow merchant endpoint cannot delay charging. The dashboard, portal and checkout send a Content-Security-Policy that allows scripts only from the app's own origin, so an injected script cannot run.</p>
 
   <h3>6.8 Findings so far</h3>
   <p>Code review, fuzzing and an external engineering review found six issues. All are fixed and have regression tests:</p>
@@ -496,13 +496,13 @@ credit = credit + floor(price_old * r / cycle_old)</div>
     <li>Backs off charges that revert for reasons other than payment (after 1, 5 and 15 minutes, then 1 hour, then every 6 hours).</li>
     <li>Checks allowance runway.</li>
   </ol>
-  <p>The delivery loop, every 5 seconds, sends webhooks. All schedule decisions use the chain's timestamp, not the server clock. Because a block is final, the keeper treats a mined transaction as settled.</p>
+  <p>The delivery loop, every 5 seconds, sends webhooks. Charge and dunning schedules use the chain's timestamp, not the server clock; webhook retries and signatures use the server clock. Because a block is final, the keeper treats a mined transaction as settled.</p>
   <p>Indexing is deliberately narrow. On Arc, USDC is the gas token, so USDC logs are everywhere. We measured about 4,000 of them per 500 blocks on testnet and about 1,200 on mainnet on 25 September 2026, roughly 1.4 million and 430,000 a day. The keeper fetches only Levy's own events, USDC transfers into or out of the SubscriptionManager and approvals to it, in fixed-size block ranges. It sends those queries one at a time and backs off for up to 15 seconds when refused, because Arc's public testnet RPC rate-limits bursts of them.</p>
   <p>The allowance check reads up to 50 subscribers per cycle, rechecking each after 6 hours, or sooner after a charge or a new approval. When a subscriber's allowance covers fewer than two more rounds of all their subscriptions, each affected merchant gets an <code>allowance.low</code> webhook. It is sent once, and again only if the allowance recovers and runs low again.</p>
-  <p>Only one keeper should run per deployment. Two keepers cannot double-charge, because a second successful call on the same billing date reverts, but they could each record a failure for the same missed payment and double the pace of dunning. A merchant who does not want to depend on Levy's keeper can run its own against its own plans, or simply call <code>charge</code>.</p>
+  <p>Only one keeper should run per deployment. Two keepers cannot double-charge, because a second successful call on the same billing date reverts, and they cannot speed up dunning, because a second recorded failure inside the schedule's gap reverts with <code>RetryTooSoon</code>. They only waste gas. A merchant who does not want to depend on Levy's keeper can run its own against its own plans, or simply call <code>charge</code>.</p>
 
   <h3>7.2 Webhooks</h3>
-  <p>Contract events become signed webhooks to the endpoints of the subscription's merchant. There are ten event types, listed in Appendix C, and every payload carries <code>subId</code>, <code>merchant</code> and the merchant's <code>ref</code>. Each delivery carries <code>X-Levy-Signature</code>, an Ed25519 signature over <code>{timestamp}.{deliveryId}.{event}.{body}</code>, plus the timestamp, delivery id, key id and event type in headers. Receivers verify the signature against the public key the API publishes, reject timestamps more than a few minutes old and drop delivery ids they have seen. Up to 8 deliveries run in parallel with one in flight per endpoint, so each endpoint receives events in order. Failures retry after 1, 5 and 15 minutes, 1 hour and then every 6 hours, and are dead-lettered after 24 hours. A merchant can register up to 5 endpoints.</p>
+  <p>Contract events become signed webhooks to the endpoints of the subscription's merchant. There are ten event types, listed in Appendix C, and every payload carries <code>subId</code>, <code>merchant</code> and the merchant's <code>ref</code>. Each delivery carries <code>X-Levy-Signature</code>, an Ed25519 signature over <code>{timestamp}.{deliveryId}.{event}.{body}</code>, plus the timestamp, delivery id, key id and event type in headers. Receivers verify the signature against the public key the API publishes, reject timestamps more than a few minutes old and drop delivery ids they have seen. Up to 8 deliveries run in parallel with one in flight per endpoint, so a slow endpoint is never hit twice at once. Failures retry after 1, 5 and 15 minutes, 1 hour and then every 6 hours; a delivery whose next retry would pass 24 hours is dead-lettered, its last attempt at about 19 hours 21 minutes. A merchant can register up to 5 endpoints.</p>
 
   <h3>7.3 API and applications</h3>
   <ul>
@@ -542,7 +542,7 @@ credit = credit + floor(price_old * r / cycle_old)</div>
       <tr><td><code>createPlan</code></td><td class="num">161,000</td><td class="num">about $0.004</td></tr>
       <tr><td>pause, resume, cancel</td><td class="num">49,000 to 57,000</td><td class="num">about $0.0015</td></tr>
     </tbody>
-    <caption>Twenty gwei is Arc's documented minimum base fee, 2 &times; 10<sup>-8</sup> USDC per unit of gas, which matches its target of about $0.001 per ERC-20 transfer [2]. The documented ceiling is 1,000 times higher. Deploying both contracts on Arc testnet cost 0.12 USDC (3.65 million gas at 32.5 gwei).</caption>
+    <caption>Twenty gwei is Arc's documented testnet minimum base fee, 2 &times; 10<sup>-8</sup> USDC per unit of gas, which matches its target of about $0.001 per ERC-20 transfer [2]. The documented ceiling is 1,000 times higher. Deploying both contracts on Arc testnet cost 0.11 USDC (3.79 million gas at 29.7 gwei).</caption>
   </table></div>
 
   <h3>8.4 Keeper sustainability</h3>
@@ -565,12 +565,12 @@ credit = credit + floor(price_old * r / cycle_old)</div>
         <li>Allowance warnings do not read Permit2 allowances, so Permit2 subscribers are flagged low from the start.</li>
         <li>Merchants sign in with their payout wallet: there are no scoped API keys and no support for smart-contract wallets (ERC-1271).</li>
       </ul></li>
-    <li><strong>Testnet only, and not audited.</strong> The contracts run on Arc testnet, nothing handles real money yet, and everything in this paper has been reviewed by its authors only.</li>
+    <li><strong>Testnet only, and not audited.</strong> The contracts run on Arc testnet, nothing handles real money yet, and there has been no paid audit. Outside review so far was informal (&sect;6.8).</li>
   </ul>
 
   <!-- 10 -->
   <h2 id="roadmap">10. Roadmap and future work</h2>
-  <p>The contracts, keeper, API, dashboard, portal and checkout are built, and the contracts have been live on Arc testnet since 26 September 2026. What remains before real money flows:</p>
+  <p>The contracts, keeper, API, dashboard, portal and checkout are built, and the contracts have been live on Arc testnet since 26 September 2026, the current ones since 3 October 2026. What remains before real money flows:</p>
   <ol>
     <li><strong>A soak of at least a week on the testnet deployment,</strong> running real billing cycles end to end: trials, failed payments through to auto-pause, pause and resume, cancellation, plan changes with credit, and the Permit2 path against Arc's own Permit2.</li>
     <li><strong>An external audit</strong> of the contracts, with the open items in &sect;6.8 and the exposure bound in &sect;6.2 in scope.</li>
@@ -588,7 +588,7 @@ credit = credit + floor(price_old * r / cycle_old)</div>
 
   <!-- 11 -->
   <h2 id="conclusion">11. Conclusion</h2>
-  <p>Levy makes stablecoin subscriptions work the way merchants already bill: one authorisation at checkout, automatic collection every cycle, retries when a payment fails and a clean record of every charge. It does this with the plainest tool available, an ERC-20 allowance, and a contract that turns the allowance into a narrow, predictable permission: one plan price, per billing date, for one merchant. On Arc that permission costs a fraction of a cent to exercise and settles for good in under a second. The design is built, tested and running on Arc testnet. The next steps are a week of real billing on it and an external audit, and this paper will be revised as they happen.</p>
+  <p>Levy makes stablecoin subscriptions work the way merchants already bill: one authorisation at checkout, automatic collection every cycle, retries when a payment fails and a clean record of every charge. It does this with the plainest tool available, an ERC-20 allowance, and a contract that turns the allowance into a narrow, predictable permission: one plan price, per billing date, for one merchant. On Arc that permission costs a fraction of a cent to exercise and settles for good in under a second. The design is built, tested and running on Arc testnet. The week of real billing on it began on 7 October 2026, an external audit follows, and this paper will be revised as they happen.</p>
 
   <!-- Appendices -->
   <h2 id="appendix">Appendix A. Contract interface</h2>
@@ -622,7 +622,7 @@ credit = credit + floor(price_old * r / cycle_old)</div>
       <tr><td>Dunning retries</td><td>1, 3, then every 7 days after each failure</td><td>Keeper configuration</td></tr>
       <tr><td>Revert backoff</td><td>1 min, 5 min, 15 min, 1 h, then every 6 h</td><td>Keeper</td></tr>
       <tr><td>Allowance warning</td><td>Fewer than 2 rounds left; up to 50 subscribers per cycle; recheck after 6 h</td><td>Keeper</td></tr>
-      <tr><td>Webhooks</td><td>5 endpoints per merchant; 5 s timeout; 8 in parallel; retries 1 min to 6 h; dead after 24 h</td><td>Keeper and API</td></tr>
+      <tr><td>Webhooks</td><td>5 endpoints per merchant; 5 s timeout; 8 in parallel; retries 1 min to 6 h; last attempt at about 19 h 21 min, then dead</td><td>Keeper and API</td></tr>
       <tr><td>Sessions</td><td>24 hours</td><td>API</td></tr>
       <tr><td>Checkout default</td><td>12 cycles approved, added to any existing allowance</td><td>Checkout</td></tr>
     </tbody>
