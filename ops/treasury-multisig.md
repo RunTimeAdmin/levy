@@ -8,8 +8,8 @@ a contract. So the order is: deploy the Safe, then deploy Levy with it.
 ## Recommended structure: 2-of-3 Safe
 
 - Deploy a Safe (or equivalent multisig) on Arc mainnet, chain ID 5042. Safe
-  v1.4.1 at its canonical addresses on Arc is still unconfirmed (see SPEC.md);
-  check the Safe deployment on Arc first.
+  v1.4.1 has code at its canonical addresses on Arc mainnet (checked 2026-10-07, see
+  SPEC.md), but the exact versions are unverified; check the Safe deployment on Arc first.
 - Threshold 2-of-3. Suggested seats (DC's call; placeholders below):
   1. `SIGNER_1`: DC's primary hardware wallet
   2. `SIGNER_2`: DC's secondary or paper-backup key, stored offline

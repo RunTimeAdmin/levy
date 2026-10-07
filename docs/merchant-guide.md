@@ -8,7 +8,7 @@ The public version of this guide is `site/docs.html` (getlevy.xyz/docs.html), wh
 
 - A wallet with USDC on Arc (for gas and for receiving payments).
 - The Levy API base URL from your deployment (the examples below show paths only; put your host in front, for example `https://app.getlevy.xyz` on testnet).
-- The `SubscriptionManager` contract address for your deployment. Contract addresses are published at mainnet launch.
+- The `SubscriptionManager` contract address for your deployment. The testnet addresses are in the README and on the public docs page; mainnet addresses are published at mainnet launch.
 
 All USDC amounts in this guide are in 6-decimal units: 1 USDC = 1,000,000.
 
@@ -187,7 +187,7 @@ A subscriber fixes a failed subscription by topping up USDC or approving more in
 
 The easiest way: send the subscriber your checkout link, `https://<your Levy host>/checkout.html?plan=<planId>&ref=<reference>`. It shows the plan, connects their wallet, and walks them through the approval and the subscription (two wallet confirmations). Without a trial, the first cycle is charged right away.
 
-`ref` is how you match the subscription to your own customer. It is stored with the subscription on-chain and included in every webhook (`ref` in the payload; `null` when none was given). It can be `0x` plus 64 hex digits, or up to 31 plain ASCII characters, which are left-aligned and zero-padded. The webhook payload always carries it as `0x` plus 64 lowercase hex digits, so `cust42` arrives as `0x637573743432` followed by zeros; decode it up to the first zero byte. Two rules:
+`ref` is how you match the subscription to your own customer. It is stored with the subscription on-chain and included in every webhook (`ref` in the payload; `null` when none was given). It can be `0x` plus 64 hex digits, or up to 31 printable ASCII characters, which are left-aligned and zero-padded. The webhook payload always carries it as `0x` plus 64 lowercase hex digits, so `cust42` arrives as `0x637573743432` followed by zeros; decode it up to the first zero byte. Two rules:
 
 - **It is public.** Anyone can read it on-chain, so never use an email, name or anything personal. Use an opaque id.
 - **Whoever subscribes chooses it.** Someone could subscribe with another customer's reference and then cancel, making that customer look cancelled. Issue an unguessable reference per checkout (for example 32 random bytes you store against the customer), and once `subscription.created` links a reference to a customer, track that subscription by its `subId`.

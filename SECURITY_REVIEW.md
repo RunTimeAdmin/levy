@@ -258,11 +258,12 @@ recorded, and the contract spaces those on the dunning schedule (§3).
    postpones retries). Fix: key events by transaction hash and log index, take
    the failure time from the block, test a crash between handling and cursor
    commit.
-10. Webhook retries stop earlier than documented. The schedule is 1 minute,
-    5 minutes, 15 minutes, 1 hour, then 6 hours, and a delivery whose next
-    retry would pass 24 hours is dead-lettered, so the last attempt is at
-    19 h 21 min. `docs/merchant-guide.md` and `site/docs.html` say "dropped
-    after 24 hours". Fix the wording or the schedule.
+10. Webhook retries stop earlier than "24 hours" suggests. The schedule is 1
+    minute, 5 minutes, 15 minutes, 1 hour, then 6 hours, and a delivery whose
+    next retry would pass 24 hours is dead-lettered, so the last attempt is at
+    19 h 21 min. The docs (README, merchant guide, public docs page, whitepaper,
+    wiki) now say so as of 2026-10-07; the schedule itself is unchanged. Decide
+    whether to keep it or add a final attempt nearer 24 hours.
 11. The wallet checks the network at connect only; `send()` does not check it
     again before each transaction. Low: the manager address has no code on
     the other Arc network, so the wrong-network case wastes gas.
@@ -272,11 +273,21 @@ recorded, and the contract spaces those on the dunning schedule (§3).
     apart from the immutables (tested 2026-10-07; line endings made no
     difference). Pin 0.8.33, keep the standard JSON input, then verify the
     source on the explorer, which publishes it and needs David's OK.
+    `foundry.lock` also records OpenZeppelin v5.7.0 at `cab19933` while the
+    submodule is pinned to `4858ab13`; reconcile the two.
 13. A dunning row is cleared only when a charge succeeds, a subscription
     resumes or its retry time passes with the subscription no longer
     chargeable. Pausing or cancelling does not clear it, so the dashboard's
     retry queue and `dunningDepth` still list those subscriptions until the
     stale retry time arrives. Cosmetic: nothing is charged.
+14. `ops/docker-compose.yml` gives the keeper and the API container the same
+    `env_file`, so the internet-facing API holds `LEVY_KEEPER_KEY`, which only
+    the keeper reads. A compromised API would expose the keeper's gas key (gas
+    funds only, since `charge()` is permissionless anyway). Give each service
+    its own env file or an explicit `environment` list.
+15. The CI ABI drift check compares `keeper/abi/*.json` with the compiled
+    contracts but not the `.bin` files that the keeper integration test deploys,
+    so a stale `.bin` would pass CI.
 
 ## 10. Off-chain services (keeper and API)
 

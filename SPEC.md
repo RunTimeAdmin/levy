@@ -31,7 +31,7 @@
 
 **Pause / cancel.** The subscriber or merchant can pause (nothing is charged while paused) or cancel (terminal; no on-chain refunds, which are merchant policy, handled off-chain). Resume is a fresh start: if `nextChargeAt` passed during the pause, it moves to the resume time, so paused cycles are never billed and an overdue cycle is forgiven (as with `changePlan`). Paid days keep running during a pause.
 
-**Invoicing.** Every `Charged` event becomes an invoice record: id, invoiceRef (`keccak256(subId, chargeCount)`), subscription, subscriber, merchant, amount, fee, tx hash, block, charge count. The merchant dashboard exports CSV. Cycle dates, memo references and PDF receipts are not built.
+**Invoicing.** Every `Charged` event becomes an invoice record: id, invoiceRef (`keccak256(abi.encode(subId, chargeCount))`), subscription, subscriber, merchant, amount, fee, tx hash, block, charge count. The merchant dashboard exports CSV. Cycle dates, memo references and PDF receipts are not built.
 
 **Allowance runway.** A subscriber's allowance is one pool shared by all their Levy subscriptions. The keeper warns merchants (`allowance.low`) when it covers fewer than 2 more rounds of the subscriber's charges, and the portal offers a top-up. Only direct ERC-20 allowances count; Permit2 allowances are not read, so a Permit2 subscriber is flagged low.
 
