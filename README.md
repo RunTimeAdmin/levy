@@ -1,8 +1,12 @@
 # Levy: Subscription Billing on Arc
 
-Pull-based USDC subscription billing for Arc. Merchants define plans, subscribers approve a USDC allowance and subscribe, and a keeper triggers each cycle's pull. The protocol takes a 1% fee on collected payments.
+Pull-based USDC subscription billing for Arc, like Stripe Billing for a chain where USDC is the gas token. Merchants define plans, subscribers approve a USDC allowance once and subscribe, and a keeper triggers each cycle's pull. Dunning, proration, signed webhooks and invoice records are built in. The protocol takes a 1% fee on collected payments.
+
+Charging is permissionless by design: anyone can call `charge()`, but it can only move the subscriber's pre-approved USDC to that plan's merchant.
 
 **Status:** contracts, keeper (charging, dunning, webhooks, allowance warnings), API with wallet sign-in, merchant dashboard, customer portal and checkout page are built and tested. Contracts: 65 tests green (57 unit + 8 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 55 tests green. API: 55 tests green. **On Arc testnet since 2026-10-03 (current deployment, see Deployments); the M4 soak started 2026-10-07. Not on mainnet. Not audited.** Known open issues are listed in `SECURITY_REVIEW.md` §9.
+
+**Read next:** [Wiki](docs/wiki/Home.md) · [Getting started](docs/wiki/Getting-Started.md) · [Merchant guide](docs/merchant-guide.md) · [Spec](SPEC.md) · [Security](SECURITY.md) · [Whitepaper](https://getlevy.xyz/whitepaper.html) · [getlevy.xyz](https://getlevy.xyz)
 
 ## What's in the repo
 
@@ -14,10 +18,62 @@ Pull-based USDC subscription billing for Arc. Merchants define plans, subscriber
 | `keeper/` | TypeScript service: indexes events, charges due subscriptions, runs dunning, delivers signed webhooks, warns when allowances run low. See `keeper/README.md` |
 | `api/` | Fastify API plus the merchant dashboard, customer portal and checkout page. See `api/README.md` |
 | `ops/` | Dockerfiles, docker-compose, systemd unit, env example, monitoring runbook, treasury multisig plan, and the testnet soak checklist (`testnet-soak.md`) with its tools |
-| `docs/` | Merchant guide and dunning email copy |
+| `docs/` | Merchant guide, dunning email copy, use cases, external review records, and the project wiki (`docs/wiki/`) |
 | `site/` | Static landing page, whitepaper (`whitepaper.html`, with a PDF built from it), public merchant docs (`docs.html`, from `docs/merchant-guide.md`) and security policy |
 | `SPEC.md`, `SECURITY_REVIEW.md`, `FEE_MATH_AUDIT.md`, `VERIFICATION.md` | Design spec, adversarial self-review, math audit, verified Arc facts |
 | `SECURITY.md` | How to report a vulnerability: contact, scope, testing rules and what we commit to |
+
+## Architecture at a glance
+
+```mermaid
+flowchart LR
+    M["Merchant wallet"]
+    S["Subscriber wallet"]
+    subgraph Arc["Arc"]
+        SM["SubscriptionManager"]
+        FR["FeeRouter"]
+        USDC["USDC"]
+    end
+    subgraph Levy["Levy services"]
+        K["Keeper"]
+        DB[("SQLite database")]
+        API["API and web pages"]
+    end
+    WH["Merchant webhook endpoint"]
+    M -->|"create plans, pause, cancel"| SM
+    S -->|"approve, subscribe, change plan"| SM
+    K -->|"charge when due"| SM
+    SM -->|"99 percent of each payment"| M
+    SM -->|"1 percent"| FR
+    SM -->|"pulls from the subscriber"| USDC
+    K -->|"reads events"| SM
+    K -->|"writes"| DB
+    API <-->|"reads and writes"| DB
+    M -.->|"dashboard"| API
+    S -.->|"portal and checkout"| API
+    K -->|"signed webhooks"| WH
+```
+
+Every on-chain write is signed in the user's wallet, and the API holds no on-chain key. The keeper indexes contract events into SQLite, sends the `charge()` transactions (paying gas in USDC), runs the dunning retries and delivers signed webhooks to the merchant's own endpoints. The API serves the dashboard, the customer portal and the checkout page from the same database. See [Architecture](docs/wiki/Architecture.md) for the sequence diagrams.
+
+## Quick start
+
+Requires [Foundry](https://getfoundry.sh/) for the contracts and Node 24 for the keeper and API (22.13 or later also works). The repository is private, so cloning needs read access.
+
+```bash
+git clone --recurse-submodules https://github.com/RunTimeAdmin/levy.git && cd levy
+forge build
+forge test
+FOUNDRY_PROFILE=ci forge test        # deeper invariant fuzzing, as CI runs it
+cd keeper && npm install && npm test # unit tests + anvil integration test (needs anvil on PATH)
+cd api && npm install && npm test
+```
+
+CI (`.github/workflows/ci.yml`) runs the contract tests, the keeper and API typechecks and tests, fails if `keeper/abi/*.json` no longer matches the contracts, and builds both Docker images, then starts the API container to check that it serves the pages and enforces sign-in. After changing a contract, regenerate with `forge inspect <Contract> abi --json > keeper/abi/<Contract>.json` (and `bytecode` into the `.bin`).
+
+`foundry.toml` pins `evm_version = "paris"`. Arc mainnet runs an Osaka EVM, so this is not required; paris stays as a harmless conservative default (see `VERIFICATION.md` §2).
+
+For a full local stack (anvil, a local deploy, the keeper and the API) follow [Getting Started](docs/wiki/Getting-Started.md).
 
 ## How charging works
 
@@ -57,21 +113,20 @@ Pull-based USDC subscription billing for Arc. Merchants define plans, subscriber
 
 Webhook URLs must be https on port 443 at a public address (checked at registration and again at every delivery). The merchant guide (`docs/merchant-guide.md`) covers plans, webhooks and signature verification, checkout links and references, and dunning.
 
-## Development
+## Documentation
 
-Requires [Foundry](https://getfoundry.sh/) for the contracts and Node 24 for the keeper and API.
-
-```bash
-forge build
-forge test
-FOUNDRY_PROFILE=ci forge test        # deeper invariant fuzzing, as CI runs it
-cd keeper && npm install && npm test # unit tests + anvil integration test (needs anvil on PATH)
-cd api && npm install && npm test
-```
-
-CI (`.github/workflows/ci.yml`) runs the contract tests, the keeper and API typechecks and tests, fails if `keeper/abi/*.json` no longer matches the contracts, and builds both Docker images, then starts the API container to check that it serves the pages and enforces sign-in. After changing a contract, regenerate with `forge inspect <Contract> abi --json > keeper/abi/<Contract>.json` (and `bytecode` into the `.bin`).
-
-`foundry.toml` pins `evm_version = "paris"`. Arc mainnet runs an Osaka EVM, so this is not required; paris stays as a harmless conservative default (see `VERIFICATION.md` §2).
+| Read this | For |
+|---|---|
+| [Project wiki](docs/wiki/Home.md) | Guided pages on the contracts, keeper, API, operations, testing and security |
+| [Merchant guide](docs/merchant-guide.md) | Plans, webhooks and signature verification, checkout links, dunning (public copy: [getlevy.xyz/docs.html](https://getlevy.xyz/docs.html)) |
+| [SPEC.md](SPEC.md) | The design spec |
+| [SECURITY.md](SECURITY.md) | How to report a vulnerability |
+| [SECURITY_REVIEW.md](SECURITY_REVIEW.md) | Adversarial self-review, review history and open items |
+| [FEE_MATH_AUDIT.md](FEE_MATH_AUDIT.md) | Audit of every arithmetic operation |
+| [VERIFICATION.md](VERIFICATION.md) | Verified Arc chain facts |
+| [keeper/README.md](keeper/README.md), [api/README.md](api/README.md) | Service details and configuration |
+| [ops/testnet-soak.md](ops/testnet-soak.md) | The testnet soak plan, pass criteria and log |
+| [Whitepaper](https://getlevy.xyz/whitepaper.html) | The protocol described end to end |
 
 ## Deploy
 
@@ -103,7 +158,7 @@ To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file 
 - Code: built with solc 0.8.33 from the sources at `08991fa`, the runtime bytecode of both contracts matches the chain byte for byte outside the constructor-set immutables, build metadata included. A different solc version gives a different metadata tail (`foundry.toml` does not pin one yet; `SECURITY_REVIEW.md` §9, item 12). `retryGap` reads 1, 3 and 7 days on-chain. Source is not yet verified on the explorer.
 - Soak host: keeper and API at `https://app.getlevy.xyz`.
 - **Superseded**, never used for billing, and nothing points at them:
-  - 2026-09-26, block 64031023 (SubscriptionManager `0x33c8e7e46583bdfd2e001f55ac1c58bd84eb739f`, FeeRouter `0xa6efee5f5a2eb2afae102f790b4889fcc01fe848`, record `run-1790390636694.json`, code `08dd7b7`): recorded failures only a day apart, so a caller could pause a subscription on day 3 instead of day 11 (finding 2 of the 2026-10-02 review). No plan or subscription was ever created on it.
+  - 2026-09-26, block 64031023 (SubscriptionManager `0x33c8e7e46583bdfd2e001f55ac1c58bd84eb739f`, FeeRouter `0xa6efee5f5a2eb2afae102f790b4889fcc01fe848`, record `run-1790390636694.json`, code `08dd7b7`; the record itself says `58ed3ba`, the head when forge ran before the fix was committed): recorded failures only a day apart, so a caller could pause a subscription on day 3 instead of day 11 (finding 2 of the 2026-10-02 review). No plan or subscription was ever created on it.
   - 2026-09-26, block 64020204 (SubscriptionManager `0x9df75ab83bde215f773af982af95b00646318189`, FeeRouter `0x79c6bb4030c688e64efdd2d33f0178e63fdf0b9f`, record `run-1790385119083.json`): predates the H-1 fix.
 
 ## Arc facts (verified 2026-09-25, see `VERIFICATION.md`)
