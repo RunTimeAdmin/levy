@@ -17,6 +17,7 @@ Pull-based USDC subscription billing for Arc. Merchants define plans, subscriber
 | `docs/` | Merchant guide and dunning email copy |
 | `site/` | Static landing page, whitepaper (`whitepaper.html`, with a PDF built from it), public merchant docs (`docs.html`, from `docs/merchant-guide.md`) and security policy |
 | `SPEC.md`, `SECURITY_REVIEW.md`, `FEE_MATH_AUDIT.md`, `VERIFICATION.md` | Design spec, adversarial self-review, math audit, verified Arc facts |
+| `SECURITY.md` | How to report a vulnerability: contact, scope, testing rules and what we commit to |
 
 ## How charging works
 
