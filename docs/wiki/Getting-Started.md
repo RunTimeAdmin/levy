@@ -32,7 +32,7 @@ The repository is private, so cloning needs read access.
 
 ```bash
 forge build
-forge test                       # 65 tests: 57 unit, 8 invariants (256 runs x depth 15)
+forge test                       # 96 tests: 88 unit, 8 invariants (256 runs x depth 15)
 FOUNDRY_PROFILE=ci forge test    # what CI runs: invariants at 1000 runs x depth 40
 ```
 
@@ -46,9 +46,9 @@ forge inspect SubscriptionManager bytecode > keeper/abi/SubscriptionManager.bin
 ## Test the keeper and the API
 
 ```bash
-cd keeper && npm ci && npm test      # 55 tests; includes an integration test that spawns anvil
+cd keeper && npm ci && npm test      # 84 tests; includes an integration test that spawns anvil
 npx tsc --noEmit                     # typecheck, as CI does
-cd ../api && npm ci && npm test      # 55 tests; seeded temp database, ephemeral port
+cd ../api && npm ci && npm test      # 71 tests; seeded temp database, ephemeral port
 ```
 
 `npm ci` installs exactly the lockfile, as CI does; `npm install` also works. The keeper's integration test needs `anvil` on your PATH and uses its own anvil on port 8546. `npm run test:integration` runs it alone. See [Testing](Testing.md).

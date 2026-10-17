@@ -123,7 +123,7 @@ Open issues and the self-review are in `SECURITY_REVIEW.md`; the math audit is i
 levy/
 ├── src/                # Foundry: SubscriptionManager, FeeRouter, IPermit2
 ├── script/             # Deploy.s.sol (Arc testnet / mainnet)
-├── test/               # 65 tests: 57 unit (incl. deploy script), 8 invariants
+├── test/               # 96 tests: 88 unit (incl. deploy script), 8 invariants
 ├── foundry.toml
 ├── FEE_MATH_AUDIT.md   # fee + proration math audit
 ├── SECURITY_REVIEW.md  # adversarial self-review and open issues

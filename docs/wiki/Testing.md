@@ -8,15 +8,16 @@ The counts come from the test sources and match the README.
 
 | Suite | Tests | Made up of |
 |---|---|---|
-| Contracts | 65 | 57 unit tests (41 + 9 + 7) and 8 invariants |
-| Keeper | 55 | 45 unit tests and 10 anvil integration tests |
-| API | 55 | 32 endpoint tests and 23 wallet-encoding tests |
+| Contracts | 96 | 88 unit tests (41 + 31 + 9 + 7) and 8 invariants |
+| Keeper | 84 | 74 unit tests and 10 anvil integration tests |
+| API | 71 | 48 endpoint tests (32 + 16) and 23 wallet-encoding tests |
 
 ## Contract tests
 
 | File | Tests | Covers |
 |---|---|---|
 | `test/Levy.t.sol` | 41 | Core behaviour, below |
+| `test/ChargePaths.t.sol` | 31 | Fee math and charge paths, below |
 | `test/FailureCooldown.t.sol` | 9 | The on-chain dunning schedule against a griefer |
 | `test/Deploy.t.sol` | 7 | The deploy script's checks |
 | `test/LevyInvariant.t.sol` | 8 invariants | Properties that must hold after any action sequence |
@@ -25,6 +26,8 @@ The counts come from the test sources and match the README.
 `MockPermit2` implements the real Permit2 EIP-712 scheme and, like the real one, pulls through the owner's ERC-20 approval, so tests sign genuine permits with `vm.sign`. Amounts are 6-decimal USDC units: `PRICE = 10_000_000` is 10 USDC, and 1 USDC = 1,000,000 units. Tests jump to billing dates with `vm.warp`.
 
 **`Levy.t.sol`** by group: plan creation (4: the stored plan, zero price, the 1-day minimum cycle, a trial longer than the cycle); subscribe (6: trial or not, the merchant reference, no allowance, unknown plan); charge (10: the 99/1 split, charging early, a failure recorded without reverting, PAST_DUE then auto-pause, resume, a `maxFailed` of 200 that once overflowed `uint8`, resume never billing paused cycles, credit surviving a failed pull); proration (6: upgrade and downgrade credit, no credit from a trial, no change without a payment, same plan, another merchant's plan); regressions for unbacked credit found in the 2026-09-25 self-review (2); pause, cancel and access (3); fee rounding (1); FeeRouter sweep and `setTreasury` access (2); Permit2 (7: the full flow, only the signer can submit, wrong spender, token or signature, a direct allowance taking priority).
+
+**`ChargePaths.t.sol`** pins down the fee math and every charge path: the 99/1 split for any price (fuzzed) and at the boundaries (1, 99, 100, 101, 199 and 200 units, and the largest Permit2 amount); the fee charged only on the pulled part when credit covers some of a cycle (fuzzed); a cycle paid fully from credit, with no token call; the invoice reference; every outcome of `_tryPull` (a token whose `transferFrom` returns false falls back to Permit2, a pull above `uint160` skips Permit2, a balance shortfall); recovery to ACTIVE; the guards on `charge`, `changePlan`, pause, resume and cancel; plan bounds; and the constructor and `setTreasury` zero-address checks. It defines a test-only `FalseReturnUSDC` token.
 
 **`FailureCooldown.t.sol`** turns the external reviews' proofs of concept into regression tests. A second failing `charge()` in the same block or in a looped transaction reverts `RetryTooSoon`. `retryGap` reads 1, 3 and 7 days. Failures land only on days 0, 1, 4 and 11, so a griefer calling daily records four failures and cannot pause before day 11. A top-up inside a gap is collected at once, a success is never held back, resume clears the timer, and a funded subscriber is unaffected. See [Dunning and Failures](Dunning-and-Failures.md).
 
@@ -45,7 +48,7 @@ The counts come from the test sources and match the README.
 | `failuresSpaced` | No two recorded failures are closer than `retryGap` allows |
 | `managerHoldsNothing` | The manager's USDC balance is always 0 |
 
-`foundry.toml` sets 256 runs at depth 15 by default and 1000 runs at depth 40 under the `ci` profile; the resume bug only showed up past depth 15. There are no stateless fuzz tests, so the invariant suite is the fuzzing. See also [Smart Contracts](Smart-Contracts.md).
+`foundry.toml` sets 256 runs at depth 15 by default and 1000 runs at depth 40 under the `ci` profile; the resume bug only showed up past depth 15. Apart from the two fee-math fuzz tests in `ChargePaths.t.sol`, the invariant suite is the fuzzing. See also [Smart Contracts](Smart-Contracts.md).
 
 ## Keeper tests
 
@@ -56,15 +59,20 @@ The counts come from the test sources and match the README.
 | `dedup.test.ts` | 4 | Collapsing duplicate USDC transfer logs (EIP-7708) |
 | `funds.test.ts` | 3 | The allowance runway rule: low under two rounds |
 | `log-ranges.test.ts` | 2 | Block-range chunking, including a day of Arc blocks in 500-block requests |
+| `keeper-unit.test.ts` | 29 | Log scanning and the charge loop against an in-memory fake chain, below |
 | `integration.test.ts` | 10 | The keeper against a real chain |
 
 The live HTTP tests start local servers, so they build the dispatcher with `allowPrivate: true` (the code behind `LEVY_WEBHOOK_ALLOW_PRIVATE`); the private-address test uses the strict setting.
+
+`keeper-unit.test.ts` runs `Indexer` and `Keeper` against a fake chain client, so it can force what a real node rarely does. Log scanning: the first-run lookback, chunked queries and the cursor, a chunk that fails part-way (the cursor stays after the last good chunk), logs returned out of order, each manager event's effect on the database, USDC transfers and approvals. The charge loop: success, a `ChargeFailed` receipt, the 1m, 5m, 15m, 1h, then 6h error backoff and its reset after a success, the re-read after an error, receipt logs for other contracts or subscriptions, dunning retries and the entries dropped for subscriptions that left the chargeable set, and the allowance warning.
 
 The integration test spawns `anvil --port 8546` (chain 31337), reads its printed dev keys, deploys `MockUSDC`, `FeeRouter`, `MockPermit2` and `SubscriptionManager` from `keeper/abi/*.json` and `.bin`, and builds a `Keeper` over an in-memory database. It sets the log chunk to 7 blocks so every sync crosses chunk boundaries, and moves time with `evm_increaseTime` because the keeper works on chain time. Its ten scenarios: a due charge splits 99/1; failures schedule dunning retries; a retry after the backoff clears dunning on success; resume clears dunning and charges from now; `Subscribed` and `Charged` enqueue webhooks; charging never waits on webhook delivery; plans nobody subscribed to are indexed and plan changes reported; a charge that reverts backs off; the merchant is warned once when an allowance runs low; only USDC logs involving Levy are indexed. See [Keeper Service](Keeper-Service.md).
 
 ## API tests
 
 `api.test.ts` (32) starts the real Fastify server on an ephemeral port over a seeded temporary SQLite database, with three real keys (a merchant, a subscriber and a second merchant) that sign in with genuine EIP-4361 signatures. Groups: `formatUsdc` (1); sign-in (6: message bound to origin and chain, the sign-in and logout round trip, reused nonce, wrong wallet, malformed input, every private endpoint demanding a session); cookie sessions (5: `__Host-` cookie attributes, origin check on writes, logout, the local http variant); public endpoints (5); data scoped to the signed-in address (6); webhook management (5: scoping, unsafe URLs, the 5-per-merchant cap); the production origin requirement (1); static pages and their Content-Security-Policy (3). See [Authentication](Authentication.md) and [API Reference](API-Reference.md).
+
+`auth.test.ts` (16) covers the sign-in edges on a server of its own: expired sessions and challenges, the session's 24 h lifetime and hashed storage, logout revoking one session only, the exact `Bearer` scheme and no cookie fallback when an `Authorization` header is present, the Origin rule applying to cookie writes only, the 10,000 pending-challenge cap, and another or malformed address in a query or body.
 
 `wallet.test.ts` (23) guards the hand-written browser code in `api/public/wallet.js` against the contract ABIs in `keeper/abi/`: 10 function selectors, the event topics, the getter field order and the `createPlan` argument order. It also covers the plan-change quote, plain-language wallet errors, exact USDC amounts, the check that the wallet is really on Arc, a missing receipt reported as unknown, reverted transactions, and the faucet and explorer links. See [Dashboard, Portal and Checkout](Dashboard-Portal-and-Checkout.md).
 
@@ -99,11 +107,11 @@ forge test --match-path test/FailureCooldown.t.sol
 
 cd keeper && npm ci
 npx tsc --noEmit                      # typecheck
-npm test                              # 55 tests; the integration test needs anvil on PATH
+npm test                              # 84 tests; the integration test needs anvil on PATH
 npm run test:integration              # the anvil test alone
 node --import tsx --test test/dunning.test.ts   # one file
 
-cd api && npm ci && npx tsc --noEmit && npm test    # 55 tests
+cd ../api && npm ci && npx tsc --noEmit && npm test # 71 tests
 ```
 
 Node 24 is expected (22.13 or later also works, since `node:sqlite` is built in). Foundry provides `forge` and `anvil`. See [Getting Started](Getting-Started.md) for the full setup.
