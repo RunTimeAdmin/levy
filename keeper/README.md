@@ -67,7 +67,7 @@ dead-lettered, not held. Delivery state lives in `webhook_deliveries`
 ## Tests
 
 ```bash
-npm test                 # unit tests + anvil integration test (55 tests)
+npm test                 # unit tests + anvil integration test (84 tests)
 npm run test:integration # the anvil test alone
 ```
 

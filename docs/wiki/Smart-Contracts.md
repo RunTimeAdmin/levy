@@ -116,7 +116,7 @@ The interface declares `permit(owner, permitSingle, signature)` and `transferFro
 
 ## Invariants checked by the tests
 
-The suite has 65 tests: 57 unit tests (41 in `Levy.t.sol`, 9 in `FailureCooldown.t.sol`, 7 for the deploy script) and 8 fuzzed invariants. A handler throws random plans, approvals, subscriptions, charges, plan changes, pauses, resumes, cancels and sweeps at the system. Defaults are 256 runs at depth 15, and the `ci` profile runs 1,000 at depth 40.
+The suite has 96 tests: 88 unit tests (41 in `Levy.t.sol`, 31 in `ChargePaths.t.sol`, 9 in `FailureCooldown.t.sol`, 7 for the deploy script) and 8 fuzzed invariants. A handler throws random plans, approvals, subscriptions, charges, plan changes, pauses, resumes, cancels and sweeps at the system. Defaults are 256 runs at depth 15, and the `ci` profile runs 1,000 at depth 40.
 
 | Invariant | Meaning |
 |---|---|

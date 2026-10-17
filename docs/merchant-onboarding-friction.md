@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-15
 **Status:** Idea captured, not yet designed or built.
-**Context:** Levy's billing engine (keeper, contracts, dashboard, checkout) is proven on Arc testnet via the M4 soak. The remaining adoption risk is not the billing logic — it is that a regular SaaS business owner has to be comfortable with wallets and USDC to use it. This doc captures the approach for removing that friction.
+**Context:** Levy's billing engine (keeper, contracts, dashboard, checkout) runs on Arc testnet in the M4 soak. The remaining adoption risk is not the billing logic — it is that a regular SaaS business owner has to be comfortable with wallets and USDC to use it. This doc captures the approach for removing that friction.
 
 ---
 
@@ -41,7 +41,7 @@ The merchant sees: dollars in, dollars out, subscription rows in a table. Same c
 
 - `docs/merchant-guide.md` — current merchant-facing docs assume wallet-native onboarding
 - `docs/wiki/Authentication.md` — SIWE/EIP-4361 session model that would need a parallel email-session path
-- `ops/testnet-soak.md` — soak validated the billing engine; this onboarding layer sits above it and does not change contract behavior
+- `ops/testnet-soak.md` — the soak tests the billing engine; this onboarding layer sits above it and does not change contract behavior
 - AgentClear research (`docs/AGENT_REPUTATION_ALTERNATIVES_RESEARCH.md` in the agentclear repo) — merchant adoption is the distribution wedge that makes Levy's subscription thesis real before agent volume arrives
 
 ---

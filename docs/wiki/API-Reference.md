@@ -87,9 +87,9 @@ Delivery, signing and retries are the keeper's job; see [Webhooks.md](Webhooks.m
 
 Registration is refused with a 400, checked in this order:
 
-1. More than 5 webhooks for the merchant: `webhook limit reached (5 per merchant)`.
+1. The merchant already has 5 webhooks: `webhook limit reached (5 per merchant)`.
 2. A URL that is not https, carries credentials, uses a port other than 443, or has any resolved address that is private, loopback, link-local or reserved. The keeper checks again on every delivery.
-3. `events` not a non-empty array of known event names (`unknown event type: ...`). Duplicates are dropped.
+3. `events` not a non-empty array of known event names (`events must be a non-empty array`, `unknown event type: ...`). Duplicates are dropped.
 
 A non-integer `:id` is 400 `invalid id`; someone else's is 404 `webhook not found`. Setting `active: false` stops new events for the endpoint and dead-letters deliveries still queued for it. Deleting does the same and hides its deliveries from the log.
 
