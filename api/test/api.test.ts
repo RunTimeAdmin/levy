@@ -8,7 +8,7 @@ import { writeFileSync } from "node:fs";
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { parseSiweMessage } from "viem/siwe";
 import { LevyDb } from "../../keeper/src/db.js";
-import { apiOptionsFromEnv, buildServer, formatUsdc } from "../src/server.js";
+import { apiOptionsFromEnv, buildServer, formatUsdc, publicOrigin } from "../src/server.js";
 import type { FastifyInstance } from "fastify";
 
 const tmp = mkdtempSync(join(tmpdir(), "levy-api-"));
@@ -519,6 +519,42 @@ describe("configuration", () => {
       else process.env.NODE_ENV = saved.env;
     }
   });
+
+  it("accepts only a plain origin for LEVY_PUBLIC_ORIGIN, and normalizes it", () => {
+    assert.equal(publicOrigin("https://app.levy.test", true), "https://app.levy.test");
+    assert.equal(publicOrigin("https://App.Levy.test/", true), "https://app.levy.test");
+    assert.equal(publicOrigin("https://app.levy.test:443", true), "https://app.levy.test");
+    assert.equal(publicOrigin("http://localhost:3001", true), "http://localhost:3001");
+    assert.equal(publicOrigin("http://app.levy.test", false), "http://app.levy.test");
+    for (const bad of [
+      "app.levy.test:443", // parses as scheme "app.levy.test:", origin "null"
+      "localhost:3001",
+      "app.levy.test",
+      "ftp://app.levy.test",
+      "https://user:pass@app.levy.test",
+      "https://app.levy.test/dashboard",
+      "https://app.levy.test/?x=1",
+      "https://app.levy.test/#x",
+      "",
+    ]) {
+      assert.throws(() => publicOrigin(bad, false), /LEVY_PUBLIC_ORIGIN/, bad);
+    }
+    // Plain http on a public host would send the session cookie without Secure.
+    assert.throws(() => publicOrigin("http://app.levy.test", true), /https in production/);
+  });
+
+  it("refuses to start with a LEVY_PUBLIC_ORIGIN that is not an origin", () => {
+    const saved = process.env.LEVY_PUBLIC_ORIGIN;
+    try {
+      process.env.LEVY_PUBLIC_ORIGIN = "app.levy.test:443";
+      assert.throws(() => apiOptionsFromEnv(), /LEVY_PUBLIC_ORIGIN/);
+      process.env.LEVY_PUBLIC_ORIGIN = "https://app.levy.test/";
+      assert.equal(apiOptionsFromEnv().origin, "https://app.levy.test");
+    } finally {
+      if (saved === undefined) delete process.env.LEVY_PUBLIC_ORIGIN;
+      else process.env.LEVY_PUBLIC_ORIGIN = saved;
+    }
+  });
 });
 
 describe("static frontend", () => {
@@ -571,5 +607,18 @@ describe("static frontend", () => {
   it("does not send the page CSP on API responses", async () => {
     const health = await get("/api/health");
     assert.equal(health.headers.get("content-security-policy"), null);
+  });
+
+  it("sends nosniff everywhere and no-store on API responses, errors included", async () => {
+    for (const path of ["/api/health", "/api/metrics", "/api/nope", "/", "/public/auth.js", "/public/nope.js"]) {
+      const r = await get(path);
+      assert.equal(r.headers.get("x-content-type-options"), "nosniff", path);
+    }
+    for (const path of ["/api/health", "/api/metrics", `/api/subscriptions?merchant=${MERCHANT}`]) {
+      const r = await get(path, MERCHANT);
+      assert.equal(r.headers.get("cache-control"), "no-store", path);
+    }
+    assert.equal((await get("/api/metrics")).headers.get("cache-control"), "no-store", "401 too");
+    assert.equal((await get("/public/auth.js")).headers.get("cache-control"), null);
   });
 });

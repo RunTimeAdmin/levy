@@ -37,7 +37,7 @@ Levy runs on Arc testnet only. Nothing is deployed on mainnet.
 
 ### Parsing rules
 
-- Nothing is validated. Numbers go through `Number(...)`, so a typo becomes `NaN` instead of an error.
+- Numbers must be whole numbers (`LEVY_POLL_MS` at least 100, `LEVY_WEBHOOK_POLL_MS` at least 100, `LEVY_LOG_CHUNK_BLOCKS` and `LEVY_CHAIN_ID` at least 1, `LEVY_LOOKBACK_BLOCKS` at least 0), and `LEVY_DUNNING_DAYS` positive numbers. Anything else stops the keeper at startup with an error naming the variable. An empty value means the default. Addresses and the key are not checked here; a malformed key fails when the keeper derives its account.
 - `LEVY_WEBHOOK_ALLOW_PRIVATE` is on only when the value is exactly `1`.
 - `LEVY_DUNNING_DAYS` is split on commas. The contract enforces minimum gaps between recorded failures through `retryGap`: 1 day after the first, 3 after the second, 7 after each later one. A shorter configured gap makes the retry revert with `RetryTooSoon`, and the keeper then treats it as an error and backs off. Longer gaps work.
 - `npm start` and `npm run once` load a `.env` file from the working directory if one exists. A variable already set in the real environment takes precedence over the file.
@@ -50,7 +50,7 @@ The API reads some of the same variables. Where the name matches, the meaning is
 |---|---|---|
 | `LEVY_API_PORT` | `3001` | Listen port. In Docker the container always uses 3001 and this variable only picks the host port. |
 | `LEVY_API_HOST` | `127.0.0.1` | Bind address. The Docker image sets `0.0.0.0` and compose publishes the port on the host's loopback only. |
-| `LEVY_PUBLIC_ORIGIN` | `http://localhost:<port>` | Origin the pages are served from; sign-in messages and cookie checks are bound to it. **Required when `NODE_ENV=production`**, otherwise startup throws. |
+| `LEVY_PUBLIC_ORIGIN` | `http://localhost:<port>` | Origin the pages are served from; sign-in messages and cookie checks are bound to it. **Required when `NODE_ENV=production`**, otherwise startup throws. It must be a bare origin (`https://host[:port]`, no path, query or credentials), and https in production except on localhost. |
 | `NODE_ENV` | unset | The API image sets `production`. |
 | `LEVY_DB_PATH` | `keeper/levy.db` in the repo | Must point at the keeper's file. |
 | `LEVY_WEBHOOK_KEY_PATH` | `keeper/webhook-signing-key.pem` in the repo | Must be the keeper's key file. |

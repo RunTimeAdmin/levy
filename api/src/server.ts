@@ -35,7 +35,8 @@ export interface ApiOptions {
 export function apiOptionsFromEnv(): ApiOptions {
   // Sign-in messages name this origin; a wrong default would teach every
   // user to click through the wallet's domain-mismatch warning.
-  if (!process.env.LEVY_PUBLIC_ORIGIN && process.env.NODE_ENV === "production") {
+  const production = process.env.NODE_ENV === "production";
+  if (!process.env.LEVY_PUBLIC_ORIGIN && production) {
     throw new Error("LEVY_PUBLIC_ORIGIN must be set in production (e.g. https://app.getlevy.xyz)");
   }
   return {
@@ -45,12 +46,44 @@ export function apiOptionsFromEnv(): ApiOptions {
       process.env.LEVY_WEBHOOK_KEY_PATH ??
       join(API_DIR, "..", "..", "keeper", "webhook-signing-key.pem"),
     webhookKey: process.env.LEVY_WEBHOOK_KEY,
-    origin: process.env.LEVY_PUBLIC_ORIGIN ?? `http://localhost:${process.env.LEVY_API_PORT ?? 3001}`,
+    origin: publicOrigin(
+      process.env.LEVY_PUBLIC_ORIGIN ?? `http://localhost:${process.env.LEVY_API_PORT ?? 3001}`,
+      production
+    ),
     chainId: Number(process.env.LEVY_CHAIN_ID ?? 5042),
     webhookAllowPrivate: process.env.LEVY_WEBHOOK_ALLOW_PRIVATE === "1",
     managerAddress: process.env.LEVY_MANAGER_ADDRESS,
     usdcAddress: process.env.LEVY_USDC_ADDRESS,
   };
+}
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * LEVY_PUBLIC_ORIGIN, checked and normalized. Sign-in messages, the cookie
+ * name and the Origin check on cookie writes all derive from it, so a value
+ * that is not a plain origin must stop the server: "app.getlevy.xyz:443"
+ * parses as a URL whose origin is "null", which is the Origin header a
+ * sandboxed frame sends. Plain http is accepted in production only on
+ * loopback (the CI container check), since a public http origin would put
+ * the session cookie on the wire without Secure.
+ */
+export function publicOrigin(raw: string, production: boolean): string {
+  const problem = `LEVY_PUBLIC_ORIGIN must be an origin such as https://app.getlevy.xyz (got ${JSON.stringify(raw)})`;
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    throw new Error(problem);
+  }
+  if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error(problem);
+  if (!u.hostname || u.username || u.password || u.pathname !== "/" || u.search || u.hash) {
+    throw new Error(problem);
+  }
+  if (production && u.protocol === "http:" && !LOOPBACK_HOSTS.has(u.hostname)) {
+    throw new Error(`LEVY_PUBLIC_ORIGIN must use https in production (got ${JSON.stringify(raw)})`);
+  }
+  return u.origin;
 }
 
 /** MRR is per 30 days, the length of the "monthly" plan preset. */
@@ -106,6 +139,14 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
 
   app.addHook("onClose", async () => {
     db.close();
+  });
+
+  // On every response, errors included. nginx adds nosniff too, but the API
+  // also runs without it (CI, local). API responses carry per-address data
+  // and are never cached; the static assets may be.
+  app.addHook("onSend", async (req, reply) => {
+    reply.header("x-content-type-options", "nosniff");
+    if (req.url.startsWith("/api/")) reply.header("cache-control", "no-store");
   });
 
   // Every endpoint below except health, plans and the webhook public key

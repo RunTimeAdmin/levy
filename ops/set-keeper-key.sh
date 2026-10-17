@@ -29,9 +29,21 @@ fi
 ADDR=$(printf '%s' "$K" | docker run --rm -i --entrypoint node levy-keeper:latest --input-type=module -e \
   "import { privateKeyToAccount } from 'viem/accounts'; let k = ''; for await (const c of process.stdin) k += c; console.log(privateKeyToAccount(k.trim()).address);")
 
-sed -i "s|^LEVY_KEEPER_KEY=.*|LEVY_KEEPER_KEY=$K|" "$ENV_FILE"
-unset K
+# The key reaches awk through its environment, never its arguments: a command
+# line is visible to every user on the host (ps, /proc/*/cmdline), a process's
+# environment only to its owner. Adds the line when the file has none.
 chmod 600 "$ENV_FILE"
+TMP=$(mktemp "$ENV_FILE.XXXXXX")
+trap 'rm -f "$TMP"' EXIT
+LEVY_NEW_KEEPER_KEY="$K" awk '
+  BEGIN { k = ENVIRON["LEVY_NEW_KEEPER_KEY"] }
+  /^LEVY_KEEPER_KEY=/ { if (!done) print "LEVY_KEEPER_KEY=" k; done = 1; next }
+  { print }
+  END { if (!done) print "LEVY_KEEPER_KEY=" k }
+' "$ENV_FILE" > "$TMP"
+# Rewrite in place so the file keeps its owner and mode.
+cat "$TMP" > "$ENV_FILE"
+unset K
 
 echo "Saved to $ENV_FILE."
 echo "Keeper address: $ADDR"
