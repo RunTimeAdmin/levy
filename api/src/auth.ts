@@ -33,7 +33,8 @@ export const SESSION_TTL_SEC = 24 * 3600;
 const now = () => Math.floor(Date.now() / 1000);
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
-function fail(status: number, message: string): never {
+/** Ends the request with `status` and `{ message }` (Fastify's error handler). */
+export function fail(status: number, message: string): never {
   const err = new Error(message) as Error & { statusCode: number };
   err.statusCode = status;
   throw err;

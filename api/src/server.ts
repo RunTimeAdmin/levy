@@ -1,8 +1,14 @@
-import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { readFile } from "node:fs/promises";
 import { dirname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { LevyDb, Status } from "../../keeper/src/db.js";
+import {
+  DELIVERY_STATUSES,
+  LevyDb,
+  Status,
+  type DbCharge,
+  type DbSubscription,
+} from "../../keeper/src/db.js";
 import { checkWebhookUrl } from "../../keeper/src/webhook-url.js";
 import {
   WEBHOOK_EVENTS,
@@ -11,7 +17,7 @@ import {
   loadSigningKey,
   publicKeyPem,
 } from "../../keeper/src/webhooks.js";
-import { registerAuthRoutes } from "./auth.js";
+import { fail as bad, registerAuthRoutes } from "./auth.js";
 
 const API_DIR = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(API_DIR, "..", "public");
@@ -53,8 +59,9 @@ export function apiOptionsFromEnv(): ApiOptions {
   };
 }
 
+const DAY_SECONDS = 86_400;
 /** MRR is per 30 days, the length of the "monthly" plan preset. */
-const MONTH_SECONDS = 30n * 86_400n;
+const MONTH_SECONDS = 30n * BigInt(DAY_SECONDS);
 
 /** Each webhook costs a delivery per event; keep one merchant from flooding the dispatcher. */
 const MAX_WEBHOOKS_PER_MERCHANT = 5;
@@ -88,6 +95,21 @@ function contractAddress(v: unknown): string | null {
 
 function sameAddress(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
+}
+
+/** A subscription row as the API returns it: the row plus display fields. */
+function presentSubscription<T extends DbSubscription>(s: T) {
+  return {
+    ...s,
+    statusName: STATUS_NAMES[s.status] ?? "unknown",
+    priceUsdc: formatUsdc(s.price),
+    nextChargeAtIso: new Date(s.nextChargeAt * 1000).toISOString(),
+  };
+}
+
+/** A charge (invoice) row as the API returns it. */
+function presentCharge<T extends DbCharge>(c: T) {
+  return { ...c, amountUsdc: formatUsdc(c.amount), feeUsdc: formatUsdc(c.fee) };
 }
 
 /**
@@ -131,7 +153,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
     return db.listPlans().map((p) => ({
       ...p,
       priceUsdc: formatUsdc(p.price),
-      cycleDays: p.cycleSeconds / 86_400,
+      cycleDays: p.cycleSeconds / DAY_SECONDS,
     }));
   });
 
@@ -153,12 +175,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
       const n = Number(q.status);
       subs = subs.filter((s) => s.status === n);
     }
-    return subs.map((s) => ({
-      ...s,
-      statusName: STATUS_NAMES[s.status] ?? "unknown",
-      priceUsdc: formatUsdc(s.price),
-      nextChargeAtIso: new Date(s.nextChargeAt * 1000).toISOString(),
-    }));
+    return subs.map(presentSubscription);
   });
 
   // The signed-in subscriber's allowance runway, as of the keeper's last check.
@@ -188,15 +205,8 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
       return bad(404, "subscription not found");
     }
     return {
-      ...sub,
-      statusName: STATUS_NAMES[sub.status] ?? "unknown",
-      priceUsdc: formatUsdc(sub.price),
-      nextChargeAtIso: new Date(sub.nextChargeAt * 1000).toISOString(),
-      charges: db.listCharges({ subId: id }).map((c) => ({
-        ...c,
-        amountUsdc: formatUsdc(c.amount),
-        feeUsdc: formatUsdc(c.fee),
-      })),
+      ...presentSubscription(sub),
+      charges: db.listCharges({ subId: id }).map(presentCharge),
       dunning: db.getDunning(id) ?? null,
     };
   });
@@ -262,7 +272,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
 
   // ---- charges / invoices (invoices are charge records) ----
 
-  async function chargesHandler(req: any, reply: any) {
+  async function chargesHandler(req: FastifyRequest, reply: FastifyReply) {
     const me = requireSession(req);
     const q = req.query as { subscription?: string; merchant?: string; format?: string };
     checkOwnAddress(q.merchant, me, "merchant");
@@ -279,7 +289,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
       reply.header("content-disposition", 'attachment; filename="levy-invoices.csv"');
       return [header, ...lines].join("\n") + "\n";
     }
-    return rows.map((c) => ({ ...c, amountUsdc: formatUsdc(c.amount), feeUsdc: formatUsdc(c.fee) }));
+    return rows.map(presentCharge);
   }
 
   app.get("/api/charges", chargesHandler);
@@ -355,7 +365,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
       filter.webhookId = n;
     }
     if (q.status !== undefined) {
-      if (!["pending", "sent", "failed", "dead"].includes(q.status)) return bad(400, "invalid status");
+      if (!(DELIVERY_STATUSES as readonly string[]).includes(q.status)) return bad(400, "invalid status");
       filter.status = q.status;
     }
     if (q.limit !== undefined) filter.limit = Number(q.limit) || 100;
@@ -378,12 +388,6 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   });
 
   return app;
-}
-
-function bad(status: number, message: string): never {
-  const err = new Error(message) as Error & { statusCode: number };
-  err.statusCode = status;
-  throw err;
 }
 
 const MIME: Record<string, string> = {
