@@ -2,12 +2,13 @@
 // can forbid inline scripts. Loaded after the shared helpers it uses.
 const $ = (id) => document.getElementById(id);
 const usdc = (units) => LevyWallet.usdcText(units); // exact, never rounded to cents
-const every = (sec) => ({ 604800: "week", 2592000: "month (30 days)", 7776000: "quarter (90 days)", 31536000: "year" })[sec]
-  ?? `${+(sec / 86400).toFixed(2)} days`;
+// The checkout names cycles for a customer ("every month (30 days)").
+const CYCLE_NAMES = { 604800: "week", 2592000: "month (30 days)", 7776000: "quarter (90 days)", 31536000: "year" };
+const every = (sec) => LevyFormat.every(sec, CYCLE_NAMES);
+const { date, externalLink } = LevyFormat;
 function status(text, cls = "") { $("status").textContent = text; $("status").className = cls; }
 /** Replaces "Loading plan..." (and its spinner) with why the plan cannot be shown. */
 function planMsg(text) { $("planMsg").textContent = text; $("planMsg").className = "muted"; }
-const date = (sec) => new Date(sec * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 function row(dl, term, value, mono) {
   const dt = document.createElement("dt"); dt.textContent = term;
   const dd = document.createElement("dd"); dd.textContent = value; if (mono) dd.className = "mono";
@@ -131,9 +132,7 @@ $("connect").onclick = async () => {
       status(`Your USDC balance does not cover the first charge (${usdc(plan.price)}), which is due today.`, "warn");
       const faucet = LevyWallet.faucet(cfg.chainId);
       if (faucet) {
-        const a = document.createElement("a");
-        a.href = faucet; a.target = "_blank"; a.rel = "noopener"; a.textContent = "Get test USDC";
-        $("status").append(" ", a, " (choose Arc Testnet), then connect again.");
+        $("status").append(" ", externalLink(faucet, "Get test USDC"), " (choose Arc Testnet), then connect again.");
         $("connect").hidden = false;
         $("go").hidden = true;
       }
@@ -235,11 +234,7 @@ async function checkPending() {
 function unknownOutcome(hash) {
   status("Your transaction was sent, but its result is not confirmed yet. Do not pay again until it is. ", "warn");
   const url = LevyWallet.txUrl(cfg.chainId, hash);
-  if (url) {
-    const a = document.createElement("a");
-    a.href = url; a.target = "_blank"; a.rel = "noopener"; a.textContent = "See it on the explorer";
-    $("status").append(a, " ");
-  }
+  if (url) $("status").append(externalLink(url, "See it on the explorer"), " ");
   const again = document.createElement("button");
   again.className = "ghost small";
   again.textContent = "Check again";
@@ -280,8 +275,7 @@ function showReceipt({ subId, nextChargeAt, txHash }, allow) {
   const dd = document.createElement("dd"); dd.className = "mono";
   const url = LevyWallet.txUrl(cfg.chainId, txHash);
   if (url) {
-    const a = document.createElement("a"); a.href = url; a.target = "_blank"; a.rel = "noopener"; a.textContent = txHash;
-    dd.append(a);
+    dd.append(externalLink(url, txHash));
   } else {
     dd.textContent = txHash;
   }

@@ -110,6 +110,16 @@ describe("wallet.js chain names and explorer links", () => {
     assert.equal(wallet.changePlanQuote(stored, month, pro, now).credit, 35_000_000n);
   });
 
+  it("offers the actions the contract allows in each state, and names the state each leaves", () => {
+    // Spread: arrays from the vm sandbox have another realm's prototype.
+    assert.deepEqual([...wallet.actions("trial")], ["pause", "cancel"]);
+    assert.deepEqual([...wallet.actions("active")], ["pause", "cancel"]);
+    assert.deepEqual([...wallet.actions("past_due")], ["pause", "cancel"]);
+    assert.deepEqual([...wallet.actions("paused")], ["resume", "cancel"]);
+    assert.deepEqual([...wallet.actions("cancelled")], []);
+    assert.deepEqual(["pause", "resume", "cancel"].map(wallet.statusAfter), ["paused", "active", "cancelled"]);
+  });
+
   it("turns wallet errors into plain messages", () => {
     assert.equal(wallet.friendly({ code: 4001, message: "User rejected the request." }), "You cancelled the request in your wallet.");
     assert.match(wallet.friendly({ code: -32002, message: "already pending" }), /already has a request waiting/);

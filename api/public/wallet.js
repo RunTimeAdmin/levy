@@ -201,9 +201,18 @@ const LevyWallet = (() => {
     return send(from, manager, SEL[action] + word(subId));
   };
 
+  // What the contract allows in each state (SubscriptionManager.sol), keyed by
+  // the API's statusName, and the state each action leaves behind.
+  const ACTIONS = { trial: ["pause", "cancel"], active: ["pause", "cancel"], past_due: ["pause", "cancel"], paused: ["resume", "cancel"] };
+  const AFTER = { pause: "paused", resume: "active", cancel: "cancelled" };
+  /** The manage() actions open to a subscription in `status`. */
+  const actions = (status) => ACTIONS[status] || [];
+  /** The status a successful manage(action) leaves. */
+  const statusAfter = (action) => AFTER[action];
+
   return {
     connect, balanceOf, allowance, approve, subscribe, manage, createPlan, changePlan,
     subscription, changePlanQuote, receipt, subscribedFrom, usdcText,
-    explorer, chainName, txUrl, faucet, friendly,
+    explorer, chainName, txUrl, faucet, friendly, actions, statusAfter,
   };
 })();

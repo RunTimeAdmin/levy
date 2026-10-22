@@ -1,20 +1,10 @@
 // Page script for portal.html, kept out of the HTML so the Content-Security-Policy
 // can forbid inline scripts. Loaded after the shared helpers it uses.
 const $ = (id) => document.getElementById(id);
-const short = (a) => a ? a.slice(0, 6) + "..." + a.slice(-4) : "";
-// USDC amounts arrive as 6-decimal strings ("29.000000"). Show cents, and
-// further digits only when they are not zero, so no amount is misstated.
-const usd = (s) => "$" + s.replace(/(\.\d\d\d*?)0+$/, "$1");
-const units = (v) => { const b = BigInt(v); return `${b / 1_000_000n}.${(b % 1_000_000n).toString().padStart(6, "0")}`; };
-const every = (sec) => ({ 86400: "day", 604800: "week", 2592000: "30 days", 7776000: "90 days", 31536000: "year" })[sec]
-  ?? `${+(sec / 86400).toFixed(2)} days`;
-const date = (sec) => new Date(sec * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+const { short, usd, units, every, date } = LevyFormat;
 let cfg; // chain id and contract addresses, for the wallet actions
 let plans = []; // every plan, for plan changes (same merchant only)
-function txCell(hash) {
-  const url = LevyWallet.txUrl(cfg.chainId, hash);
-  return url ? `<a href="${url}" target="_blank" rel="noopener">${short(hash)}</a>` : short(hash);
-}
+const txCell = (hash) => LevyFormat.txCell(cfg.chainId, hash);
 
 /** Connect the wallet on Levy's chain and make sure it is the signed-in account. */
 async function myWallet() {
@@ -25,14 +15,11 @@ async function myWallet() {
   return account;
 }
 
-// What the contract allows in each state (SubscriptionManager.sol).
-const ACTIONS = { trial: ["pause", "cancel"], active: ["pause", "cancel"], past_due: ["pause", "cancel"], paused: ["resume", "cancel"] };
 const CONFIRM = {
   pause: (id) => `Pause subscription #${id}? Nothing is charged while it is paused.`,
   resume: (id) => `Resume subscription #${id}? If a charge date passed while it was paused, billing restarts today.`,
   cancel: (id) => `Cancel subscription #${id}? This is final: it cannot be resumed, and time already paid for is not refunded on-chain (refunds are up to the merchant).`,
 };
-const DONE = { pause: "paused", resume: "active", cancel: "cancelled" };
 const CHANGEABLE = new Set(["trial", "active", "past_due"]);
 
 const otherPlans = (sub) => plans.filter((p) =>
@@ -40,7 +27,7 @@ const otherPlans = (sub) => plans.filter((p) =>
 
 function renderActions(sub, status) {
   const box = document.querySelector(`[data-actions="${sub.subId}"]`);
-  const buttons = (ACTIONS[status] || []).map((action) => {
+  const buttons = LevyWallet.actions(status).map((action) => {
     const b = document.createElement("button");
     b.className = action === "cancel" ? "ghost danger" : "ghost";
     b.textContent = action[0].toUpperCase() + action.slice(1);
@@ -70,7 +57,7 @@ async function act(sub, action) {
     await LevyWallet.manage(account, cfg.managerAddress, action, subId);
     // The portal's data refreshes after the keeper's next sync; show the
     // on-chain result now.
-    const status = DONE[action];
+    const status = LevyWallet.statusAfter(action);
     setPill(subId, status);
     renderActions(sub, status);
     document.querySelector(`[data-change="${subId}"]`).hidden = true;
@@ -219,11 +206,7 @@ function allowancePanel(funds) {
     p.style.margin = "0";
     p.textContent = `Your USDC balance is below one round of your subscriptions (${usd(funds.perCycleUsdc)}).`;
     const faucet = LevyWallet.faucet(cfg.chainId);
-    if (faucet) {
-      const a = document.createElement("a");
-      a.href = faucet; a.target = "_blank"; a.rel = "noopener"; a.textContent = "Get test USDC";
-      p.append(" ", a, " (choose Arc Testnet).");
-    }
+    if (faucet) p.append(" ", LevyFormat.externalLink(faucet, "Get test USDC"), " (choose Arc Testnet).");
     box.append(p);
   }
   // Shown even before a wallet is detected (some inject late); without one, a click says so.

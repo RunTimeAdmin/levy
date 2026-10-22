@@ -6,21 +6,12 @@ const EVENTS = ["subscription.created","subscription.updated","charge.succeeded"
 $("hookEvents").innerHTML = EVENTS.map(e =>
   `<label><input type="checkbox" value="${e}" checked> ${e}</label>`).join("");
 
-const short = (a) => a ? a.slice(0, 6) + "..." + a.slice(-4) : "";
+const { short, usd, units, every } = LevyFormat;
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-// USDC amounts arrive as 6-decimal strings ("29.000000"). Show cents, and
-// further digits only when they are not zero, so no amount is misstated.
-const usd = (s) => "$" + s.replace(/(\.\d\d\d*?)0+$/, "$1");
-const units = (v) => { const b = BigInt(v); return `${b / 1_000_000n}.${(b % 1_000_000n).toString().padStart(6, "0")}`; };
-const every = (sec) => ({ 86400: "day", 604800: "week", 2592000: "30 days", 7776000: "90 days", 31536000: "year" })[sec]
-  ?? `${+(sec / 86400).toFixed(2)} days`;
 const merchant = () => LevyAuth.address;
 const api = (p, opts) => LevyAuth.api(p, opts);
 let cfg = {}; // chain id and contract addresses from /api/config
-function txCell(hash) {
-  const url = LevyWallet.txUrl(cfg.chainId, hash);
-  return url ? `<a href="${url}" target="_blank" rel="noopener">${short(hash)}</a>` : short(hash);
-}
+const txCell = (hash) => LevyFormat.txCell(cfg.chainId, hash);
 const checkoutUrl = (planId) => `${location.origin}/checkout.html?plan=${planId}`;
 
 function pill(text, cls) { return `<span class="pill ${cls || text}">${text}</span>`; }
@@ -197,11 +188,7 @@ function showPlanCreated(planId, txHash) {
     el.append(b, " ");
   }
   const url = LevyWallet.txUrl(cfg.chainId, txHash);
-  if (url) {
-    const a = document.createElement("a");
-    a.href = url; a.target = "_blank"; a.rel = "noopener"; a.textContent = "transaction";
-    el.append(a);
-  }
+  if (url) el.append(LevyFormat.externalLink(url, "transaction"));
 }
 
 /** The list comes from the keeper's index, which sees a new plan within a minute. */
@@ -215,8 +202,6 @@ async function waitForPlan(planId) {
 
 // ---- subscriptions ----
 
-const ACTIONS = { trial: ["pause", "cancel"], active: ["pause", "cancel"], past_due: ["pause", "cancel"], paused: ["resume", "cancel"] };
-const DONE = { pause: "paused", resume: "active", cancel: "cancelled" };
 const CONFIRM = {
   pause: (id) => `Pause subscription #${id}? Nothing is charged while it is paused. You or the customer can resume it.`,
   resume: (id) => `Resume subscription #${id}? If its billing date passed while it was paused, the customer is charged again from today.`,
@@ -224,7 +209,7 @@ const CONFIRM = {
 };
 
 function actionButtons(subId, status) {
-  return (ACTIONS[status] || []).map((a) =>
+  return LevyWallet.actions(status).map((a) =>
     `<button class="${a === "cancel" ? "danger" : "ghost"} small" data-act="${a}" data-sub="${subId}">${a[0].toUpperCase() + a.slice(1)}</button>`).join("");
 }
 
@@ -258,7 +243,7 @@ async function merchantAct(subId, action) {
     const account = await merchantWallet();
     await LevyWallet.manage(account, cfg.managerAddress, action, subId);
     // The table refreshes from the keeper's index later; show the on-chain result now.
-    const status = DONE[action];
+    const status = LevyWallet.statusAfter(action);
     document.querySelector(`[data-pill="${subId}"]`).innerHTML = pill(status);
     box.innerHTML = actionButtons(subId, status);
     bindActions(box);
