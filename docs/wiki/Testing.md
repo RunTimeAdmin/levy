@@ -56,6 +56,7 @@ The counts come from the test sources and match the README.
 | `dedup.test.ts` | 4 | Collapsing duplicate USDC transfer logs (EIP-7708) |
 | `funds.test.ts` | 3 | The allowance runway rule: low under two rounds |
 | `log-ranges.test.ts` | 2 | Block-range chunking, including a day of Arc blocks in 500-block requests |
+| `config.test.ts` | 4 | Environment defaults, and refusing values the keeper cannot run on (a 0 chunk size, a NaN interval, an empty dunning step); the shared retry-schedule step |
 | `integration.test.ts` | 10 | The keeper against a real chain |
 
 The live HTTP tests start local servers, so they build the dispatcher with `allowPrivate: true` (the code behind `LEVY_WEBHOOK_ALLOW_PRIVATE`); the private-address test uses the strict setting.
@@ -66,7 +67,7 @@ The integration test spawns `anvil --port 8546` (chain 31337), reads its printed
 
 `api.test.ts` (32) starts the real Fastify server on an ephemeral port over a seeded temporary SQLite database, with three real keys (a merchant, a subscriber and a second merchant) that sign in with genuine EIP-4361 signatures. Groups: `formatUsdc` (1); sign-in (6: message bound to origin and chain, the sign-in and logout round trip, reused nonce, wrong wallet, malformed input, every private endpoint demanding a session); cookie sessions (5: `__Host-` cookie attributes, origin check on writes, logout, the local http variant); public endpoints (5); data scoped to the signed-in address (6); webhook management (5: scoping, unsafe URLs, the 5-per-merchant cap); the production origin requirement (1); static pages and their Content-Security-Policy (3). See [Authentication](Authentication.md) and [API Reference](API-Reference.md).
 
-`wallet.test.ts` (23) guards the hand-written browser code in `api/public/wallet.js` against the contract ABIs in `keeper/abi/`: 10 function selectors, the event topics, the getter field order and the `createPlan` argument order. It also covers the plan-change quote, plain-language wallet errors, exact USDC amounts, the check that the wallet is really on Arc, a missing receipt reported as unknown, reverted transactions, and the faucet and explorer links. See [Dashboard, Portal and Checkout](Dashboard-Portal-and-Checkout.md).
+`wallet.test.ts` (24) guards the hand-written browser code in `api/public/wallet.js` against the contract ABIs in `keeper/abi/`: 10 function selectors, the event topics, the getter field order and the `createPlan` argument order. It also covers the plan-change quote, the pause, resume and cancel actions open in each state, plain-language wallet errors, exact USDC amounts, the check that the wallet is really on Arc, a missing receipt reported as unknown, reverted transactions, and the faucet and explorer links. See [Dashboard, Portal and Checkout](Dashboard-Portal-and-Checkout.md).
 
 ## Continuous integration
 
@@ -99,11 +100,11 @@ forge test --match-path test/FailureCooldown.t.sol
 
 cd keeper && npm ci
 npx tsc --noEmit                      # typecheck
-npm test                              # 55 tests; the integration test needs anvil on PATH
+npm test                              # 59 tests; the integration test needs anvil on PATH
 npm run test:integration              # the anvil test alone
 node --import tsx --test test/dunning.test.ts   # one file
 
-cd api && npm ci && npx tsc --noEmit && npm test    # 55 tests
+cd api && npm ci && npx tsc --noEmit && npm test    # 56 tests
 ```
 
 Node 24 is expected (22.13 or later also works, since `node:sqlite` is built in). Foundry provides `forge` and `anvil`. See [Getting Started](Getting-Started.md) for the full setup.

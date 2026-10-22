@@ -12,7 +12,7 @@ Amounts are USDC with 6 decimals (1 USDC = 1,000,000 units). The pages show exac
 | Customer portal | `/portal.html` | A subscriber | Yes | pause, resume, cancel, `changePlan`, allowance top-up and revoke |
 | Checkout | `/checkout.html?plan=<id>&ref=<ref>` | Anyone with a merchant's link | No | `approve`, `subscribe` |
 
-Dashboard and portal sign in with the wallet ([Authentication.md](Authentication.md)); checkout reads only the public `/api/config` and `/api/plans`. The shared scripts in `/public/` are `wallet.js` (`LevyWallet`: chain switching, `eth_call` reads, transaction sending, hand-encoded calls whose selectors `api/test/wallet.test.ts` checks against the contract ABI), `auth.js` (sign-in), `network.js` (testnet bar) and `app.css`, plus one controller per page.
+Dashboard and portal sign in with the wallet ([Authentication.md](Authentication.md)); checkout reads only the public `/api/config` and `/api/plans`. The shared scripts in `/public/` are `wallet.js` (`LevyWallet`: chain switching, `eth_call` reads, transaction sending, hand-encoded calls whose selectors `api/test/wallet.test.ts` checks against the contract ABI), `format.js` (`LevyFormat`: amounts, addresses, dates, cycle names and links, shared by the three pages), `auth.js` (sign-in), `network.js` (testnet bar) and `app.css`, plus one controller per page.
 
 ## On-chain actions
 
@@ -137,7 +137,7 @@ The first two are open items 7 and 8 in SECURITY_REVIEW.md section 9 (see [Secur
 
 - [api/public/index.html](https://github.com/RunTimeAdmin/levy/blob/main/api/public/index.html), [api/public/portal.html](https://github.com/RunTimeAdmin/levy/blob/main/api/public/portal.html), [api/public/checkout.html](https://github.com/RunTimeAdmin/levy/blob/main/api/public/checkout.html)
 - [api/public/dashboard.js](https://github.com/RunTimeAdmin/levy/blob/main/api/public/dashboard.js), [api/public/portal.js](https://github.com/RunTimeAdmin/levy/blob/main/api/public/portal.js), [api/public/checkout.js](https://github.com/RunTimeAdmin/levy/blob/main/api/public/checkout.js)
-- [api/public/wallet.js](https://github.com/RunTimeAdmin/levy/blob/main/api/public/wallet.js), [api/public/auth.js](https://github.com/RunTimeAdmin/levy/blob/main/api/public/auth.js), [api/public/network.js](https://github.com/RunTimeAdmin/levy/blob/main/api/public/network.js), [api/public/app.css](https://github.com/RunTimeAdmin/levy/blob/main/api/public/app.css)
+- [api/public/wallet.js](https://github.com/RunTimeAdmin/levy/blob/main/api/public/wallet.js), [api/public/format.js](https://github.com/RunTimeAdmin/levy/blob/main/api/public/format.js), [api/public/auth.js](https://github.com/RunTimeAdmin/levy/blob/main/api/public/auth.js), [api/public/network.js](https://github.com/RunTimeAdmin/levy/blob/main/api/public/network.js), [api/public/app.css](https://github.com/RunTimeAdmin/levy/blob/main/api/public/app.css)
 - [api/src/server.ts](https://github.com/RunTimeAdmin/levy/blob/main/api/src/server.ts)
 - [api/test/wallet.test.ts](https://github.com/RunTimeAdmin/levy/blob/main/api/test/wallet.test.ts)
 - [SECURITY_REVIEW.md](https://github.com/RunTimeAdmin/levy/blob/main/SECURITY_REVIEW.md)

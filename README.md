@@ -4,7 +4,7 @@ Pull-based USDC subscription billing for Arc, like Stripe Billing for a chain wh
 
 Charging is permissionless by design: anyone can call `charge()`, but it can only move the subscriber's pre-approved USDC to that plan's merchant.
 
-**Status:** contracts, keeper (charging, dunning, webhooks, allowance warnings), API with wallet sign-in, merchant dashboard, customer portal and checkout page are built and tested. Contracts: 65 tests green (57 unit + 8 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 55 tests green. API: 55 tests green. **On Arc testnet since 2026-10-03 (current deployment, see Deployments); the M4 soak started 2026-10-07. Not on mainnet. Not audited.** Known open issues are listed in `SECURITY_REVIEW.md` §9.
+**Status:** contracts, keeper (charging, dunning, webhooks, allowance warnings), API with wallet sign-in, merchant dashboard, customer portal and checkout page are built and tested. Contracts: 65 tests green (57 unit + 8 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 59 tests green. API: 56 tests green. **On Arc testnet since 2026-10-03 (current deployment, see Deployments); the M4 soak started 2026-10-07. Not on mainnet. Not audited.** Known open issues are listed in `SECURITY_REVIEW.md` §9.
 
 **Read next:** [Wiki](docs/wiki/Home.md) · [Getting started](docs/wiki/Getting-Started.md) · [Merchant guide](docs/merchant-guide.md) · [Spec](SPEC.md) · [Security](SECURITY.md) · [Whitepaper](https://getlevy.xyz/whitepaper.html) · [getlevy.xyz](https://getlevy.xyz)
 
