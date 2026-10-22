@@ -1,0 +1,98 @@
+diff --git a/src/harvester/Harvester.sol b/src/harvester/Harvester.sol
+index 2ceff30..7f3427d 100644
+--- a/src/harvester/Harvester.sol
++++ b/src/harvester/Harvester.sol
+@@ -356,33 +356,38 @@ contract Harvester is IHarvester, ReentrancyGuard, Ownable {
+ 
+     /// @notice Get the unrealized P&L (USD, 18dp) for a user's token position.
+     function getUnrealizedPnL(address user, address token) external view returns (int256 pnl) {
+-        PositionVault v = vaultForAsset[token];
+-        if (address(v) == address(0)) return 0;
+-
+-        PriceOracle.FeedConfig memory config = priceFeeds[token];
+-        if (config.feed == address(0)) return 0;
+-
+-        uint256 assets = v.convertToAssets(v.balanceOf(user));
+-        uint256 costBasis = _registries[user].getCostBasis(token, assets, TaxLotLib.CostBasisMethod.FIFO);
+-        uint256 currentValue = PriceOracle.convertToUsd(config, assets, _tokenDecimals(token));
++        (bool priced, uint256 currentValue, uint256 costBasis) = _positionValueAndBasis(user, token);
++        if (!priced) return 0;
+         // forge-lint: disable-next-line(unsafe-typecast)
+         pnl = _toInt256(currentValue) - _toInt256(costBasis);
+     }
+ 
+     /// @notice Get the harvestable loss (USD, 18dp) for a user's token position.
+     function getHarvestableLoss(address user, address token) external view returns (uint256 loss) {
++        (bool priced, uint256 currentValue, uint256 costBasis) = _positionValueAndBasis(user, token);
++        if (priced && currentValue < costBasis) {
++            loss = costBasis - currentValue;
++        }
++    }
++
++    /// @dev Shared valuation for the two views above (previously duplicated): the position's current USD
++    ///      value and its FIFO cost basis. `priced` is false (and the views return 0) when the token has no
++    ///      registered vault or no price feed, exactly as before.
++    function _positionValueAndBasis(address user, address token)
++        private
++        view
++        returns (bool priced, uint256 currentValue, uint256 costBasis)
++    {
+         PositionVault v = vaultForAsset[token];
+-        if (address(v) == address(0)) return 0;
++        if (address(v) == address(0)) return (false, 0, 0);
+ 
+         PriceOracle.FeedConfig memory config = priceFeeds[token];
+-        if (config.feed == address(0)) return 0;
++        if (config.feed == address(0)) return (false, 0, 0);
+ 
+         uint256 assets = v.convertToAssets(v.balanceOf(user));
+-        uint256 costBasis = _registries[user].getCostBasis(token, assets, TaxLotLib.CostBasisMethod.FIFO);
+-        uint256 currentValue = PriceOracle.convertToUsd(config, assets, _tokenDecimals(token));
+-        if (currentValue < costBasis) {
+-            loss = costBasis - currentValue;
+-        }
++        costBasis = _registries[user].getCostBasis(token, assets, TaxLotLib.CostBasisMethod.FIFO);
++        currentValue = PriceOracle.convertToUsd(config, assets, _tokenDecimals(token));
++        priced = true;
+     }
+ 
+     // ═══════════════════════════════════════════════════════════════════════
+diff --git a/src/vault/Vault.sol b/src/vault/Vault.sol
+index 3671b1c..679b70f 100644
+--- a/src/vault/Vault.sol
++++ b/src/vault/Vault.sol
+@@ -92,19 +92,7 @@ contract PositionVault is ERC20, Ownable, ReentrancyGuard {
+         if (assets == 0) revert ZeroAmount();
+         if (receiver == address(0)) revert ZeroAddress();
+         shares = _convertToShares(assets, true);
+-        if (msg.sender != owner) {
+-            uint256 allowed = allowance(owner, msg.sender);
+-            if (allowed != type(uint256).max) {
+-                _approve(owner, msg.sender, allowed - shares);
+-            }
+-        }
+-        _burn(owner, shares);
+-        asset.safeTransfer(receiver, assets);
+-        emit Withdraw(msg.sender, receiver, owner, assets, shares);
+-
+-        if (address(reporter) != address(0)) {
+-            reporter.logWithdraw(owner, address(asset), assets, shares);
+-        }
++        _exit(owner, receiver, assets, shares);
+     }
+ 
+     /// @notice Redeem shares for assets.
+@@ -112,6 +100,13 @@ contract PositionVault is ERC20, Ownable, ReentrancyGuard {
+         if (shares == 0) revert ZeroAmount();
+         if (receiver == address(0)) revert ZeroAddress();
+         assets = _convertToAssets(shares, false);
++        _exit(owner, receiver, assets, shares);
++    }
++
++    /// @dev Shared tail of `withdraw` and `redeem` (previously duplicated line for line): spend the
++    ///      caller's share allowance, burn, pay out, and log. Kept on `_approve` (not OZ `_spendAllowance`)
++    ///      so the Approval event and the underflow revert on insufficient allowance stay exactly as before.
++    function _exit(address owner, address receiver, uint256 assets, uint256 shares) private {
+         if (msg.sender != owner) {
+             uint256 allowed = allowance(owner, msg.sender);
+             if (allowed != type(uint256).max) {

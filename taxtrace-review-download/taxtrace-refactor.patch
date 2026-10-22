@@ -1,0 +1,824 @@
+diff --git a/core/src/types.ts b/core/src/types.ts
+index 2235bfa..3ebd3d3 100644
+--- a/core/src/types.ts
++++ b/core/src/types.ts
+@@ -2,8 +2,9 @@
+ // Canonical TaxTrace domain types.
+ //
+ // This file is the SINGLE SOURCE OF TRUTH shared by the indexer/bot and the
+-// report generator. `reports/src/types.ts` must be byte-identical; a drift test
+-// in the reports package enforces this so the two services cannot diverge.
++// report generator. Both packages import it from @taxtrace/core (there is no
++// longer a reports/src/types.ts copy); reports/test/typesDrift.test.ts asserts
++// the re-export is by identity and that the old copy is not reintroduced.
+ //
+ // All monetary values are strings holding USD fixed-point integers with 18
+ // decimals (1e18 == $1), matching the on-chain accounting unit. They are kept
+diff --git a/core/src/washsale.ts b/core/src/washsale.ts
+index cc896a9..c4eb202 100644
+--- a/core/src/washsale.ts
++++ b/core/src/washsale.ts
+@@ -62,6 +62,11 @@ export function washSaleDisallowedByDisposition(
+     (a, b) => a.acquired_at - b.acquired_at || a.chain_lot_id - b.chain_lot_id
+   );
+   const remaining = acqs.map((a) => BigInt(a.amount));
++  // Resolve each acquisition's asset class at most ONCE (lazily, on first need) instead of once per
++  // (disposition, acquisition) pair. `classOf` is a pure lookup, so the result is unchanged, but the
++  // report path's resolver hits SQLite, and the old inner-loop call made that O(D x A) queries.
++  const acqClass: Array<string | undefined> = new Array(acqs.length);
++  const classOfAcq = (j: number): string => (acqClass[j] ??= classOf(acqs[j].token_address));
+ 
+   dispositions.forEach((d, i) => {
+     const pnl = BigInt(d.realized_pnl);
+@@ -78,7 +83,7 @@ export function washSaleDisallowedByDisposition(
+       const a = acqs[j];
+       // Same lot as the one sold is the position itself, not a REPLACEMENT — skip it.
+       if (a.chain_lot_id === d.chain_lot_id) continue;
+-      if (classOf(a.token_address) !== sellClass) continue;
++      if (classOfAcq(j) !== sellClass) continue;
+       if (Math.abs(a.acquired_at - sellTime) > WASH_SALE_WINDOW_SECONDS) continue;
+ 
+       const need = soldUnits - disallowedUnits;
+diff --git a/reports-api/src/server.ts b/reports-api/src/server.ts
+index 7324de3..6023bd1 100644
+--- a/reports-api/src/server.ts
++++ b/reports-api/src/server.ts
+@@ -175,15 +175,18 @@ function rateLimited(limiter: RateLimiter, key: string, res: http.ServerResponse
+   return false;
+ }
+ 
+-/** Parse `limit`/`offset` into a bounded Page, clamping `limit` to the configured hard max. */
+-function parsePage(config: ApiConfig, url: URL): Page {
+-  const { defaultPageSize, maxPageSize } = config.pagination;
+-  let limit = defaultPageSize;
++/**
++ * Strict `limit`/`offset` parsing shared by the list and report routes (previously two copies).
++ * `limit` must be an integer >= 1 and is clamped to the hard max; `offset` an integer >= 0. 400 otherwise.
++ * `limit` is undefined when the caller did not pass one, so each route picks its own default.
++ */
++function parseLimitOffset(config: ApiConfig, url: URL): { limit?: number; offset: number } {
++  let limit: number | undefined;
+   const limitRaw = url.searchParams.get('limit');
+   if (limitRaw !== null) {
+     const n = Number(limitRaw);
+     if (!Number.isInteger(n) || n < 1) throw new HttpError(400, 'invalid limit');
+-    limit = Math.min(n, maxPageSize);
++    limit = Math.min(n, config.pagination.maxPageSize);
+   }
+   let offset = 0;
+   const offsetRaw = url.searchParams.get('offset');
+@@ -195,28 +198,19 @@ function parsePage(config: ApiConfig, url: URL): Page {
+   return { limit, offset };
+ }
+ 
++/** Parse `limit`/`offset` into a bounded Page, clamping `limit` to the configured hard max. */
++function parsePage(config: ApiConfig, url: URL): Page {
++  const { limit, offset } = parseLimitOffset(config, url);
++  return { limit: limit ?? config.pagination.defaultPageSize, offset };
++}
++
+ /**
+  * Optional row-window for a report. Unlike the list routes, the report route defaults to the FULL
+  * report (bounded by the maxReportDispositions cap) so a normal download is complete; limit/offset are
+  * opt-in for clients that want to page the rows. The summary + merkleRoot always cover the whole year.
+  */
+ function parseReportWindow(config: ApiConfig, url: URL): { limit?: number; offset: number } {
+-  const { maxPageSize } = config.pagination;
+-  let limit: number | undefined;
+-  const limitRaw = url.searchParams.get('limit');
+-  if (limitRaw !== null) {
+-    const n = Number(limitRaw);
+-    if (!Number.isInteger(n) || n < 1) throw new HttpError(400, 'invalid limit');
+-    limit = Math.min(n, maxPageSize);
+-  }
+-  let offset = 0;
+-  const offsetRaw = url.searchParams.get('offset');
+-  if (offsetRaw !== null) {
+-    const n = Number(offsetRaw);
+-    if (!Number.isInteger(n) || n < 0) throw new HttpError(400, 'invalid offset');
+-    offset = n;
+-  }
+-  return { limit, offset };
++  return parseLimitOffset(config, url);
+ }
+ 
+ // ─── Data route handlers (shared by SIWE + tenant paths via `source`) ─────────
+@@ -943,7 +937,15 @@ export function buildServer(
+       return res.end();
+     }
+ 
+-    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
++    // Parse against a FIXED base. Only pathname/searchParams are used, so the Host header never mattered,
++    // and a client-controlled Host that `new URL` rejects (e.g. "bad host") used to throw HERE, outside
++    // the try below: an unhandled rejection that crashed the whole process with a single request.
++    let url: URL;
++    try {
++      url = new URL(req.url ?? '/', 'http://localhost');
++    } catch {
++      return sendJson(res, 400, { error: 'bad request' });
++    }
+     const path = url.pathname;
+     const ip = clientIp(req);
+     const method = req.method ?? 'GET';
+diff --git a/reports-api/test/malformedRequest.test.ts b/reports-api/test/malformedRequest.test.ts
+new file mode 100644
+index 0000000..09cea5c
+--- /dev/null
++++ b/reports-api/test/malformedRequest.test.ts
+@@ -0,0 +1,46 @@
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import * as os from 'os';
++import * as fs from 'fs';
++import * as net from 'net';
++import * as path from 'path';
++import type { AddressInfo } from 'node:net';
++import { buildServer } from '../src/server';
++import { loadConfig } from '../src/config';
++
++// Regression: the request URL used to be built from the client's Host header OUTSIDE the handler's
++// try/catch, so one request with a Host that `new URL` rejects threw an unhandled rejection and took
++// the whole process down (pre-auth DoS). It must now be answered and the server must stay up.
++
++function rawRequest(port: number, payload: string): Promise<string> {
++  return new Promise((resolve, reject) => {
++    let data = '';
++    const sock = net.connect(port, '127.0.0.1', () => sock.write(payload));
++    // Fail fast instead of hanging: on the unfixed server the request is never answered.
++    sock.setTimeout(3000, () => {
++      sock.destroy();
++      reject(new Error('no response within 3s (handler threw before replying)'));
++    });
++    sock.on('data', (d) => (data += d.toString()));
++    sock.on('end', () => resolve(data));
++    sock.on('error', reject);
++  });
++}
++
++test('a malformed Host header gets a response and does not crash the server', async () => {
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tt-malformed-'));
++  const config = loadConfig({ DB_PATH: path.join(dir, 'ledger.db'), NODE_ENV: 'test' });
++  const { server, close } = buildServer(config);
++  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
++  const { port } = server.address() as AddressInfo;
++  try {
++    const bad = await rawRequest(port, 'GET /health HTTP/1.1\r\nHost: bad host\r\nConnection: close\r\n\r\n');
++    assert.match(bad.split('\r\n')[0], /^HTTP\/1\.1 200/, 'path routing must not depend on the Host header');
++
++    const health = await fetch(`http://127.0.0.1:${port}/health`);
++    assert.equal(health.status, 200, 'server must still be serving after the malformed request');
++  } finally {
++    close();
++    fs.rmSync(dir, { recursive: true, force: true });
++  }
++});
+diff --git a/reports/src/db.ts b/reports/src/db.ts
+index 556a028..bde90b7 100644
+--- a/reports/src/db.ts
++++ b/reports/src/db.ts
+@@ -1,37 +1,5 @@
+ import { DispositionRecord, TaxLotRecord, CoverageGap, PendingDispositionRecord } from '@taxtrace/core';
+-
+-// Minimal node:sqlite binding (mirrors the bot's approach) so the report CLI can
+-// read the indexer database without a native dependency.
+-
+-interface RunResult {
+-  changes: number | bigint;
+-  lastInsertRowid: number | bigint;
+-}
+-interface Stmt {
+-  run(...params: unknown[]): RunResult;
+-  get(...params: unknown[]): unknown;
+-  all(...params: unknown[]): unknown[];
+-}
+-interface RawDb {
+-  exec(sql: string): void;
+-  prepare(sql: string): Stmt;
+-  close(): void;
+-}
+-type SqliteCtor = new (path: string, options?: unknown) => RawDb;
+-
+-function loadSqlite(): SqliteCtor {
+-  try {
+-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+-    const mod = require('node:sqlite') as { DatabaseSync?: SqliteCtor };
+-    if (!mod || typeof mod.DatabaseSync !== 'function') throw new Error('DatabaseSync missing');
+-    return mod.DatabaseSync;
+-  } catch (err) {
+-    throw new Error(
+-      'Failed to load node:sqlite. Run Node with `--experimental-sqlite`. Original: ' +
+-        (err instanceof Error ? err.message : String(err))
+-    );
+-  }
+-}
++import { RawDb, Stmt, loadSqlite } from './sqlite';
+ 
+ /** Read pagination window. `limit` is the max rows to return; `offset` is how many to skip. */
+ export interface Page {
+@@ -137,6 +105,59 @@ function buildAcquisitionsQuery(
+   return { sql, extra };
+ }
+ 
++/** [start, end) of a calendar tax year in unix seconds (UTC), the window every year-scoped read uses. */
++function taxYearBounds(taxYear: number): [number, number] {
++  return [Math.floor(Date.UTC(taxYear, 0, 1) / 1000), Math.floor(Date.UTC(taxYear + 1, 0, 1) / 1000)];
++}
++
++/**
++ * The ONE dispositions read used by both ReportDatabase and ReadOnlyReportDatabase (previously two
++ * copies that differed only by the optional tenant gate). Output SQL and parameter order are unchanged.
++ */
++function buildDispositionsQuery(
++  chainId: number,
++  user: string,
++  taxYear?: number,
++  page?: Page,
++  tenantId?: string
++): { sql: string; params: unknown[] } {
++  let sql = DISPOSITIONS_WITH_ATTESTED;
++  const params: unknown[] = [chainId, user.toLowerCase()];
++  // MEMBERSHIP GATE (Path 2, §13.6): when a tenant is bound, the wallet's shared dispositions are
++  // returned only while an ACTIVE membership links the wallet to that tenant — so a venue without a
++  // membership sees nothing, and a venue WITH one sees the same shared rows. Omitted for the per-user
++  // SIWE path (tenant-agnostic: the user reads their own address across every venue).
++  if (tenantId !== undefined) {
++    sql += membershipGate('d.chain_id', 'd.user_address');
++    params.push(tenantId);
++  }
++  if (taxYear !== undefined) {
++    sql += ' AND d.block_timestamp >= ? AND d.block_timestamp < ?';
++    params.push(...taxYearBounds(taxYear));
++  }
++  // N1: total, globally-unique order. (block_timestamp, log_index) is NOT total — block_timestamp
++  // is second-granular and log_index resets per block, so same-second blocks with colliding log
++  // indices tie and SQLite would break ties in unspecified rowid order. Because computeMerkleRoot
++  // is position-sensitive, that non-determinism would let a re-index/DB-copy serialize the same
++  // year to a different root. (block_number, log_index, tx_hash) is globally unique and mirrors the
++  // bot's canonical ingestion sort (chain/source.ts). Pagination adds LIMIT/OFFSET AFTER this
++  // ORDER BY, so a windowed query is always a stable prefix of the full deterministic sequence.
++  sql += ' ORDER BY d.block_number ASC, d.log_index ASC, d.tx_hash ASC';
++  if (page) {
++    sql += ' LIMIT ? OFFSET ?';
++    params.push(page.limit, page.offset);
++  }
++  return { sql, params };
++}
++
++/** Asset-class lookup mirroring the bot's WashSaleChecker.classOf (shared by both adapters). */
++function selectAssetClass(raw: RawDb, chainId: number, token: string): string | undefined {
++  const row = raw
++    .prepare('SELECT asset_class FROM asset_classes WHERE chain_id = ? AND token_address = ?')
++    .get(chainId, token.toLowerCase()) as { asset_class: string } | undefined;
++  return row?.asset_class;
++}
++
+ /**
+  * SELECT that threads the source lot's `attested` flag onto each disposition (N2). The
+  * `dispositions` table intentionally does not store `attested` — it lives on `tax_lots` — so we
+@@ -179,26 +200,7 @@ export class ReportDatabase implements DispositionSource {
+     taxYear?: number,
+     page?: Page
+   ): DispositionRecord[] {
+-    let sql = DISPOSITIONS_WITH_ATTESTED;
+-    const params: unknown[] = [chainId, user.toLowerCase()];
+-    if (taxYear !== undefined) {
+-      const yearStart = Math.floor(Date.UTC(taxYear, 0, 1) / 1000);
+-      const yearEnd = Math.floor(Date.UTC(taxYear + 1, 0, 1) / 1000);
+-      sql += ' AND d.block_timestamp >= ? AND d.block_timestamp < ?';
+-      params.push(yearStart, yearEnd);
+-    }
+-    // N1: total, globally-unique order. (block_timestamp, log_index) is NOT total — block_timestamp
+-    // is second-granular and log_index resets per block, so same-second blocks with colliding log
+-    // indices tie and SQLite would break ties in unspecified rowid order. Because computeMerkleRoot
+-    // is position-sensitive, that non-determinism would let a re-index/DB-copy serialize the same
+-    // year to a different root. (block_number, log_index, tx_hash) is globally unique and mirrors the
+-    // bot's canonical ingestion sort (chain/source.ts). Pagination adds LIMIT/OFFSET AFTER this
+-    // ORDER BY, so a windowed query is always a stable prefix of the full deterministic sequence.
+-    sql += ' ORDER BY d.block_number ASC, d.log_index ASC, d.tx_hash ASC';
+-    if (page) {
+-      sql += ' LIMIT ? OFFSET ?';
+-      params.push(page.limit, page.offset);
+-    }
++    const { sql, params } = buildDispositionsQuery(chainId, user, taxYear, page);
+     return this.raw.prepare(sql).all(...params) as DispositionRecord[];
+   }
+ 
+@@ -215,10 +217,7 @@ export class ReportDatabase implements DispositionSource {
+   }
+ 
+   getAssetClass(chainId: number, token: string): string | undefined {
+-    const row = this.raw
+-      .prepare('SELECT asset_class FROM asset_classes WHERE chain_id = ? AND token_address = ?')
+-      .get(chainId, token.toLowerCase()) as { asset_class: string } | undefined;
+-    return row?.asset_class;
++    return selectAssetClass(this.raw, chainId, token);
+   }
+ 
+   /**
+@@ -307,34 +306,7 @@ export class ReadOnlyReportDatabase implements DispositionSource {
+     page?: Page,
+     tenantId?: string
+   ): DispositionRecord[] {
+-    let sql = DISPOSITIONS_WITH_ATTESTED;
+-    const params: unknown[] = [chainId, user.toLowerCase()];
+-    // MEMBERSHIP GATE (Path 2, §13.6): when a tenant is bound, the wallet's shared dispositions are
+-    // returned only while an ACTIVE membership links the wallet to that tenant — so a venue without a
+-    // membership sees nothing, and a venue WITH one sees the same shared rows. Omitted for the per-user
+-    // SIWE path (tenant-agnostic: the user reads their own address across every venue).
+-    if (tenantId !== undefined) {
+-      sql += membershipGate('d.chain_id', 'd.user_address');
+-      params.push(tenantId);
+-    }
+-    if (taxYear !== undefined) {
+-      const yearStart = Math.floor(Date.UTC(taxYear, 0, 1) / 1000);
+-      const yearEnd = Math.floor(Date.UTC(taxYear + 1, 0, 1) / 1000);
+-      sql += ' AND d.block_timestamp >= ? AND d.block_timestamp < ?';
+-      params.push(yearStart, yearEnd);
+-    }
+-    // N1: total, globally-unique order. (block_timestamp, log_index) is NOT total — block_timestamp
+-    // is second-granular and log_index resets per block, so same-second blocks with colliding log
+-    // indices tie and SQLite would break ties in unspecified rowid order. Because computeMerkleRoot
+-    // is position-sensitive, that non-determinism would let a re-index/DB-copy serialize the same
+-    // year to a different root. (block_number, log_index, tx_hash) is globally unique and mirrors the
+-    // bot's canonical ingestion sort (chain/source.ts). Pagination adds LIMIT/OFFSET AFTER this
+-    // ORDER BY, so a windowed query is always a stable prefix of the full deterministic sequence.
+-    sql += ' ORDER BY d.block_number ASC, d.log_index ASC, d.tx_hash ASC';
+-    if (page) {
+-      sql += ' LIMIT ? OFFSET ?';
+-      params.push(page.limit, page.offset);
+-    }
++    const { sql, params } = buildDispositionsQuery(chainId, user, taxYear, page, tenantId);
+     return this.raw.prepare(sql).all(...params) as DispositionRecord[];
+   }
+ 
+@@ -353,10 +325,7 @@ export class ReadOnlyReportDatabase implements DispositionSource {
+ 
+   /** N2 (wash sale): asset-class resolution mirroring the bot's WashSaleChecker.classOf. */
+   getAssetClass(chainId: number, token: string): string | undefined {
+-    const row = this.raw
+-      .prepare('SELECT asset_class FROM asset_classes WHERE chain_id = ? AND token_address = ?')
+-      .get(chainId, token.toLowerCase()) as { asset_class: string } | undefined;
+-    return row?.asset_class;
++    return selectAssetClass(this.raw, chainId, token);
+   }
+ 
+   /**
+@@ -372,10 +341,8 @@ export class ReadOnlyReportDatabase implements DispositionSource {
+       params.push(tenantId);
+     }
+     if (taxYear !== undefined) {
+-      const yearStart = Math.floor(Date.UTC(taxYear, 0, 1) / 1000);
+-      const yearEnd = Math.floor(Date.UTC(taxYear + 1, 0, 1) / 1000);
+       sql += ' AND block_timestamp >= ? AND block_timestamp < ?';
+-      params.push(yearStart, yearEnd);
++      params.push(...taxYearBounds(taxYear));
+     }
+     const row = this.raw.prepare(sql).get(...params) as { n: number | bigint } | undefined;
+     return row ? Number(row.n) : 0;
+@@ -921,8 +888,52 @@ const LEDGER_TABLES_FORBIDDEN_TO_MEMBERSHIP = [
+   'harvest_events',
+   'asset_classes',
+   'user_config',
++  // Added after the v8/v12 schema growth: these tables exist in bot/src/db/schema.sql but were
++  // missing here, so the guard silently admitted writes to them (e.g. `UPDATE tenant_api_keys`).
++  'declared_basis',
++  'report_basis_snapshots',
++  'report_tenant_variants',
++  'tenants',
++  'tenant_api_keys',
++  'tenant_usage_events',
++  'indexer_checkpoints',
++  'processed_logs',
++  'schema_meta',
+ ];
+ 
++/**
++ * Build a single-table write guard. This is a word-boundary DENYLIST scan, so it is only as strong as
++ * its list: every table in the ledger schema other than `allowedTable` must appear in `forbidden`
++ * (reports/test/guardSchemaDrift.test.ts enforces that against bot/src/db/schema.sql). Regexes are
++ * compiled once here instead of once per table per statement.
++ */
++function singleTableGuard(
++  handleName: string,
++  section: string,
++  allowedTable: string,
++  forbidden: readonly string[]
++): (sql: string) => void {
++  const patterns = forbidden.map((table) => ({ table, re: new RegExp(`\\b${table}\\b`) }));
++  return (sql: string): void => {
++    const lowered = sql.toLowerCase();
++    for (const { table, re } of patterns) {
++      if (re.test(lowered)) {
++        throw new Error(
++          `${handleName} is a control-plane-only handle (${section}); it may write ` +
++            `${allowedTable} but never the ledger table "${table}".`
++        );
++      }
++    }
++  };
++}
++
++const membershipGuard = singleTableGuard(
++  'MembershipRepository',
++  '§13.6.3',
++  CONTROL_PLANE_TABLE,
++  LEDGER_TABLES_FORBIDDEN_TO_MEMBERSHIP
++);
++
+ /**
+  * STRUCTURAL read-only-ledger guard (§13.6.3): assert a statement about to run on the membership
+  * write handle references ONLY the control-plane `wallet_tenant_membership` table. A word-boundary
+@@ -930,15 +941,7 @@ const LEDGER_TABLES_FORBIDDEN_TO_MEMBERSHIP = [
+  * make this handle write a fact would fail loudly at the seam instead of silently mutating the ledger.
+  */
+ export function assertControlPlaneOnly(sql: string): void {
+-  const lowered = sql.toLowerCase();
+-  for (const table of LEDGER_TABLES_FORBIDDEN_TO_MEMBERSHIP) {
+-    if (new RegExp(`\\b${table}\\b`).test(lowered)) {
+-      throw new Error(
+-        `MembershipRepository is a control-plane-only handle (§13.6.3); it may write ` +
+-          `${CONTROL_PLANE_TABLE} but never the ledger table "${table}".`
+-      );
+-    }
+-  }
++  membershipGuard(sql);
+ }
+ 
+ /**
+@@ -1109,10 +1112,24 @@ const TABLES_FORBIDDEN_TO_DECLARED_BASIS = [
+   'user_config',
+   'wallet_tenant_membership',
+   'tenants',
++  // `api_keys` / `usage_events` never matched: the real tables are `tenant_api_keys` /
++  // `tenant_usage_events`, and `\b` sees no boundary after `tenant_`. Kept, plus the real names.
+   'api_keys',
+   'usage_events',
++  'tenant_api_keys',
++  'tenant_usage_events',
++  'indexer_checkpoints',
++  'processed_logs',
++  'schema_meta',
+ ];
+ 
++const declaredBasisGuard = singleTableGuard(
++  'DeclaredBasisRepository',
++  '§14.1',
++  DECLARED_BASIS_TABLE,
++  TABLES_FORBIDDEN_TO_DECLARED_BASIS
++);
++
+ /**
+  * STRUCTURAL control-plane guard for the declared-basis handle (§14.1): assert a statement references
+  * ONLY the `declared_basis` control table. A word-boundary scan rejects any statement that names a
+@@ -1121,15 +1138,7 @@ const TABLES_FORBIDDEN_TO_DECLARED_BASIS = [
+  * the seam. Mirrors `assertControlPlaneOnly` but with declared_basis as the SOLE permitted table.
+  */
+ export function assertDeclaredBasisOnly(sql: string): void {
+-  const lowered = sql.toLowerCase();
+-  for (const table of TABLES_FORBIDDEN_TO_DECLARED_BASIS) {
+-    if (new RegExp(`\\b${table}\\b`).test(lowered)) {
+-      throw new Error(
+-        `DeclaredBasisRepository is a control-plane-only handle (§14.1); it may write ` +
+-          `${DECLARED_BASIS_TABLE} but never the ledger table "${table}".`
+-      );
+-    }
+-  }
++  declaredBasisGuard(sql);
+ }
+ 
+ /**
+diff --git a/reports/src/formatters/generic.ts b/reports/src/formatters/generic.ts
+index 7e610df..9da76aa 100644
+--- a/reports/src/formatters/generic.ts
++++ b/reports/src/formatters/generic.ts
+@@ -1,6 +1,13 @@
+ import { ReportRow } from '@taxtrace/core';
+ import { GeneratedReport, formatUsd18 } from '../generator';
+-import { csvRow, formatUsDate, writeFileSafe, ASSISTIVE_DISCLAIMER, basisSourceFor } from './util';
++import {
++  csvRow,
++  formatUsDate,
++  writeFileSafe,
++  ASSISTIVE_DISCLAIMER,
++  basisSourceFor,
++  washSaleFigures,
++} from './util';
+ import { WASH_SALE_DISCLAIMER } from './irs8949';
+ 
+ // ─── Generic Formatter ────────────────────────────────────────────────
+@@ -31,8 +38,7 @@ export class GenericFormatter {
+     ]);
+ 
+     const lines = rows.map((r) => {
+-      const disallowed = BigInt(r.washSaleDisallowed ?? '0');
+-      const reportedGainLoss = BigInt(r.gainLoss) + disallowed;
++      const { disallowed, reportedGainLoss, code } = washSaleFigures(r);
+       return csvRow([
+         r.txHash,
+         r.description,
+@@ -44,7 +50,7 @@ export class GenericFormatter {
+         formatUsd18(r.proceeds),
+         formatUsd18(r.costBasis),
+         formatUsd18(r.gainLoss),
+-        disallowed > 0n ? 'W' : '',
++        code,
+         formatUsd18(disallowed.toString()),
+         formatUsd18(reportedGainLoss.toString()),
+         basisSourceFor(r),
+@@ -84,15 +90,17 @@ export class GenericFormatter {
+         // N3: general assistive-only disclaimer (also emitted by the Koinly/TurboTax exports).
+         disclaimer: ASSISTIVE_DISCLAIMER,
+         rows: report.rows.map((r) => {
++          // Keep the stored string verbatim (not a re-stringified bigint) so the JSON is byte-identical.
+           const disallowed = r.washSaleDisallowed ?? '0';
+-          const reportedGainLoss = (BigInt(r.gainLoss) + BigInt(disallowed)).toString();
++          const wash = washSaleFigures(r);
++          const reportedGainLoss = wash.reportedGainLoss.toString();
+           return {
+             ...r,
+             // N2: normalize the display-only attestation flag (true = oracle-derived/verified basis).
+             attested: Boolean(r.attested),
+             // N2: wash-sale disallowance (code "W"); "0" when none applies.
+             washSaleDisallowed: disallowed,
+-            washSaleCode: BigInt(disallowed) > 0n ? 'W' : '',
++            washSaleCode: wash.code,
+             reportedGainLoss,
+             formatted: {
+               proceeds: formatUsd18(r.proceeds),
+diff --git a/reports/src/formatters/irs8949.ts b/reports/src/formatters/irs8949.ts
+index 3197818..fbfb40a 100644
+--- a/reports/src/formatters/irs8949.ts
++++ b/reports/src/formatters/irs8949.ts
+@@ -1,6 +1,6 @@
+ import { ReportRow } from '@taxtrace/core';
+ import { formatUsd18 } from '../generator';
+-import { csvRow, formatUsDate, writeFileSafe, basisSourceFor } from './util';
++import { csvRow, formatUsDate, writeFileSafe, basisSourceFor, washSaleFigures } from './util';
+ 
+ // ─── IRS Form 8949 ────────────────────────────────────────────────────
+ //
+@@ -61,16 +61,14 @@ export class IRS8949Formatter {
+     const lines = rows.map((r) => {
+       // N2: wash-sale disallowance. Code "W" with a POSITIVE column-(g) adjustment adds the
+       // disallowed loss back, so the reported gain/loss (column h) = raw gain/loss + adjustment.
+-      const disallowed = BigInt(r.washSaleDisallowed ?? '0');
+-      const hasWash = disallowed > 0n;
+-      const reportedGainLoss = BigInt(r.gainLoss) + disallowed;
++      const { disallowed, reportedGainLoss, code } = washSaleFigures(r);
+       return csvRow([
+         r.description,
+         formatUsDate(r.acquiredAt),
+         formatUsDate(r.disposedAt),
+         formatUsd18(r.proceeds),
+         formatUsd18(r.costBasis),
+-        hasWash ? 'W' : '',
++        code,
+         formatUsd18(disallowed.toString()),
+         formatUsd18(reportedGainLoss.toString()),
+         r.isShortTerm ? 'I' : 'II',
+diff --git a/reports/src/formatters/koinly.ts b/reports/src/formatters/koinly.ts
+index e0bdba6..933669c 100644
+--- a/reports/src/formatters/koinly.ts
++++ b/reports/src/formatters/koinly.ts
+@@ -1,6 +1,13 @@
+ import { ReportRow } from '@taxtrace/core';
+ import { formatUsd18 } from '../generator';
+-import { csvRow, formatKoinlyDateTime, writeFileSafe, ASSISTIVE_DISCLAIMER, basisSourceFor } from './util';
++import {
++  csvRow,
++  formatKoinlyDateTime,
++  writeFileSafe,
++  ASSISTIVE_DISCLAIMER,
++  basisSourceFor,
++  washSaleFigures,
++} from './util';
+ 
+ // ─── Koinly Universal CSV ─────────────────────────────────────────────────────
+ //
+@@ -58,8 +65,7 @@ export class KoinlyFormatter {
+     const header = csvRow(KoinlyFormatter.HEADER);
+ 
+     const lines = rows.map((r) => {
+-      const disallowed = BigInt(r.washSaleDisallowed ?? '0');
+-      const reportedGainLoss = BigInt(r.gainLoss) + disallowed;
++      const { disallowed, reportedGainLoss } = washSaleFigures(r);
+       const basisSource = basisSourceFor(r);
+       const proceeds = formatUsd18(r.proceeds);
+       return csvRow([
+diff --git a/reports/src/formatters/turbotax.ts b/reports/src/formatters/turbotax.ts
+index a6847a3..85c55d4 100644
+--- a/reports/src/formatters/turbotax.ts
++++ b/reports/src/formatters/turbotax.ts
+@@ -1,6 +1,13 @@
+ import { ReportRow } from '@taxtrace/core';
+ import { formatUsd18 } from '../generator';
+-import { csvRow, formatUsDate, writeFileSafe, ASSISTIVE_DISCLAIMER, basisSourceFor } from './util';
++import {
++  csvRow,
++  formatUsDate,
++  writeFileSafe,
++  ASSISTIVE_DISCLAIMER,
++  basisSourceFor,
++  washSaleFigures,
++} from './util';
+ 
+ // ─── TurboTax capital-gains CSV ───────────────────────────────────────────────
+ //
+@@ -44,8 +51,7 @@ export class TurboTaxFormatter {
+     const header = csvRow(TurboTaxFormatter.HEADER);
+ 
+     const lines = rows.map((r) => {
+-      const disallowed = BigInt(r.washSaleDisallowed ?? '0');
+-      const reportedGainLoss = BigInt(r.gainLoss) + disallowed;
++      const { disallowed, reportedGainLoss } = washSaleFigures(r);
+       const basisSource = basisSourceFor(r);
+       return csvRow([
+         // TaxTrace has no ticker; the disposition description doubles as the property/currency name.
+diff --git a/reports/src/formatters/util.ts b/reports/src/formatters/util.ts
+index f41541c..29f8ffb 100644
+--- a/reports/src/formatters/util.ts
++++ b/reports/src/formatters/util.ts
+@@ -121,6 +121,25 @@ export function basisConfidenceLabel(row: {
+   }
+ }
+ 
++/** The wash-sale figures every export derives from a row (previously recomputed in each formatter). */
++export interface WashSaleFigures {
++  /** USD-18 disallowed loss (>= 0); 0n when no wash sale applies. */
++  disallowed: bigint;
++  /** Raw gain/loss plus the disallowed amount: the code-"W" figure Form 8949 column (h) reports. */
++  reportedGainLoss: bigint;
++  /** Form 8949 adjustment code: 'W' when a disallowance applies, else ''. */
++  code: 'W' | '';
++}
++
++export function washSaleFigures(row: Pick<ReportRow, 'gainLoss' | 'washSaleDisallowed'>): WashSaleFigures {
++  const disallowed = BigInt(row.washSaleDisallowed ?? '0');
++  return {
++    disallowed,
++    reportedGainLoss: BigInt(row.gainLoss) + disallowed,
++    code: disallowed > 0n ? 'W' : '',
++  };
++}
++
+ /** Convenience overload accepting a full ReportRow (keeps call sites terse in the formatters). */
+ export function basisSourceFor(row: ReportRow): string {
+   return basisConfidenceLabel(row);
+diff --git a/reports/src/generator.ts b/reports/src/generator.ts
+index bdd9a3f..a79b309 100644
+--- a/reports/src/generator.ts
++++ b/reports/src/generator.ts
+@@ -76,9 +76,18 @@ export class ReportGenerator {
+       maxTs + window
+     );
+     const getAssetClass = this.source.getAssetClass?.bind(this.source);
+-    const analyzer = new WashSaleAnalyzer(
+-      (token) => getAssetClass?.(chainId, token) ?? token.toLowerCase()
+-    );
++    // Memoize per token for this one report: the class resolver is a DB lookup, and the rule asks for
++    // the same few tokens' classes many times. One snapshot per report is also more consistent than
++    // re-reading asset_classes mid-computation.
++    const classByToken = new Map<string, string>();
++    const analyzer = new WashSaleAnalyzer((token) => {
++      let cls = classByToken.get(token);
++      if (cls === undefined) {
++        cls = getAssetClass?.(chainId, token) ?? token.toLowerCase();
++        classByToken.set(token, cls);
++      }
++      return cls;
++    });
+     return analyzer.disallowedByDisposition(dispositions, acquisitions);
+   }
+ 
+diff --git a/reports/src/sqlite.ts b/reports/src/sqlite.ts
+new file mode 100644
+index 0000000..c96268c
+--- /dev/null
++++ b/reports/src/sqlite.ts
+@@ -0,0 +1,33 @@
++// Minimal node:sqlite binding (mirrors the bot's approach) so the report CLI and the read API can open
++// the indexer database without a native dependency. Shared by db.ts and tenants.ts, which previously
++// each carried an identical copy. Internal: not re-exported from index.ts.
++
++export interface RunResult {
++  changes: number | bigint;
++  lastInsertRowid: number | bigint;
++}
++export interface Stmt {
++  run(...params: unknown[]): RunResult;
++  get(...params: unknown[]): unknown;
++  all(...params: unknown[]): unknown[];
++}
++export interface RawDb {
++  exec(sql: string): void;
++  prepare(sql: string): Stmt;
++  close(): void;
++}
++export type SqliteCtor = new (path: string, options?: unknown) => RawDb;
++
++export function loadSqlite(): SqliteCtor {
++  try {
++    // eslint-disable-next-line @typescript-eslint/no-var-requires
++    const mod = require('node:sqlite') as { DatabaseSync?: SqliteCtor };
++    if (!mod || typeof mod.DatabaseSync !== 'function') throw new Error('DatabaseSync missing');
++    return mod.DatabaseSync;
++  } catch (err) {
++    throw new Error(
++      'Failed to load node:sqlite. Run Node with `--experimental-sqlite`. Original: ' +
++        (err instanceof Error ? err.message : String(err))
++    );
++  }
++}
+diff --git a/reports/src/tenants.ts b/reports/src/tenants.ts
+index 93b576a..06ac72f 100644
+--- a/reports/src/tenants.ts
++++ b/reports/src/tenants.ts
+@@ -1,4 +1,5 @@
+ import * as crypto from 'node:crypto';
++import { RawDb, loadSqlite } from './sqlite';
+ 
+ /**
+  * Multi-tenant B2B CONTROL PLANE for the read-only product (readonly-pivot §7.2 / Phase 3).
+@@ -18,38 +19,6 @@ import * as crypto from 'node:crypto';
+  *    (crypto.timingSafeEqual). Key statuses (revoked) and tenant statuses (suspended) gate access.
+  */
+ 
+-// ─── Minimal node:sqlite binding (mirrors reports/src/db.ts) ────────────────
+-
+-interface RunResult {
+-  changes: number | bigint;
+-  lastInsertRowid: number | bigint;
+-}
+-interface Stmt {
+-  run(...params: unknown[]): RunResult;
+-  get(...params: unknown[]): unknown;
+-  all(...params: unknown[]): unknown[];
+-}
+-interface RawDb {
+-  exec(sql: string): void;
+-  prepare(sql: string): Stmt;
+-  close(): void;
+-}
+-type SqliteCtor = new (path: string, options?: unknown) => RawDb;
+-
+-function loadSqlite(): SqliteCtor {
+-  try {
+-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+-    const mod = require('node:sqlite') as { DatabaseSync?: SqliteCtor };
+-    if (!mod || typeof mod.DatabaseSync !== 'function') throw new Error('DatabaseSync missing');
+-    return mod.DatabaseSync;
+-  } catch (err) {
+-    throw new Error(
+-      'Failed to load node:sqlite. Run Node with `--experimental-sqlite`. Original: ' +
+-        (err instanceof Error ? err.message : String(err))
+-    );
+-  }
+-}
+-
+ // The control-plane DDL. Kept byte-consistent with the bot's v8 schema (schema.sql); applied here
+ // with CREATE ... IF NOT EXISTS so the control DB is self-sufficient even against a file the bot's
+ // migrations have not touched (e.g. an isolated control DB or a fresh test DB).
+diff --git a/reports/test/guardSchemaDrift.test.ts b/reports/test/guardSchemaDrift.test.ts
+new file mode 100644
+index 0000000..ab07107
+--- /dev/null
++++ b/reports/test/guardSchemaDrift.test.ts
+@@ -0,0 +1,38 @@
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import * as fs from 'fs';
++import * as path from 'path';
++import { assertControlPlaneOnly, assertDeclaredBasisOnly } from '../src/index';
++
++// The two control-plane write guards are word-boundary DENYLISTS, so they silently weaken whenever the
++// ledger schema gains a table nobody added to the list (that is how tenant_api_keys, declared_basis,
++// processed_logs, ... slipped through). Pin them to the bot's canonical schema: every table except the
++// one each handle owns must be rejected.
++
++const SCHEMA = path.resolve(__dirname, '../../../bot/src/db/schema.sql');
++
++function schemaTables(): string[] {
++  const sql = fs.readFileSync(SCHEMA, 'utf8');
++  const names = new Set<string>();
++  for (const m of sql.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?([a-z_][a-z0-9_]*)/gi)) {
++    names.add(m[1].toLowerCase());
++  }
++  return [...names].sort();
++}
++
++test('schema.sql is readable and lists the ledger tables', () => {
++  const tables = schemaTables();
++  assert.ok(tables.includes('tax_lots') && tables.includes('wallet_tenant_membership'), SCHEMA);
++});
++
++test('membership guard rejects every ledger table except wallet_tenant_membership', () => {
++  for (const table of schemaTables().filter((t) => t !== 'wallet_tenant_membership')) {
++    assert.throws(() => assertControlPlaneOnly(`DELETE FROM ${table}`), /control-plane-only/, table);
++  }
++});
++
++test('declared-basis guard rejects every ledger table except declared_basis', () => {
++  for (const table of schemaTables().filter((t) => t !== 'declared_basis')) {
++    assert.throws(() => assertDeclaredBasisOnly(`DELETE FROM ${table}`), /control-plane-only/, table);
++  }
++});
