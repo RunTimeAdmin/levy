@@ -1,10 +1,9 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { createClients } from "./chain.js";
 import { loadConfig } from "./config.js";
 import { LevyDb } from "./db.js";
 import { Indexer } from "./indexer.js";
 import { Keeper } from "./keeper.js";
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -18,7 +17,8 @@ async function main(): Promise<void> {
   );
   console.log(`webhook signing key: ${cfg.webhookKeyPath} (public key at GET /api/webhooks/public-key)`);
 
-  // First boot: hydrate subscription state from chain.
+  // Every boot: re-read every plan and subscription from chain (the source of
+  // truth), so rows that went stale while the keeper was down are fixed.
   const indexer = new Indexer(cfg, clients, db);
   const n = await indexer.backfillAll();
   console.log(`backfilled ${n} subscriptions`);
@@ -58,14 +58,17 @@ async function main(): Promise<void> {
     return;
   }
 
-  let stopped = false;
-  process.on("SIGINT", () => { stopped = true; });
-  process.on("SIGTERM", () => { stopped = true; });
+  // A stop signal lets the pass in progress finish (a sent charge still gets
+  // its receipt read) and cuts the sleep short. Waiting out a 30s sleep would
+  // overrun `docker stop`'s 10s grace period and end in a SIGKILL.
+  const stop = new AbortController();
+  process.on("SIGINT", () => stop.abort());
+  process.on("SIGTERM", () => stop.abort());
   // Two independent loops: charging never waits on a merchant's webhook endpoint.
   const loop = async (pass: () => Promise<void>, ms: number) => {
-    while (!stopped) {
+    while (!stop.signal.aborted) {
       await pass();
-      await sleep(ms);
+      await sleep(ms, undefined, { signal: stop.signal }).catch(() => undefined);
     }
   };
   await Promise.all([loop(cycle, cfg.pollIntervalMs), loop(deliver, cfg.webhookPollMs)]);

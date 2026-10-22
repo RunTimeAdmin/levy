@@ -11,6 +11,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import { LevyDb, type DeliveryRow } from "./db.js";
+import { scheduleStep } from "./schedule.js";
 import { publicOnlyLookup, webhookUrlProblem, type WebhookUrlPolicy } from "./webhook-url.js";
 
 /** The webhook event types merchants can subscribe to. */
@@ -59,6 +60,9 @@ export function canonicalJson(v: unknown): string {
  *  1. `envKey` (LEVY_WEBHOOK_KEY): PEM PKCS#8, or a base64 32-byte seed.
  *  2. `keyPath` file (LEVY_WEBHOOK_KEY_PATH): loaded if present, otherwise a
  *     fresh keypair is generated and saved with 0600 permissions.
+ * The keeper and the API share the file. The save is create-only, so when both
+ * start without a key exactly one write lands and the other process loads it:
+ * the published public key always matches the key deliveries are signed with.
  */
 export function loadSigningKey(keyPath: string, envKey?: string): KeyObject {
   if (envKey && envKey.trim()) {
@@ -78,7 +82,12 @@ export function loadSigningKey(keyPath: string, envKey?: string): KeyObject {
   } catch (e: unknown) {
     if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") throw e;
     const { privateKey } = generateKeyPairSync("ed25519");
-    writeFileSync(keyPath, privateKey.export({ format: "pem", type: "pkcs8" }), { mode: 0o600 });
+    try {
+      writeFileSync(keyPath, privateKey.export({ format: "pem", type: "pkcs8" }), { mode: 0o600, flag: "wx" });
+    } catch (w: unknown) {
+      if ((w as NodeJS.ErrnoException)?.code !== "EEXIST") throw w;
+      return createPrivateKey(readFileSync(keyPath, "utf-8")); // the other process saved first
+    }
     return privateKey;
   }
 }
@@ -170,7 +179,9 @@ export function verifyDelivery(opts: {
 }
 
 // ---------------------------------------------------------------------------
-// Retry schedule: 1m, 5m, 15m, 1h, 6h, then 6h until dead-letter at 24h.
+// Retry schedule: 1m, 5m, 15m, 1h, then every 6h. A delivery whose next retry
+// would land past 24h of age is dead-lettered, so the last attempt is at about
+// 19h21m (SECURITY_REVIEW.md §9, open item 10).
 // ---------------------------------------------------------------------------
 
 export const RETRY_DELAYS_SEC = [60, 300, 900, 3600, 21600];
@@ -181,8 +192,7 @@ export const DEAD_AFTER_SEC = 24 * 3600;
  * delivery should be dead-lettered (next retry would land past 24h of age).
  */
 export function nextRetryAt(attempts: number, nowSec: number, createdAt: number): number | null {
-  const delay = RETRY_DELAYS_SEC[Math.min(Math.max(attempts, 1) - 1, RETRY_DELAYS_SEC.length - 1)];
-  const next = nowSec + delay;
+  const next = nowSec + scheduleStep(RETRY_DELAYS_SEC, attempts);
   return next - createdAt > DEAD_AFTER_SEC ? null : next;
 }
 
@@ -305,17 +315,22 @@ const DELIVERY_TIMEOUT_MS = 5_000;
  */
 function deliveryError(e: NodeJS.ErrnoException): string {
   if (e.code === "EWEBHOOKBLOCKED") return "refused: resolves to a private or reserved address";
-  if (e.code === "ETIMEDOUT") return "timeout after 5s";
+  if (e.code === "ETIMEDOUT") return `timeout after ${DELIVERY_TIMEOUT_MS / 1000}s`;
   return "connection failed";
 }
 
 export class WebhookDispatcher {
+  /** X-Levy-Key-Id, derived once: the key never changes while the dispatcher lives. */
+  private readonly keyIdHeader: string;
+
   /** allowPrivate: deliver to http and private addresses (local dev and tests only). */
   constructor(
     private db: LevyDb,
     private privateKey: KeyObject,
     private policy: WebhookUrlPolicy = { allowPrivate: false }
-  ) {}
+  ) {
+    this.keyIdHeader = keyId(privateKey);
+  }
 
   get publicKey(): string {
     return publicKeyPem(this.privateKey);
@@ -443,7 +458,7 @@ export class WebhookDispatcher {
           "content-length": body.length,
           "X-Levy-Signature": signature,
           "X-Levy-Timestamp": String(timestamp),
-          "X-Levy-Key-Id": keyId(this.privateKey),
+          "X-Levy-Key-Id": this.keyIdHeader,
           "X-Levy-Event": d.event_type,
           "X-Levy-Delivery": String(d.id),
         },

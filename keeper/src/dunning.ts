@@ -1,5 +1,6 @@
 import type { LevyConfig } from "./config.js";
 import { LevyDb } from "./db.js";
+import { scheduleStep } from "./schedule.js";
 
 export const DAY_SECONDS = 86_400;
 
@@ -13,8 +14,7 @@ export function nextRetryAt(
   nowSec: number,
   scheduleDays: number[]
 ): number {
-  const idx = Math.min(Math.max(failedAttempts, 1) - 1, scheduleDays.length - 1);
-  return nowSec + scheduleDays[idx] * DAY_SECONDS;
+  return nowSec + scheduleStep(scheduleDays, failedAttempts) * DAY_SECONDS;
 }
 
 /** Record a failed pull and schedule the next retry. */

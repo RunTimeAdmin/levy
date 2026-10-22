@@ -16,6 +16,10 @@ export const DUE_CHARGEABLE = [Status.TRIAL, Status.ACTIVE];
 /** States the contract will charge in; PAST_DUE retries are driven by dunning. */
 export const CHARGEABLE = [Status.TRIAL, Status.ACTIVE, Status.PAST_DUE];
 
+export function isChargeableStatus(status: number): boolean {
+  return (CHARGEABLE as readonly number[]).includes(status);
+}
+
 export interface DbPlan {
   planId: string;
   merchant: string;
@@ -76,7 +80,8 @@ export interface WebhookRow {
   created_at: number;
 }
 
-export type DeliveryStatus = "pending" | "sent" | "failed" | "dead";
+export const DELIVERY_STATUSES = ["pending", "sent", "failed", "dead"] as const;
+export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
 
 export interface DeliveryRow {
   id: number;
@@ -90,6 +95,11 @@ export interface DeliveryRow {
   created_at: number; // unix seconds
   last_error: string | null;
 }
+
+/** A dunning row with its subscription's context (dashboard queue). */
+export type DunningListRow = DunningRow & { subscriber: string; planId: string; price: string; status: number };
+/** A charge with the subscription's parties (invoices). */
+export type ChargeListRow = DbCharge & { subscriber: string; merchant: string; id: number };
 
 const SCHEMA = `
 -- On-chain plan registry mirror, including plans nobody has subscribed to yet.
@@ -167,8 +177,9 @@ CREATE TABLE IF NOT EXISTS webhooks (
   created_at INTEGER NOT NULL
 );
 -- Outbound webhook delivery attempts. A delivery starts pending, moves to
--- sent on HTTP 2xx, failed while retries remain, and dead after 24h of
--- failures (dead-letter). "payload" is the exact canonical JSON that is POSTed.
+-- sent on HTTP 2xx, failed while retries remain, and dead (dead-letter) once
+-- its next retry would land past 24h of age, so the last attempt is at about
+-- 19h21m. "payload" is the exact canonical JSON that is POSTed.
 CREATE TABLE IF NOT EXISTS webhook_deliveries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   webhook_id INTEGER NOT NULL, -- webhooks(id); no FK so deliveries survive webhook deletion (they dead-letter)
@@ -208,6 +219,15 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions (expires_at);
+-- Hot paths: the due sweep every keeper cycle, webhook fan-out on every event,
+-- and the per-merchant / per-subscriber views behind every dashboard and
+-- portal load. NOCASE where the queries compare addresses case-insensitively.
+CREATE INDEX IF NOT EXISTS idx_subscriptions_due ON subscriptions (status, nextChargeAt);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_merchant ON subscriptions (merchant COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_subscriber ON subscriptions (subscriber COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_charges_sub ON charges (subId);
+CREATE INDEX IF NOT EXISTS idx_charge_failures_sub ON charge_failures (subId);
+CREATE INDEX IF NOT EXISTS idx_webhooks_merchant ON webhooks (merchant COLLATE NOCASE);
 `;
 
 export class LevyDb {
@@ -215,13 +235,14 @@ export class LevyDb {
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
+    // The API server may hold the same file open; wait instead of failing
+    // on a locked database during brief concurrent writes. Set first, so the
+    // schema statements below wait too when both processes start together.
+    this.db.exec("PRAGMA busy_timeout = 5000");
     this.db.exec(SCHEMA);
     // Databases created before the ref column existed.
     const cols = this.db.prepare(`PRAGMA table_info(subscriptions)`).all() as Array<{ name: string }>;
     if (!cols.some((c) => c.name === "ref")) this.db.exec(`ALTER TABLE subscriptions ADD COLUMN ref TEXT`);
-    // The API server may hold the same file open; wait instead of failing
-    // on a locked database during brief concurrent writes.
-    this.db.exec("PRAGMA busy_timeout = 5000");
     // WAL: the API's small writes (sign-in, webhook config) never block the
     // keeper's reads, and readers never block writers.
     this.db.exec("PRAGMA journal_mode = WAL");
@@ -327,9 +348,7 @@ export class LevyDb {
   }
 
   /** Dunning queue with subscription context, for the API dashboard. */
-  listDunning(merchant?: string): Array<DunningRow & {
-    subscriber: string; planId: string; price: string; status: number;
-  }> {
+  listDunning(merchant?: string): DunningListRow[] {
     const where = merchant ? `WHERE s.merchant = ? COLLATE NOCASE` : "";
     const params: Array<string | number | null> = merchant ? [merchant] : [];
     return this.db
@@ -338,16 +357,12 @@ export class LevyDb {
          FROM dunning d JOIN subscriptions s ON s.subId = d.subId
          ${where} ORDER BY d.nextRetryAt ASC`
       )
-      .all(...params) as unknown as Array<DunningRow & {
-      subscriber: string; planId: string; price: string; status: number;
-    }>;
+      .all(...params) as unknown as DunningListRow[];
   }
 
   // ---- charges (read side for the API) ----
 
-  listCharges(filter: { subId?: string; merchant?: string } = {}): Array<DbCharge & {
-    subscriber: string; merchant: string; id: number;
-  }> {
+  listCharges(filter: { subId?: string; merchant?: string } = {}): ChargeListRow[] {
     const clauses: string[] = [];
     const params: Array<string | number | null> = [];
     if (filter.subId) { clauses.push(`c.subId = ?`); params.push(filter.subId); }
@@ -360,9 +375,7 @@ export class LevyDb {
          FROM charges c LEFT JOIN subscriptions s ON s.subId = c.subId
          ${where} ORDER BY c.id DESC`
       )
-      .all(...params) as unknown as Array<DbCharge & {
-      subscriber: string; merchant: string; id: number;
-    }>;
+      .all(...params) as unknown as ChargeListRow[];
   }
 
   /** With the subscriber's allowance runway (null until the keeper has checked it). */

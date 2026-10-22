@@ -1,8 +1,8 @@
-import { decodeEventLog, parseAbiItem, toEventSelector } from "viem";
+import { decodeEventLog, parseAbiItem, toEventSelector, zeroAddress } from "viem";
 import type { ChainClients } from "./chain.js";
 import { managerAbi } from "./chain.js";
 import type { LevyConfig } from "./config.js";
-import { LevyDb } from "./db.js";
+import { LevyDb, type DbPlan } from "./db.js";
 import { clearDunning, recordFailure } from "./dunning.js";
 import { buildWebhookEvents, type WebhookSink } from "./webhooks.js";
 
@@ -14,16 +14,32 @@ const APPROVAL_EVENT = parseAbiItem(
   "event Approval(address indexed owner, address indexed spender, uint256 value)"
 );
 
+// Computed once: handleLog compares every USDC log against them.
+const TRANSFER_TOPIC = toEventSelector(TRANSFER_EVENT);
+const APPROVAL_TOPIC = toEventSelector(APPROVAL_EVENT);
+
 const SYNC_KEY = "manager_events_from_block";
 
-// topic0 -> event name, built once from the contract ABI.
-const TOPIC_TO_NAME = new Map<string, string>();
-for (const entry of managerAbi as any[]) {
-  if (entry.type === "event") TOPIC_TO_NAME.set(toEventSelector(entry), entry.name);
-}
-const NAME_TO_ABI = new Map<string, any>(
-  (managerAbi as any[]).filter((e: any) => e.type === "event").map((e: any) => [e.name, e])
+// topic0 -> the event's ABI entry, built once from the contract ABI.
+const MANAGER_EVENTS = new Map<string, any>(
+  (managerAbi as any[]).filter((e: any) => e.type === "event").map((e: any) => [toEventSelector(e), e])
 );
+
+/**
+ * The plans(planId) getter's tuple as a DB row. viem returns the struct as a
+ * plain array: [merchant, price, cycleSeconds, trialSeconds, graceSeconds,
+ * maxFailed, exists]. The one place that knows those positions.
+ */
+function planFromTuple(planId: string, plan: any[]): DbPlan {
+  return {
+    planId,
+    merchant: plan[0] as string,
+    price: (plan[1] as bigint).toString(),
+    cycleSeconds: Number(plan[2] as bigint),
+    trialSeconds: Number(plan[3] as bigint),
+    maxFailed: Number(plan[5]),
+  };
+}
 
 /**
  * Inclusive [from, to] block ranges of at most `size` blocks. RPCs reject large
@@ -71,9 +87,6 @@ export class Indexer {
     // itself is correct. On a real chain both agree.
     const head = await this.clients.public.getBlock({ blockTag: "latest" });
     const latest = head.number;
-    // nowSec is the chain-head timestamp the caller operates on; failure
-    // records are stamped with it so dunning math agrees with due math
-    // (and with warped chain time in tests).
     const nowSec = Number(head.timestamp);
     const stored = this.db.getSync(SYNC_KEY);
     const lookback = BigInt(this.cfg.initialLookbackBlocks);
@@ -126,14 +139,14 @@ export class Indexer {
     if (log.address.toLowerCase() === this.cfg.usdcAddress.toLowerCase()) {
       // A new approval to the manager (a top-up): recheck that subscriber's
       // allowance runway on the next cycle.
-      if (log.topics[0] === toEventSelector(APPROVAL_EVENT)) {
+      if (log.topics[0] === APPROVAL_TOPIC) {
         if (BigInt(log.topics[2]) === BigInt(this.cfg.managerAddress)) {
           this.db.markFundsStale(`0x${log.topics[1].slice(26)}`);
         }
         return;
       }
       // Otherwise only Transfer events are movements.
-      if (log.topics[0] !== toEventSelector(TRANSFER_EVENT)) return;
+      if (log.topics[0] !== TRANSFER_TOPIC) return;
       // USDC into or out of the manager. Dedup happens at query time (see db.dedupedTransfers).
       this.db.insertTransfer({
         txHash: log.transactionHash,
@@ -146,15 +159,14 @@ export class Indexer {
       return;
     }
 
-    const name = TOPIC_TO_NAME.get(log.topics[0]);
-    if (!name) return; // not one of ours (shouldn't happen with the address filter)
-    const abi = NAME_TO_ABI.get(name)!;
+    const abi = MANAGER_EVENTS.get(log.topics[0]);
+    if (!abi) return; // not one of ours (shouldn't happen with the address filter)
     const decoded = decodeEventLog({
       abi: [abi],
       topics: log.topics as [`0x${string}`, ...`0x${string}`[]],
       data: log.data,
     }) as { args: Record<string, any> };
-    await this.handleManagerEvent(name, decoded.args as any, log, nowSec);
+    await this.handleManagerEvent(abi.name, decoded.args as any, log, nowSec);
   }
 
   private async handleManagerEvent(
@@ -235,21 +247,22 @@ export class Indexer {
   async refreshSubscription(subId: string): Promise<void> {
     // viem returns structs as plain arrays here; index positionally.
     // Subscription: [subscriber, planId, start, nextChargeAt, failedAttempts, credit, chargeCount, status]
-    // Plan: [merchant, price, cycleSeconds, trialSeconds, graceSeconds, maxFailed, exists]
     const sub = (await this.clients.manager.read.subscriptions([BigInt(subId)])) as any[];
-    if (sub[0] === "0x0000000000000000000000000000000000000000") return;
-    const [plan, ref] = (await Promise.all([
+    if (sub[0] === zeroAddress) return;
+    const planId = (sub[1] as bigint).toString();
+    const [planTuple, ref] = (await Promise.all([
       this.clients.manager.read.plans([sub[1]]),
       this.clients.manager.read.subscriptionRef([BigInt(subId)]),
     ])) as [any[], `0x${string}`];
-    this.upsertPlan((sub[1] as bigint).toString(), plan);
+    const plan = planFromTuple(planId, planTuple);
+    this.db.upsertPlan(plan);
     this.db.upsertSubscription({
       subId,
       subscriber: sub[0] as string,
-      planId: (sub[1] as bigint).toString(),
-      merchant: plan[0] as string,
-      price: (plan[1] as bigint).toString(),
-      cycleSeconds: Number(plan[2] as bigint),
+      planId,
+      merchant: plan.merchant,
+      price: plan.price,
+      cycleSeconds: plan.cycleSeconds,
       status: Number(sub[7]),
       nextChargeAt: Number(sub[3] as bigint),
       failedAttempts: Number(sub[4] as bigint),
@@ -260,22 +273,10 @@ export class Indexer {
   /** Re-read one plan from chain into the DB. */
   async refreshPlan(planId: string): Promise<void> {
     const plan = (await this.clients.manager.read.plans([BigInt(planId)])) as any[];
-    if (plan[6]) this.upsertPlan(planId, plan); // plan[6] = exists
+    if (plan[6]) this.db.upsertPlan(planFromTuple(planId, plan)); // plan[6] = exists
   }
 
-  // Plan: [merchant, price, cycleSeconds, trialSeconds, graceSeconds, maxFailed, exists]
-  private upsertPlan(planId: string, plan: any[]): void {
-    this.db.upsertPlan({
-      planId,
-      merchant: plan[0] as string,
-      price: (plan[1] as bigint).toString(),
-      cycleSeconds: Number(plan[2] as bigint),
-      trialSeconds: Number(plan[3] as bigint),
-      maxFailed: Number(plan[5]),
-    });
-  }
-
-  /** Backfill every known plan and subscription (used on first boot). */
+  /** Backfill every known plan and subscription (index.ts runs it on every boot). */
   async backfillAll(): Promise<number> {
     const plans = Number(await this.clients.manager.read.planCount());
     for (let i = 1; i <= plans; i++) {
