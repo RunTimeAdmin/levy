@@ -1,5 +1,5 @@
 import { createClients } from "./chain.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, redactRpcUrl } from "./config.js";
 import { LevyDb } from "./db.js";
 import { Indexer } from "./indexer.js";
 import { Keeper } from "./keeper.js";
@@ -32,10 +32,10 @@ async function main(): Promise<void> {
         console.log(
           `[cycle] charged=${r.charged.length} retried=${r.retried.length} failed=${r.failed.length} logs=${r.syncedLogs}`
         );
-        for (const f of r.failed) console.log(`  ! sub ${f.subId}: ${f.error}`);
+        for (const f of r.failed) console.log(redactRpcUrl(`  ! sub ${f.subId}: ${f.error}`));
       }
     } catch (e: any) {
-      console.error(`[cycle] error: ${e?.message ?? e}`);
+      console.error(redactRpcUrl(`[cycle] error: ${e?.message ?? e}`));
     }
   };
 
@@ -47,7 +47,7 @@ async function main(): Promise<void> {
         console.log(`[webhooks] sent=${r.sent} failed=${r.failed} dead=${r.dead}`);
       }
     } catch (e: any) {
-      console.error(`[webhooks] error: ${e?.message ?? e}`);
+      console.error(redactRpcUrl(`[webhooks] error: ${e?.message ?? e}`));
     }
   };
 
@@ -73,6 +73,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((e) => {
-  console.error(e);
+  // The stack includes the message, and viem's messages include the RPC URL.
+  console.error(redactRpcUrl(String(e?.stack ?? e)));
   process.exit(1);
 });

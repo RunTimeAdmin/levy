@@ -1,0 +1,31 @@
+# Weekly dependency updates. Minor and patch updates arrive as one grouped PR
+# per ecosystem and directory; major updates come as their own PRs.
+# The Foundry submodules (lib/) are deliberately not covered: the contracts are
+# pinned for the external audit, so OpenZeppelin and forge-std move by hand.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /keeper
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /api
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  # ci.yml pins actions to commit SHAs with the version as a comment;
+  # Dependabot updates both.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
