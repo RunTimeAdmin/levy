@@ -58,9 +58,9 @@ subscription starts from a zero allowance. One new wallet is needed on day 7.
 
 ### 1. Host (Claude)
 
-- [ ] Old source tree and database set aside on the host, keeper and API rebuilt from the deployed commit with the new `LEVY_MANAGER_ADDRESS`, a fresh database and the same webhook signing key
-- [ ] `https://app.getlevy.xyz/api/config` shows the new manager; the keeper log shows it and the keeper address above
-- [ ] Receiver for webhooks still running at `https://app.getlevy.xyz/soak-hooks`; its log restarts at `/docker/levy/ops/soak/data/hooks.jsonl` (the soak 1 log is kept beside it)
+- [x] Old source tree and database set aside on the host (`/root/levy-src-08991fa`, `/root/levy-db-pre-d2b5455`), keeper and API rebuilt from `d2b5455` with the new `LEVY_MANAGER_ADDRESS`, a fresh database and the same webhook signing key (keyId `27628a5331108c43`)
+- [x] `https://app.getlevy.xyz/api/config` shows the new manager; the keeper log shows it and the keeper address above
+- [x] Receiver for webhooks still running at `https://app.getlevy.xyz/soak-hooks`; its log restarts at `/docker/levy/ops/soak/data/hooks.jsonl` (the soak 1 log is kept beside it as `hooks-soak1.jsonl`)
 
 ### 2. Dashboard and webhooks (you)
 
@@ -243,3 +243,4 @@ When every box is ticked, the soak item under "Before mainnet" in the README is 
 
 | Date (UTC) | Who | What happened |
 |---|---|---|
+| 2026-10-24 | Claude | Host repointed at 13:57 UTC. Keeper and API rebuilt from `d2b5455` on the new SubscriptionManager `0xea24...df4e` with a fresh database (soak 1's kept in `/root/levy-db-pre-d2b5455`, its source tree in `/root/levy-src-08991fa`) and the unchanged webhook signing key; the receiver's soak 1 log is now `hooks-soak1.jsonl`. The first upload came from `git archive` with Windows line endings, which broke the shell scripts, so the tree was uploaded again with `core.autocrlf=false` and rebuilt. Status run: keeper 35 blocks behind, 0 plans and subscriptions, no webhook endpoints yet, keeper wallet 19.807 USDC, alerts none. Next: day 0, David. |
