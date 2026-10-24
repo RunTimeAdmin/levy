@@ -156,7 +156,7 @@ Rollback is a rebuild. Compose tags images `levy-keeper:latest` and `levy-api:la
 |---|---|
 | Keeper key | Create a new wallet, fund it, run `ops/set-keeper-key.sh`, recreate the keeper container. No on-chain step is needed: `charge()` is permissionless and the contracts never register the keeper. Move the old wallet's remaining USDC out. Rotate at once if the key may be exposed. |
 | Webhook signing key | No tool exists; this is derived from the code and not rehearsed. The keeper reads the key once at start, while the API re-reads the file on every public-key request. Stop the keeper, replace the PEM (or delete it so a new one is generated), start the keeper. The API picks up the file at once, so a keeper left running would sign with the old key while the API published the new one. |
-| Treasury | Only the current treasury can call `FeeRouter.setTreasury`; on mainnet that is the Safe. |
+| Treasury | Two steps: the current treasury calls `FeeRouter.proposeTreasury(<new>)`, then the new address calls `acceptTreasury()`. On mainnet the current treasury is the Safe; see `ops/treasury-multisig.md`. |
 
 After a signing-key change, `X-Levy-Key-Id` and the public-key endpoint carry a new `keyId`. Levy signs with one key per deployment, so there is no overlap period and merchants must refetch the public key. Queued deliveries are signed when sent, so they use the new key. Never paste a private key into chat or a ticket; `set-keeper-key.sh` exists to avoid that.
 

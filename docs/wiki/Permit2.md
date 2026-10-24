@@ -14,7 +14,7 @@ Permit2 is at the canonical `0x000000000022D473030F116dDEE9F6B43aC78BA3`, the sa
 
 1. Revert `BadPermitSpender` unless `permitSingle.spender` is the manager.
 2. Revert `BadPermitToken` unless `permitSingle.details.token` is USDC.
-3. Call `permit2.permit(msg.sender, permitSingle, signature)`. Permit2 verifies the EIP-712 signature against `msg.sender`, plus the signature deadline and nonce, and stores an allowance for (owner, USDC, manager).
+3. Call `permit2.permit(msg.sender, permitSingle, signature)`. Permit2 verifies the EIP-712 signature against `msg.sender`, plus the signature deadline and nonce, and stores an allowance for (owner, USDC, manager). If `permit` reverts, the manager reads `permit2.allowance(msg.sender, USDC, manager)` and carries on when that allowance covers one cycle of the plan and has not expired; otherwise it re-throws Permit2's own error (see the front-run below).
 4. Run the same `_subscribe` as `subscribe`: store the subscription, emit `Subscribed`, and on a plan without a trial pull the first cycle. If that pull fails the call reverts `PaymentFailed`, and the permit is undone with it.
 
 The two Levy checks run first so a signature for the wrong spender or token fails fast instead of creating an allowance Levy cannot use. Permit2 enforces everything else.
@@ -34,7 +34,7 @@ On a plan with a trial nothing is pulled at subscribe, but the permit is still r
 
 The owner is always `msg.sender`; there is no `owner` parameter. The signed permit does not name a plan, so if a relayer could submit it, that relayer (or anyone who copied the signature from the mempool) could subscribe the signer to a plan of their own choosing and pull the first cycle at once. An earlier version took an `owner` argument so the keeper could relay. It was removed on 2026-09-25, and relaying could return only with a second signature that binds the plan. `testSubscribeWithPermit2OnlySignerCanSubmit` checks that any other submitter fails.
 
-One low-severity gap remains ([SECURITY_REVIEW.md](https://github.com/RunTimeAdmin/levy/blob/main/SECURITY_REVIEW.md) section 6): someone who sees the signature in the mempool can call Permit2's `permit` first and burn the nonce, so `subscribeWithPermit2` reverts. No funds are lost and the allowance is still granted to Levy. The subscriber then calls plain `subscribe`, whose pull falls back to Permit2.
+Someone who sees the signature in the mempool can still call Permit2's `permit` first and burn the nonce. That used to make `subscribeWithPermit2` revert (a low-severity gap, [SECURITY_REVIEW.md](https://github.com/RunTimeAdmin/levy/blob/main/SECURITY_REVIEW.md) section 6). Since the fix for finding L-2 of the 2026-10-24 review, the manager catches the failed `permit` and subscribes on the allowance the front-runner set, which is the one the subscriber signed (`testSubscribeWithPermit2SurvivesFrontRunPermit`). It still reverts with Permit2's error when that allowance is below one cycle (`testSubscribeWithPermit2FailedPermitNeedsOneCycleAllowance`) or has expired (`testSubscribeWithPermit2IgnoresExpiredAllowance`). No funds are lost either way.
 
 ```mermaid
 sequenceDiagram
@@ -79,7 +79,7 @@ The portal's allowance panel and its Revoke button act on the direct allowance o
 
 ## Testing and testnet status
 
-- **Unit tests** use `MockPermit2`, which implements the real EIP-712 scheme and Permit2's allowance accounting, and also requires the owner's USDC approval of the mock as the real contract does. They cover the full flow, only-signer, wrong spender, wrong token, a bad signature and direct-allowance priority. The mock's error names differ from the real Permit2's. The keeper's anvil integration test does not exercise Permit2.
+- **Unit tests** use `MockPermit2`, which implements the real EIP-712 scheme and Permit2's allowance accounting (amount and expiration, enforced in `transferFrom`), and also requires the owner's USDC approval of the mock as the real contract does. They cover the full flow, only-signer, wrong spender, wrong token, a bad signature, direct-allowance priority, and a front-run permit with enough, too little or an expired allowance. The mock's error names differ from the real Permit2's. The keeper's anvil integration test does not exercise Permit2.
 - **Soak wallet S5** subscribed to plan 1 through Permit2 on 2026-10-07 at 03:30:56 UTC (subscription 5), running the script against the live testnet contracts and Arc's real Permit2 ([ops/testnet-soak.md](https://github.com/RunTimeAdmin/levy/blob/main/ops/testnet-soak.md)). The script had been tested on a fork of Arc testnet on 2026-09-26. A read-only check on 2026-10-07 confirmed the first cycle came through Permit2: the subscription is ACTIVE with one charge (1,000,000 units pulled, 10,000 to the FeeRouter), the direct allowance to the manager is 0, and both the Permit2 allowance and the USDC approval of Permit2 fell from 12 USDC to 11 USDC.
 - **Still open.** S5's first recurring charge, due 2026-10-08, is the first time `charge()` uses the Permit2 fallback against the real contract. Until the soak confirms recurring Permit2 charges, "Permit2 end to end against Arc" stays on the list to finish before mainnet.
 

@@ -47,6 +47,8 @@ export interface DbSubscription {
   failedAttempts: number;
   /** Merchant's reference from subscribe (bytes32 hex), null when none. */
   ref?: string | null;
+  /** 1 while paused by the merchant, the only pause the merchant may resume. */
+  pausedByMerchant?: number;
 }
 
 export interface DbCharge {
@@ -111,7 +113,8 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   status INTEGER NOT NULL,
   nextChargeAt INTEGER NOT NULL,
   failedAttempts INTEGER NOT NULL DEFAULT 0,
-  ref TEXT
+  ref TEXT,
+  pausedByMerchant INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS charges (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -216,9 +219,12 @@ export class LevyDb {
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     this.db.exec(SCHEMA);
-    // Databases created before the ref column existed.
+    // Databases created before the ref and pausedByMerchant columns existed.
     const cols = this.db.prepare(`PRAGMA table_info(subscriptions)`).all() as Array<{ name: string }>;
     if (!cols.some((c) => c.name === "ref")) this.db.exec(`ALTER TABLE subscriptions ADD COLUMN ref TEXT`);
+    if (!cols.some((c) => c.name === "pausedByMerchant")) {
+      this.db.exec(`ALTER TABLE subscriptions ADD COLUMN pausedByMerchant INTEGER NOT NULL DEFAULT 0`);
+    }
     // The API server may hold the same file open; wait instead of failing
     // on a locked database during brief concurrent writes.
     this.db.exec("PRAGMA busy_timeout = 5000");
@@ -237,17 +243,19 @@ export class LevyDb {
     this.db
       .prepare(
         `INSERT INTO subscriptions
-           (subId, subscriber, planId, merchant, price, cycleSeconds, status, nextChargeAt, failedAttempts, ref)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (subId, subscriber, planId, merchant, price, cycleSeconds, status, nextChargeAt, failedAttempts, ref, pausedByMerchant)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (subId) DO UPDATE SET
            planId = excluded.planId, merchant = excluded.merchant,
            price = excluded.price, cycleSeconds = excluded.cycleSeconds,
            status = excluded.status, nextChargeAt = excluded.nextChargeAt,
-           failedAttempts = excluded.failedAttempts, ref = excluded.ref`
+           failedAttempts = excluded.failedAttempts, ref = excluded.ref,
+           pausedByMerchant = excluded.pausedByMerchant`
       )
       .run(
         s.subId, s.subscriber, s.planId, s.merchant, s.price,
-        s.cycleSeconds, s.status, s.nextChargeAt, s.failedAttempts, s.ref ?? null
+        s.cycleSeconds, s.status, s.nextChargeAt, s.failedAttempts, s.ref ?? null,
+        s.pausedByMerchant ?? 0
       );
   }
 

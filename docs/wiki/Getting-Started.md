@@ -32,7 +32,7 @@ The repository is private, so cloning needs read access.
 
 ```bash
 forge build
-forge test                       # 65 tests: 57 unit, 8 invariants (256 runs x depth 15)
+forge test                       # 77 tests: 68 unit, 9 invariants (256 runs x depth 15)
 FOUNDRY_PROFILE=ci forge test    # what CI runs: invariants at 1000 runs x depth 40
 ```
 
@@ -46,7 +46,7 @@ forge inspect SubscriptionManager bytecode > keeper/abi/SubscriptionManager.bin
 ## Test the keeper and the API
 
 ```bash
-cd keeper && npm ci && npm test      # 55 tests; includes an integration test that spawns anvil
+cd keeper && npm ci && npm test      # 56 tests; includes an integration test that spawns anvil
 npx tsc --noEmit                     # typecheck, as CI does
 cd ../api && npm ci && npm test      # 55 tests; seeded temp database, ephemeral port
 ```

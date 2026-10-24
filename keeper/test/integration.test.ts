@@ -306,6 +306,24 @@ describe("keeper integration (anvil)", () => {
     assert.equal(db["db"].prepare("SELECT * FROM dunning WHERE subId = '2'").all().length, 0);
   });
 
+  it("records who paused, since the merchant may resume only its own pause", async () => {
+    const asBob = getContract({
+      address: manager.address, abi: abi("SubscriptionManager"),
+      client: { public: publicClient, wallet: createWalletClient({ account: bob, chain: publicClient.chain, transport: http(RPC) }) },
+    });
+    await mined(await manager.write.pauseSubscription([2n], { account: merchant, chain: publicClient.chain }));
+    await keeperSvc.runCycle();
+    assert.equal(db.getSubscription("2")?.pausedByMerchant, 1);
+    await mined(await manager.write.resumeSubscription([2n], { account: merchant, chain: publicClient.chain }));
+
+    await mined(await asBob.write.pauseSubscription([2n], { account: bob, chain: publicClient.chain }));
+    await keeperSvc.runCycle();
+    assert.equal(db.getSubscription("2")?.pausedByMerchant, 0);
+    await mined(await asBob.write.resumeSubscription([2n], { account: bob, chain: publicClient.chain }));
+    await keeperSvc.runCycle();
+    assert.equal(db.getSubscription("2")?.status, 1);
+  });
+
   it("enqueues webhook events on Subscribed and Charged", async () => {
     // Merchant (keeper account) registers for the billing events. The URL is
     // unreachable on purpose: this test asserts enqueueing, not delivery.

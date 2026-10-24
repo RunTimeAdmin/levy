@@ -216,8 +216,8 @@ GET /api/invoices?format=csv</code></pre>
   <ol>
     <li>Levy retries 1 day after the first failure, 3 days after the second, and every 7 days after that.</li>
     <li>When failures reach the plan's <code>maxFailed</code>, the subscription is past due. It stays chargeable, and Levy keeps retrying.</li>
-    <li>At twice <code>maxFailed</code>, the contract pauses it. Nothing more is collected until you or the customer resume it; billing then restarts from the resume date, and the missed cycle is not collected.</li>
-    <li>A successful payment at any point clears the failure count. The next billing date moves one cycle on from the missed one, so if more than one cycle was missed, the next charge comes right away.</li>
+    <li>At twice <code>maxFailed</code>, the contract pauses it. Nothing more is collected until the customer resumes it in the portal; you cannot resume this pause, and your dashboard shows <em>customer resumes</em> instead. Billing then restarts from the resume date, and the missed cycle is not collected.</li>
+    <li>A successful payment at any point clears the failure count and starts a fresh cycle that day: the billing date moves to the recovery date, and the late days are not billed.</li>
   </ol>
   <p>You get <code>charge.failed</code> on every failure, <code>dunning.started</code> on the first and <code>subscription.paused</code> if the contract pauses it. Levy sends no emails to your customers; use these events to send your own. A customer fixes a failing subscription by adding USDC or topping up the allowance in the portal, and the next retry collects.</p>
 
@@ -243,7 +243,7 @@ then send on every call:   Authorization: Bearer &lt;token&gt;</code></pre>
       <tr><td><code>GET /api/plans</code></td><td>public</td><td>every plan</td></tr>
       <tr><td><code>GET /api/webhooks/public-key</code></td><td>public</td><td>the Ed25519 public key, its <code>keyId</code> and the event list</td></tr>
       <tr><td><code>POST /api/auth/challenge</code>, <code>/api/auth/verify</code></td><td>public</td><td>sign-in (&sect;9)</td></tr>
-      <tr><td><code>GET /api/subscriptions?merchant=&lt;you&gt;</code></td><td>signed in</td><td>your subscriptions, with <code>ref</code> and allowance runway; <code>&amp;status=</code> filters (0 trial, 1 active, 2 past due, 3 paused, 4 cancelled)</td></tr>
+      <tr><td><code>GET /api/subscriptions?merchant=&lt;you&gt;</code></td><td>signed in</td><td>your subscriptions, with <code>ref</code>, <code>pausedByMerchant</code> (1 when you paused it) and allowance runway; <code>&amp;status=</code> filters (0 trial, 1 active, 2 past due, 3 paused, 4 cancelled)</td></tr>
       <tr><td><code>GET /api/subscriptions/:id</code></td><td>signed in</td><td>one subscription with its charges and dunning state</td></tr>
       <tr><td><code>GET /api/metrics</code></td><td>signed in</td><td>MRR (normalised to 30 days), counts per status, totals, charge success rate, dunning depth</td></tr>
       <tr><td><code>GET /api/dunning</code></td><td>signed in</td><td>the retry queue</td></tr>
@@ -257,7 +257,7 @@ then send on every call:   Authorization: Bearer &lt;token&gt;</code></pre>
   <h2 id="faq">11. FAQ</h2>
   <p><strong>How do I change a price?</strong> Create a new plan and send new customers to it. Plans cannot be edited, so existing subscriptions keep their price until the customer changes plan in the portal.</p>
   <p><strong>How do refunds work?</strong> They are your policy and happen off-chain: send USDC back from your own wallet. The contract has no refund function, and a cancelled subscription stays cancelled.</p>
-  <p><strong>How do I cancel or pause a customer?</strong> Use Pause, Resume or Cancel on the subscription in your dashboard; each is a transaction from your wallet. Customers can do the same in the portal, and move to another of your plans with Change plan. Nothing is charged while a subscription is paused, and cancelling is final.</p>
+  <p><strong>How do I cancel or pause a customer?</strong> Use Pause, Resume or Cancel on the subscription in your dashboard; each is a transaction from your wallet. You can resume only a pause you made; a customer's own pause, or one after failed payments, is theirs to resume. Customers can pause, resume and cancel in the portal, and move to another of your plans with Change plan. Nothing is charged while a subscription is paused, and cancelling is final.</p>
   <p><strong>What does the 1% fee apply to?</strong> Each collected payment: the contract sends 99% to you and 1% to the protocol in the same transaction. Failed payments cost nothing, and nothing is owed when nothing is collected.</p>
   <p><strong>Who pays gas for charges?</strong> Levy's keeper pays for the charges it submits. Anyone may call <code>charge</code> once a payment is due, but you never need to.</p>
   <p><strong>Can Levy take more than the plan price?</strong> No. Each billing date, the contract can collect the plan's price once, only for that plan's merchant, and never before the date. It can never take more than the allowance the customer approved.</p>

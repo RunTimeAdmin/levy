@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-/// @notice Minimal Uniswap Permit2 interface: only the two functions Levy uses.
+/// @notice Minimal Uniswap Permit2 interface: only the functions Levy uses.
 /// @dev Full Permit2 repo: https://github.com/Uniswap/permit2
 ///      On Arc mainnet/testnet: 0x000000000022D473030F116dDEE9F6B43aC78BA3,
 ///      the canonical address (same as Ethereum; see VERIFICATION.md).
@@ -37,4 +37,11 @@ interface IPermit2 {
         uint160 amount,
         address token
     ) external;
+
+    /// @notice The allowance `spender` holds over `owner`'s `token`.
+    function allowance(
+        address owner,
+        address token,
+        address spender
+    ) external view returns (uint160 amount, uint48 expiration, uint48 nonce);
 }

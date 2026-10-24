@@ -2,7 +2,7 @@
 
 Self-review of every arithmetic operation in `SubscriptionManager.sol` and
 `FeeRouter.sol`. Integer math only; no floating point anywhere. Last revised
-2026-10-03.
+2026-10-24.
 
 ## 1. Protocol fee: `fee = due / FEE_BPS`
 
@@ -83,13 +83,21 @@ themselves. See SECURITY_REVIEW.md §9.
 - `nextChargeAt` and `start` are uint64. `block.timestamp` (~1.8e9) plus ten
   `MAX_CYCLE`s (~3.2e9) is ~5e9, far below uint64 max (~1.8e19). The
   `uint64(...)` casts cannot truncate in practice.
-- `charge()` advances `nextChargeAt` by exactly one `cycleSeconds` per call
-  (from the stored value, not `block.timestamp`), so a late keeper does not
-  cause surprise multi-cycle pulls; catching up after missed charges takes one
-  `charge()` per missed cycle. Two exceptions: resume moves a passed
-  `nextChargeAt` up to the resume time (paused cycles are never caught up), and
-  `changePlan` sets it to `now + newCycle` (the new cycle is paid immediately).
-  `nextChargeAt` never falls below `start` (invariant-tested).
+- `charge()` normally advances `nextChargeAt` by one `cycleSeconds` from the
+  stored value, not from `block.timestamp`, so a late keeper does not shift the
+  billing date. It sets `nextChargeAt = now + cycleSeconds` instead when the
+  charge follows failed attempts (`failedAttempts > 0`, which covers every
+  PAST_DUE recovery) or when one cycle after the stored value has already
+  passed (a whole cycle went by uncharged, as in a keeper outage). The overdue
+  time is forgiven, so a successful charge never leaves the next one already
+  due and missed cycles are never pulled back to back (invariant
+  `noBackToBackCharges`). Before the 2026-10-24 review every charge added one
+  cycle to the stored value, so catching up took one `charge()` per missed
+  cycle and a recovered subscription could be pulled for several overdue
+  cycles in a row. Two other writes: resume moves a passed `nextChargeAt` up
+  to the resume time (paused cycles are never billed), and `changePlan` sets
+  it to `now + newCycle` (the new cycle is paid immediately). `nextChargeAt`
+  never falls below `start` (invariant-tested).
 
 ## 5. Failure counters
 
@@ -126,6 +134,7 @@ themselves. See SECURITY_REVIEW.md §9.
 | `changePlan` to a cheaper plan mid-cycle | Credit can exceed the new price; the excess covers later cycles. Correct. |
 | `changePlan` during a trial | No credit; the new plan's first cycle is billed in full now. |
 | Resume after `nextChargeAt` passed | `nextChargeAt` = resume time; one charge bills a fresh cycle. Paused cycles are never billed. |
+| Successful charge after failed attempts, or after a whole cycle went uncharged | `nextChargeAt` = payment time + one cycle; the overdue time is not billed. |
 | Merchant wants a higher price after the subscriber approved | Impossible on an existing plan: price is immutable. Repricing means a new plan, which the subscriber must choose via `changePlan`. |
 | `permit2.transferFrom` amount | `uint160` cast guarded by an `amount > type(uint160).max` check; realistic USDC amounts are ~1e6 to 1e15. |
 
@@ -134,7 +143,10 @@ themselves. See SECURITY_REVIEW.md §9.
 Three arithmetic or logic bugs were found after the first version of this
 audit, all fixed on 2026-09-25: unbacked proration credit (§2 correction),
 resume keeping the failure count (§5), and the `uint8` overflow in the
-auto-pause threshold (§5). One design note:
+auto-pause threshold (§5). The 2026-10-24 review found one more, fixed the
+same day: a successful charge after failed attempts moved the date one cycle
+on from the missed one, so a recovered subscription could be pulled for
+several overdue cycles back to back (§4). One design note:
 
 1. `FEE_BPS = 100` is a constant, not a plan field, so changing the fee needs a
    redeploy. This is intentional (predictable for merchants). The planned

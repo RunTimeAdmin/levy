@@ -47,11 +47,11 @@ Flow and security details are in [Authentication.md](Authentication.md).
 ```json
 {"subId":"1","subscriber":"0x...","planId":"1","merchant":"0x...","price":"10000000",
  "cycleSeconds":2592000,"status":1,"nextChargeAt":1700000000,"failedAttempts":0,
- "ref":"0x7f3a...","fundsLow":1,"cyclesCovered":1,
+ "ref":"0x7f3a...","pausedByMerchant":0,"fundsLow":1,"cyclesCovered":1,
  "statusName":"active","priceUsdc":"10.000000","nextChargeAtIso":"2023-11-14T22:13:20.000Z"}
 ```
 
-`ref` is the merchant's bytes32 reference or `null`. `fundsLow` and `cyclesCovered` are `null` until the keeper has checked that subscriber; the detail route omits them.
+`ref` is the merchant's bytes32 reference or `null`. `pausedByMerchant` is 1 while the merchant's own pause holds the subscription, else 0; the merchant may resume only at 1, and the dashboard offers Resume only then. `fundsLow` and `cyclesCovered` are `null` until the keeper has checked that subscriber; the detail route omits them.
 
 `/api/funds` returns `{checked:false}` before the first check, then `allowance, balance, perCycle, cyclesCovered, low` with `*Usdc` companions, as of the keeper's last check (repeated at least every 6 hours). The allowance is one pool, so `perCycle` sums one charge of every chargeable subscription the address holds. `low` means `cyclesCovered` is below 2.
 

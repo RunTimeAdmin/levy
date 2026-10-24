@@ -1,6 +1,6 @@
 # LEVY: Subscription Billing on Arc
 
-**Status:** living build doc, updated 2026-10-07. Contracts, keeper, API, merchant dashboard, customer portal and checkout are built and tested. The contracts are deployed on Arc testnet for the M4 soak (addresses in README, Deployments); nothing is on mainnet. Verified chain facts are in `VERIFICATION.md`.
+**Status:** living build doc, updated 2026-10-24. Contracts, keeper, API, merchant dashboard, customer portal and checkout are built and tested. The contracts are deployed on Arc testnet for the M4 soak (addresses in README, Deployments); nothing is on mainnet. The fixes from the 2026-10-24 review change both contracts, so they need a new deployment after the soak. Verified chain facts are in `VERIFICATION.md`.
 **One-liner:** Stripe Billing for Arc. Merchants create plans, subscribers approve a USDC allowance once, Levy pulls USDC every cycle with dunning, proration, webhooks and invoice records built in.
 
 ## Why this, why Arc, why now
@@ -23,13 +23,13 @@
 
 **Subscribe.** The subscriber approves a USDC allowance to the SubscriptionManager and calls `subscribe(planId, ref)`: two transactions, which the checkout page walks them through. Or one transaction: `subscribeWithPermit2(planId, ref, permit, signature)` with an off-chain EIP-712 Permit2 signature, submitted by the subscriber themselves (the permit does not bind a plan, so it cannot be relayed safely). Billing is in advance: without a trial, subscribe pulls the first cycle and reverts if the pull fails. `ref` is the merchant's reference for the customer (bytes32, public, chosen by whoever subscribes).
 
-**Charge.** The keeper calls `charge(subId)` once `block.timestamp >= nextChargeAt`; the pull pays for the cycle that starts then. `charge()` is permissionless: it can only move the subscriber's pre-approved funds to that plan's merchant, so there is nothing to gain by calling it. The contract checks the state is chargeable (TRIAL, ACTIVE or PAST_DUE), spends proration credit first, pulls the rest via `transferFrom` (direct allowance first, Permit2 as fallback), sends 1% to the FeeRouter and 99% to the merchant, advances `nextChargeAt` by one cycle and emits `Charged`. If the pull fails (allowance or balance), it increments `failedAttempts` and emits `ChargeFailed` without reverting.
+**Charge.** The keeper calls `charge(subId)` once `block.timestamp >= nextChargeAt`; the pull pays for the cycle that starts then. `charge()` is permissionless: it can only move the subscriber's pre-approved funds to that plan's merchant, so there is nothing to gain by calling it. The contract checks the state is chargeable (TRIAL, ACTIVE or PAST_DUE), spends proration credit first, pulls the rest via `transferFrom` (direct allowance first, Permit2 as fallback), sends 1% to the FeeRouter and 99% to the merchant, advances `nextChargeAt` by one cycle and emits `Charged`. After failed attempts, or when a whole cycle passed with no charge, the next charge is instead one cycle from now: the overdue time is forgiven, as resume forgives paused time, so a successful charge never leaves the next one due and missed cycles cannot be pulled back to back. If the pull fails (allowance or balance), it increments `failedAttempts` and emits `ChargeFailed` without reverting.
 
-**Dunning.** Failure state is on-chain. At `maxFailed` failures the subscription becomes PAST_DUE; at `2 × maxFailed` the contract auto-pauses it (PAUSED, `AutoPaused`) inside `charge()`, so the keeper never pauses anything itself. The contract enforces the schedule's gaps between recorded failures: 1 day before the second, 3 before the third, 7 before each later one (`retryGap`; a sooner failing `charge()` reverts `RetryTooSoon`), so a third party calling the permissionless `charge()` cannot compress it. Off-chain, the keeper retries on that schedule (configurable to longer gaps, never shorter). A successful charge clears the retry schedule. The merchant or subscriber can resume a paused subscription, which resets `failedAttempts` and the keeper's retry schedule. Merchants get Ed25519-signed webhooks for each step and notify their subscribers themselves (suggested copy in `docs/dunning-copy.md`).
+**Dunning.** Failure state is on-chain. At `maxFailed` failures the subscription becomes PAST_DUE; at `2 × maxFailed` the contract auto-pauses it (PAUSED, `AutoPaused`) inside `charge()`, so the keeper never pauses anything itself. The contract enforces the schedule's gaps between recorded failures: 1 day before the second, 3 before the third, 7 before each later one (`retryGap`; a sooner failing `charge()` reverts `RetryTooSoon`), so a third party calling the permissionless `charge()` cannot compress it. Off-chain, the keeper retries on that schedule (configurable to longer gaps, never shorter). A successful charge clears the retry schedule and starts a fresh cycle from the payment (see Charge). The subscriber can resume an auto-paused subscription (the merchant cannot), which resets `failedAttempts` and the keeper's retry schedule. Merchants get Ed25519-signed webhooks for each step and notify their subscribers themselves (suggested copy in `docs/dunning-copy.md`).
 
 **Proration.** A plan change, same merchant only, starts the new plan immediately and bills its first cycle immediately. Unused paid time on the old plan becomes credit, `price * remainingSeconds / cycleSeconds` (integer math, rounded down; the remainder stays with the merchant), added to any credit already held. Credit is spent first; the rest is pulled. Credit left over after a downgrade covers later cycles. Trial time was never paid for and earns no credit. Credit can never move to another merchant.
 
-**Pause / cancel.** The subscriber or merchant can pause (nothing is charged while paused) or cancel (terminal; no on-chain refunds, which are merchant policy, handled off-chain). Resume is a fresh start: if `nextChargeAt` passed during the pause, it moves to the resume time, so paused cycles are never billed and an overdue cycle is forgiven (as with `changePlan`). Paid days keep running during a pause.
+**Pause / cancel.** The subscriber or merchant can pause (nothing is charged while paused) or cancel (terminal; no on-chain refunds, which are merchant policy, handled off-chain). Resuming restarts billing against the subscriber's allowance, so the subscriber can resume any pause and the merchant only a pause it made itself (`pausedByMerchant`); a subscriber's pause or an auto-pause needs the subscriber. Resume is a fresh start: if `nextChargeAt` passed during the pause, it moves to the resume time, so paused cycles are never billed and an overdue cycle is forgiven (as with `changePlan`). Paid days keep running during a pause.
 
 **Invoicing.** Every `Charged` event becomes an invoice record: id, invoiceRef (`keccak256(abi.encode(subId, chargeCount))`), subscription, subscriber, merchant, amount, fee, tx hash, block, charge count. The merchant dashboard exports CSV. Cycle dates, memo references and PDF receipts are not built.
 
@@ -42,14 +42,14 @@
 - `subscribe(planId, ref)`: subscriber is `msg.sender`; without a trial, pulls the first cycle; stores `ref` in `subscriptionRef` and emits it in `Subscribed`
 - `subscribeWithPermit2(planId, ref, permitSingle, signature)`: one-tx subscribe via Arc Permit2; the permit owner is `msg.sender`
 - `charge(subId)`: permissionless; spend credit, pull, split, advance, emit
-- `pauseSubscription(subId)` / `resumeSubscription(subId)` / `cancelSubscription(subId)`: subscriber or merchant only. Auto-pause at `2 × maxFailed` happens inside `charge()` and emits `AutoPaused`
+- `pauseSubscription(subId)` / `cancelSubscription(subId)`: subscriber or merchant only. `resumeSubscription(subId)`: the subscriber, or the merchant for a pause it made (`NotSubscriber` otherwise). Auto-pause at `2 × maxFailed` happens inside `charge()` and emits `AutoPaused`
 - `changePlan(subId, newPlanId)`: subscriber only, same-merchant plans only; bills the new plan now, less proration credit; reverts with `PaymentFailed` if the pull fails
-- Views: `plans(id)`, `subscriptions(id)`, `subscriptionRef(id)`, `isChargeable(id)`, `lastFailedAt(id)`, `retryGap(failures)`, `planCount`, `subCount`
+- Views: `plans(id)`, `subscriptions(id)`, `subscriptionRef(id)`, `isChargeable(id)`, `lastFailedAt(id)`, `pausedByMerchant(id)`, `retryGap(failures)`, `planCount`, `subCount`
 - Events: `PlanCreated(planId, merchant, price, cycleSeconds)`, `Subscribed(subId, subscriber, planId, nextChargeAt, ref)`, `Charged(subId, amount, fee, invoiceRef, chargeCount)` (amount is what was pulled, 0 when credit covered the cycle), `ChargeFailed(subId, failedAttempts)`, `AutoPaused(subId)`, `Paused(subId)`, `Resumed(subId)`, `Cancelled(subId)`, `PlanChanged(subId, oldPlanId, newPlanId, credit)`
 
-**FeeRouter:** receives the 1% at charge time and holds it until anyone calls `sweep()`, which sends the whole balance to the treasury (a Safe multisig on mainnet). Phase 2: split 50% buyback-and-burn LEVY / 50% staking rewards (not built).
+**FeeRouter:** receives the 1% at charge time and holds it until anyone calls `sweep()`, which sends the whole balance to the treasury (a Safe multisig on mainnet). Moving the treasury takes two steps, so a mistyped address cannot take over: the treasury calls `proposeTreasury(next)`, then `next` calls `acceptTreasury()`. Phase 2: split 50% buyback-and-burn LEVY / 50% staking rewards (not built).
 
-**Invariants (fuzz-tested):** every minted unit sits in exactly one tracked account; the manager holds no funds at rest; `failedAttempts <= 2 × maxFailed`; recorded failures follow the dunning schedule's gaps; cancel is terminal; `nextChargeAt` never falls below `start`; credit never exceeds the USDC the subscription paid, nor the largest plan price.
+**Invariants (fuzz-tested):** every minted unit sits in exactly one tracked account; the manager holds no funds at rest; `failedAttempts <= 2 × maxFailed`; recorded failures follow the dunning schedule's gaps; cancel is terminal; `nextChargeAt` never falls below `start`; a successful charge never leaves the subscription chargeable; credit never exceeds the USDC the subscription paid, nor the largest plan price.
 
 ## Off-chain services
 
@@ -87,7 +87,7 @@ Phase 1 ships with fees to treasury. The token launches with traction, not befor
 This is not a security product, but it holds other people's money rails. Non-negotiables:
 - Reentrancy guards on every function that moves tokens (`subscribe`, `subscribeWithPermit2`, `charge`, `changePlan`).
 - `transferFrom` failures are caught and recorded rather than reverting `charge()` (a failing call inside the `retryGap` window reverts `RetryTooSoon` and changes nothing); transfers out use SafeERC20.
-- Access control: subscriber-or-merchant pause, resume and cancel; plans immutable; `charge()` permissionless by design. The keeper never force-pauses; auto-pause happens inside `charge()`.
+- Access control: subscriber-or-merchant pause and cancel; resume by the subscriber, or by the merchant for its own pause; plans immutable; `charge()` permissionless by design. The keeper never force-pauses; auto-pause happens inside `charge()`.
 - Allowance hygiene: never request unlimited allowance in the default UX. The checkout approves `price × N` cycles (N chosen by the subscriber, default 12) on top of the existing allowance, and the portal offers a top-up when it runs low.
 - Invariant fuzzing in Foundry: fee math, proration bounds, state machine transitions.
 - Testnet soak: run the keeper against testnet for at least a week of simulated cycles before mainnet.
@@ -123,7 +123,7 @@ Open issues and the self-review are in `SECURITY_REVIEW.md`; the math audit is i
 levy/
 ├── src/                # Foundry: SubscriptionManager, FeeRouter, IPermit2
 ├── script/             # Deploy.s.sol (Arc testnet / mainnet)
-├── test/               # 65 tests: 57 unit (incl. deploy script), 8 invariants
+├── test/               # 77 tests: 68 unit (incl. deploy script), 9 invariants
 ├── foundry.toml
 ├── FEE_MATH_AUDIT.md   # fee + proration math audit
 ├── SECURITY_REVIEW.md  # adversarial self-review and open issues

@@ -20,7 +20,7 @@ For production use the Docker image (see Deploying); it is compiled with `tsc`.
 
 ## Pages
 
-- `/`: merchant dashboard. Metrics; plans with copyable checkout links and a New plan form (a `createPlan` transaction from the merchant's wallet); subscriptions (with the merchant's reference and each subscriber's allowance runway) that the merchant can pause, resume or cancel; dunning queue; webhooks with a per-endpoint delivery log; invoice CSV.
+- `/`: merchant dashboard. Metrics; plans with copyable checkout links and a New plan form (a `createPlan` transaction from the merchant's wallet); subscriptions (with the merchant's reference and each subscriber's allowance runway) that the merchant can pause or cancel, and resume only when the merchant made the pause (a pause by the customer or after failed payments shows "customer resumes" instead); dunning queue; webhooks with a per-endpoint delivery log; invoice CSV.
 - `/portal.html`: customer portal. Subscriptions and invoice history; pause, resume and cancel; plan changes to another plan from the same merchant, priced from the contract's own state before signing; and the Levy allowance, with a top-up and a revoke.
 - `/checkout.html?plan=<planId>&ref=<reference>`: where a customer subscribes. It shows the plan, explains the allowance, adds 12 cycles (adjustable, 1 to 120) to the customer's USDC allowance for Levy, calls `subscribe` and ends on a receipt. `ref` is optional: `0x` plus 64 hex digits, or up to 31 ASCII characters (see the merchant guide). Needs `LEVY_MANAGER_ADDRESS` and `LEVY_USDC_ADDRESS` set for the API; the examples' zero address counts as unset, and the page then says checkout is not configured.
 
@@ -73,7 +73,7 @@ gets 404.
 | GET | `/api/webhooks/public-key` | public | Ed25519 SPKI PEM and its `keyId`, plus the event list |
 | POST | `/api/auth/challenge`, `/api/auth/verify` | public | sign-in (above) |
 | GET | `/api/auth/session`, POST `/api/auth/logout` | session | check or revoke the session |
-| GET | `/api/subscriptions?merchant=\|subscriber=&status=` | session | one of merchant/subscriber, equal to the session; `status` is numeric (0 trial, 1 active, 2 past_due, 3 paused, 4 cancelled); rows include `ref`, `fundsLow`, `cyclesCovered` |
+| GET | `/api/subscriptions?merchant=\|subscriber=&status=` | session | one of merchant/subscriber, equal to the session; `status` is numeric (0 trial, 1 active, 2 past_due, 3 paused, 4 cancelled); rows include `ref`, `pausedByMerchant` (1 while the merchant's own pause holds it, else 0), `fundsLow`, `cyclesCovered` |
 | GET | `/api/subscriptions/:id` | session | + charges, dunning row; subscriber or merchant only |
 | GET | `/api/funds` | session | the subscriber's allowance runway as of the keeper's last check (`low`, `cyclesCovered`, allowance, balance) |
 | GET | `/api/metrics` | session | as merchant: MRR (trial + active, normalized to 30 days), counts per status, totals, charge success rate, dunning depth |

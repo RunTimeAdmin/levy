@@ -66,7 +66,7 @@ flowchart LR
 
 ## Resume is a fresh start
 
-`resumeSubscription` can be called by the subscriber or the merchant, and only on a PAUSED subscription (anything else reverts `NotChargeable`).
+`resumeSubscription` can be called by the subscriber, or by the merchant for a pause it made itself, and only on a PAUSED subscription (anything else reverts `NotChargeable`). An auto-pause or a pause by the subscriber is the subscriber's to resume: a merchant trying reverts `NotSubscriber`.
 
 - If `nextChargeAt` has passed it moves to now, so paused cycles are never billed and an overdue cycle is forgiven. If it is still in the future (days already paid), it stays.
 - `failedAttempts` resets to 0 and `lastFailedAt` is deleted, so the next failure is recorded at once instead of being held for a day (`test_resumeResetsTheTimer`).
@@ -87,7 +87,7 @@ A `Charged` event deletes the row, and so does `Resumed`. PAST_DUE subscriptions
 
 `LEVY_DUNNING_DAYS` can lengthen the gaps but never shorten them, and longer gaps push the auto-pause out by the same amount. A retry earlier than `retryGap` allows reverts `RetryTooSoon`, which the keeper treats like any non-payment error: it re-reads the subscription and backs off 1 minute, 5, 15, 1 hour, then every 6 hours (in memory, so a restart tries once more). A charge that reverts because USDC refuses a payout gets the same backoff.
 
-A successful retry advances `nextChargeAt` by one cycle from the missed date, not from today. On a plan whose cycle is shorter than the time spent failing (a daily plan that failed for four days), the subscription is still overdue afterwards and the keeper charges it again right away, once per missed cycle. Pausing and resuming instead forgives the overdue cycles.
+A successful retry starts a fresh cycle at the payment: `nextChargeAt` becomes the payment time plus one cycle, and the overdue time is forgiven, as with resume. However long the subscription was failing (a daily plan that failed for four days, say), the recovery pulls one cycle and the next charge is a full cycle away. Before the 2026-10-24 review the retry advanced the date one cycle from the missed one, so such a subscription was still overdue and was charged again at once, once per missed cycle.
 
 ## Webhooks during dunning
 
@@ -123,7 +123,7 @@ Send one notice per failure, the highest-numbered one that applies. `subscriptio
 - `{days}`: days until `nextRetryAt`, from `dunning.started` for the first failure and from `dunning.nextRetryAt` in `GET /api/subscriptions/:id` after that.
 - Portal link: `https://<your Levy host>/portal.html`, where the subscriber tops up the allowance and resumes.
 
-A subscriber fixes a failing subscription by topping up USDC or approving more. The next scheduled retry collects it, or the next `charge` call from anyone. An auto-paused subscription also needs a resume, from the subscriber in the portal or from the merchant.
+A subscriber fixes a failing subscription by topping up USDC or approving more. The next scheduled retry collects it, or the next `charge` call from anyone. An auto-paused subscription also needs a resume, from the subscriber in the portal; the merchant cannot resume it.
 
 ## Source files
 

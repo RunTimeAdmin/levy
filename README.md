@@ -4,7 +4,7 @@ Pull-based USDC subscription billing for Arc, like Stripe Billing for a chain wh
 
 Charging is permissionless by design: anyone can call `charge()`, but it can only move the subscriber's pre-approved USDC to that plan's merchant.
 
-**Status:** contracts, keeper (charging, dunning, webhooks, allowance warnings), API with wallet sign-in, merchant dashboard, customer portal and checkout page are built and tested. Contracts: 65 tests green (57 unit + 8 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 55 tests green. API: 55 tests green. **On Arc testnet since 2026-10-03 (current deployment, see Deployments); the M4 soak started 2026-10-07. Not on mainnet. Not audited.** Known open issues are listed in `SECURITY_REVIEW.md` §9.
+**Status:** contracts, keeper (charging, dunning, webhooks, allowance warnings), API with wallet sign-in, merchant dashboard, customer portal and checkout page are built and tested. Contracts: 77 tests green (68 unit + 9 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 56 tests green. API: 55 tests green. **On Arc testnet since 2026-10-03 (current deployment, see Deployments); the M4 soak started 2026-10-07. Not on mainnet. Not audited.** Known open issues are listed in `SECURITY_REVIEW.md` §9.
 
 **Read next:** [Wiki](docs/wiki/Home.md) · [Getting started](docs/wiki/Getting-Started.md) · [Merchant guide](docs/merchant-guide.md) · [Spec](SPEC.md) · [Security](SECURITY.md) · [Whitepaper](https://getlevy.xyz/whitepaper.html) · [getlevy.xyz](https://getlevy.xyz)
 
@@ -79,9 +79,9 @@ For a full local stack (anvil, a local deploy, the keeper and the API) follow [G
 
 1. A merchant calls `createPlan(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed)` from their wallet, most simply through the dashboard's New plan form. The cycle can be 1 day to 10 years. Price is immutable; repricing means a new plan.
 2. A subscriber approves a USDC allowance to the SubscriptionManager and calls `subscribe(planId, ref)`, or calls `subscribeWithPermit2(planId, ref, permit, signature)` with a Permit2 signature (submitted by the subscriber themselves). The checkout page (`/checkout.html?plan=<id>&ref=<ref>`) does the approve-and-subscribe flow for them. Billing is in advance: without a trial, the first cycle is pulled at subscribe, and the subscribe reverts if that pull fails. `ref` is the merchant's own reference for the customer (bytes32, zero for none), stored on-chain and carried on every webhook.
-3. Anyone can call `charge(subId)` once `block.timestamp >= nextChargeAt`; it pays for the cycle that starts then. The contract spends any proration credit first, pulls the rest via `transferFrom`, sends 99% to the merchant and 1% to the FeeRouter, advances the cycle and emits `Charged`. It is permissionless by design: it can only move the subscriber's pre-approved funds to that plan's merchant.
+3. Anyone can call `charge(subId)` once `block.timestamp >= nextChargeAt`; it pays for the cycle that starts then. The contract spends any proration credit first, pulls the rest via `transferFrom`, sends 99% to the merchant and 1% to the FeeRouter, advances the cycle and emits `Charged`. The next charge date moves one cycle on from the stored date, so a late keeper does not shift the schedule; after a failed attempt, or when a whole cycle went by uncharged, it becomes one cycle from the payment instead (the overdue time is not billed). It is permissionless by design: it can only move the subscriber's pre-approved funds to that plan's merchant.
 4. A failed pull does not revert: the contract records it (`ChargeFailed`), marks the subscription `PAST_DUE` at `maxFailed` failures, and auto-pauses it at twice that. It records failures only on the dunning schedule, 1, 3 and then 7 days apart (`retryGap`); a failing call sooner reverts `RetryTooSoon`, so nobody can pause a subscription sooner than its schedule by calling `charge()` (with `maxFailed` 2, not before day 11). The keeper retries on the same schedule.
-5. The subscriber or merchant can pause, resume or cancel. Nothing is charged while paused; resuming is a fresh start (paused cycles are never billed, billing restarts at the resume if the charge date passed, and the failure count resets). Cancel is final.
+5. The subscriber or merchant can pause or cancel. The subscriber can resume any pause; the merchant can resume only a pause it made itself, not one by the subscriber or a dunning auto-pause. Nothing is charged while paused; resuming is a fresh start (paused cycles are never billed, billing restarts at the resume if the charge date passed, and the failure count resets). Cancel is final.
 6. A subscriber can change to another plan from the same merchant: the new plan starts and is billed immediately, less credit for unused paid time on the old plan.
 
 ### Money math
@@ -100,6 +100,7 @@ For a full local stack (anvil, a local deploy, the keeper and the API) follow [G
 - Credit is backed: a subscription never holds more credit than the USDC it has paid.
 - Credit never exceeds the largest plan price.
 - The manager holds no funds at rest: every pull is fully split in the same transaction.
+- A successful charge never leaves its subscription chargeable, so missed cycles are never pulled back to back.
 
 ## Off-chain services
 
@@ -107,7 +108,7 @@ For a full local stack (anvil, a local deploy, the keeper and the API) follow [G
 
 **API** (`api/`, Fastify). Merchants and subscribers sign in with their wallet (Sign-In with Ethereum, 24h sessions) and only ever see their own data. It serves:
 
-- the merchant dashboard (`/`): metrics, plans with their checkout links and a New plan form, subscriptions with references and allowance runway (each can be paused, resumed or cancelled), dunning queue, webhooks with their delivery log, invoice CSV;
+- the merchant dashboard (`/`): metrics, plans with their checkout links and a New plan form, subscriptions with references and allowance runway (each can be paused or cancelled, and resumed if the merchant paused it), dunning queue, webhooks with their delivery log, invoice CSV;
 - the customer portal (`/portal.html`): subscriptions and invoices; pause, resume, cancel and plan changes from the wallet; and the Levy allowance, with a top-up and a revoke;
 - the checkout page (`/checkout.html?plan=<id>&ref=<ref>`).
 
@@ -155,7 +156,7 @@ To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file 
 | FeeRouter | `0x4819975f4fa3a693ec67539bcb121eb06f280541` | `0x390f2308baa57fd862ccb34a45b39c0c85d527077eff16b63aba8b97ee74f0c4` |
 
 - Deployer and treasury: `0xe305652DB35Ed45A567538438c9B29ede7097162` (testnet only; mainnet uses the Safe).
-- Code: built with solc 0.8.33 from the sources at `08991fa`, the runtime bytecode of both contracts matches the chain byte for byte outside the constructor-set immutables, build metadata included. A different solc version gives a different metadata tail (`foundry.toml` does not pin one yet; `SECURITY_REVIEW.md` §9, item 12). `retryGap` reads 1, 3 and 7 days on-chain. Source is not yet verified on the explorer.
+- Code: built with solc 0.8.33 from the sources at `08991fa`, the runtime bytecode of both contracts matches the chain byte for byte outside the constructor-set immutables, build metadata included. A different solc version gives a different metadata tail (`foundry.toml` does not pin one yet; `SECURITY_REVIEW.md` §9, item 12). `retryGap` reads 1, 3 and 7 days on-chain. Source is not yet verified on the explorer. It predates the fixes from the 2026-10-24 review (merchant resume, the next charge date after failures, the Permit2 fallback, the two-step treasury move), which take effect at the next deployment.
 - Soak host: keeper and API at `https://app.getlevy.xyz`.
 - **Superseded**, never used for billing, and nothing points at them:
   - 2026-09-26, block 64031023 (SubscriptionManager `0x33c8e7e46583bdfd2e001f55ac1c58bd84eb739f`, FeeRouter `0xa6efee5f5a2eb2afae102f790b4889fcc01fe848`, record `run-1790390636694.json`, code `08dd7b7`; the record itself says `58ed3ba`, the head when forge ran before the fix was committed): recorded failures only a day apart, so a caller could pause a subscription on day 3 instead of day 11 (finding 2 of the 2026-10-02 review). No plan or subscription was ever created on it.

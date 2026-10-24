@@ -195,7 +195,7 @@ const LevyWallet = (() => {
     };
   }
 
-  /** pause / resume / cancel a subscription (subscriber or merchant only). */
+  /** pause / resume / cancel a subscription (subscriber or merchant only; the merchant resumes only its own pause). */
   const manage = (from, manager, action, subId) => {
     if (!["pause", "resume", "cancel"].includes(action)) throw new Error(`unknown action ${action}`);
     return send(from, manager, SEL[action] + word(subId));

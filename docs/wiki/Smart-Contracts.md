@@ -1,6 +1,6 @@
 # Smart Contracts
 
-Levy's on-chain layer is two contracts and one interface, written in Solidity (`^0.8.20`) on OpenZeppelin 5.7.0 and built with Foundry. `SubscriptionManager` holds plans and subscriptions and moves the money. `FeeRouter` receives the 1% protocol fee. `IPermit2` is the two-function slice of Uniswap's Permit2 that Levy calls. The contracts run on Arc testnet only. Nothing is on mainnet and nothing has been audited.
+Levy's on-chain layer is two contracts and one interface, written in Solidity (`^0.8.20`) on OpenZeppelin 5.7.0 and built with Foundry. `SubscriptionManager` holds plans and subscriptions and moves the money. `FeeRouter` receives the 1% protocol fee. `IPermit2` is the three-function slice of Uniswap's Permit2 that Levy calls. The contracts run on Arc testnet only. Nothing is on mainnet and nothing has been audited.
 
 Amounts are USDC integers with 6 decimals (1 USDC = 1,000,000 units), moved through USDC's ERC-20 interface. Native 18-decimal values never enter the payment math, and all division rounds down.
 
@@ -49,7 +49,7 @@ The manager never holds funds at rest: every pull is split in the same transacti
 
 **Status**: `TRIAL`, `ACTIVE`, `PAST_DUE`, `PAUSED`, `CANCELLED` (values 0 to 4).
 
-Public state: `plans`, `subscriptions`, `subscriptionRef` (the merchant's reference), `lastFailedAt` (time of the last recorded failure, zero if none), `planCount`, `subCount`. Plan and subscription ids start at 1.
+Public state: `plans`, `subscriptions`, `subscriptionRef` (the merchant's reference), `lastFailedAt` (time of the last recorded failure, zero if none), `pausedByMerchant` (true while the subscription is paused by its merchant, cleared on resume), `planCount`, `subCount`. Plan and subscription ids start at 1.
 
 ## Functions
 
@@ -57,10 +57,10 @@ Public state: `plans`, `subscriptions`, `subscriptionRef` (the merchant's refere
 |---|---|---|
 | `createPlan(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed)` | Anyone, who becomes the plan's merchant | Stores a plan, emits `PlanCreated` |
 | `subscribe(planId, ref)` | Anyone, as themselves | Opens a subscription. Without a trial it pulls the first cycle |
-| `subscribeWithPermit2(planId, ref, permitSingle, signature)` | The permit signer only | Applies a Permit2 permit, then subscribes in one transaction |
+| `subscribeWithPermit2(planId, ref, permitSingle, signature)` | The permit signer only | Applies a Permit2 permit, then subscribes in one transaction. If the permit fails but the signer's Permit2 allowance already covers one cycle and has not expired, it subscribes anyway |
 | `charge(subId)` | Anyone | Pulls one cycle once `nextChargeAt` has passed, or records a failure |
 | `pauseSubscription(subId)` | Subscriber or plan merchant | Sets `PAUSED` |
-| `resumeSubscription(subId)` | Subscriber or plan merchant | `PAUSED` to `ACTIVE`, as a fresh start |
+| `resumeSubscription(subId)` | Subscriber, or the plan merchant for a pause it made itself | `PAUSED` to `ACTIVE`, as a fresh start |
 | `cancelSubscription(subId)` | Subscriber or plan merchant | Sets `CANCELLED`, which is final |
 | `changePlan(subId, newPlanId)` | Subscriber only | Moves to another plan of the same merchant, prorated |
 | `isChargeable(subId)` | Anyone (view) | True if the status is `TRIAL`, `ACTIVE` or `PAST_DUE` and `nextChargeAt` has passed |
@@ -71,7 +71,7 @@ Behavior of each is covered in [Plans and Subscriptions](Plans-and-Subscriptions
 
 - There is no owner, admin role, proxy or pause switch. Nothing can change a plan, the fee or the wired addresses after deployment.
 - `charge` is permissionless on purpose. It can only move the subscriber's pre-approved funds to the plan's merchant and the router, so a caller gains nothing. What a caller does control is when a failing pull gets recorded, and the contract spaces those by `retryGap`.
-- A merchant can pause, resume and cancel subscriptions on its own plans. It cannot change a subscriber's plan or charge more than the plan price.
+- A merchant can pause and cancel subscriptions on its own plans, and resume only a pause it made itself (not the subscriber's pause or a dunning auto-pause). It cannot change a subscriber's plan or charge more than the plan price.
 - `subscribe`, `subscribeWithPermit2`, `charge` and `changePlan` are `nonReentrant`. Pause, resume and cancel only write storage and are unguarded. Outgoing transfers use `SafeERC20`.
 - Storage updates in the money-moving functions happen after the transfers. That is safe with USDC and is flagged for the auditor in [Security](Security.md).
 
@@ -97,7 +97,7 @@ Behavior of each is covered in [Plans and Subscriptions](Plans-and-Subscriptions
 | `UnknownPlan`, `UnknownSubscription` | The id does not exist |
 | `NotChargeable` | `charge` on a status other than `TRIAL`, `ACTIVE`, `PAST_DUE`, or before `nextChargeAt`. Also pause on a `PAUSED` or `CANCELLED` subscription, resume on anything but `PAUSED`, cancel on a `CANCELLED` one, and `changePlan` on a status that cannot be charged |
 | `NotSubscriberOrMerchant` | Pause, resume or cancel from anyone else |
-| `NotSubscriber` | `changePlan` from anyone but the subscriber |
+| `NotSubscriber` | `changePlan` from anyone but the subscriber, or the merchant resuming a pause it did not make |
 | `SamePlan`, `DifferentMerchant` | `changePlan` to the current plan, or to another merchant's plan |
 | `BadPermitSpender`, `BadPermitToken` | The permit's spender is not the manager, or its token is not USDC |
 | `PaymentFailed` | The pull at subscribe (no trial) or at `changePlan` failed. The whole call reverts |
@@ -108,15 +108,15 @@ A failed pull inside `charge` does not revert. It is recorded as `ChargeFailed`,
 
 ## FeeRouter
 
-`FeeRouter(usdc, treasury)` receives the 1% fee and holds it until `sweep()`, which anyone can call and which sends the whole USDC balance to `treasury` (emitting `Swept`, even for a zero balance). `setTreasury(address)` works only from the current treasury and rejects the zero address (`OnlyTreasury`, `ZeroAddress`; event `TreasuryUpdated`). It has no pause or kill switch. The deploy script lets a plain key be the treasury on testnet but refuses a non-contract treasury on Arc mainnet. The Phase 2 fee split (buyback and staking) is not built.
+`FeeRouter(usdc, treasury)` receives the 1% fee and holds it until `sweep()`, which anyone can call and which sends the whole USDC balance to `treasury` (emitting `Swept`, even for a zero balance). Moving the treasury takes two steps. `proposeTreasury(address)` works only from the current treasury and rejects the zero address (`OnlyTreasury`, `ZeroAddress`; event `TreasuryProposed`); it stores the public `pendingTreasury`, and proposing again replaces it. `acceptTreasury()` works only from that pending address (`OnlyPendingTreasury`; event `TreasuryUpdated`) and clears it, so a mistyped address never takes over the fees. It has no pause or kill switch. The deploy script lets a plain key be the treasury on testnet but refuses a non-contract treasury on Arc mainnet. The Phase 2 fee split (buyback and staking) is not built.
 
 ## IPermit2
 
-The interface declares `permit(owner, permitSingle, signature)` and `transferFrom(from, to, amount, token)`. The manager calls `permit` with `msg.sender` as owner when subscribing, and falls back to `transferFrom` when a direct ERC-20 pull fails. Permit2's amounts are `uint160`, so larger pulls are refused on that path. See [Permit2](Permit2.md).
+The interface declares `permit(owner, permitSingle, signature)`, `transferFrom(from, to, amount, token)` and the view `allowance(owner, token, spender)`. The manager calls `permit` with `msg.sender` as owner when subscribing. If that call fails, it reads `allowance` and goes ahead only when the amount covers one cycle and has not expired, else it re-throws Permit2's error. It falls back to `transferFrom` when a direct ERC-20 pull fails. Permit2's amounts are `uint160`, so larger pulls are refused on that path. See [Permit2](Permit2.md).
 
 ## Invariants checked by the tests
 
-The suite has 65 tests: 57 unit tests (41 in `Levy.t.sol`, 9 in `FailureCooldown.t.sol`, 7 for the deploy script) and 8 fuzzed invariants. A handler throws random plans, approvals, subscriptions, charges, plan changes, pauses, resumes, cancels and sweeps at the system. Defaults are 256 runs at depth 15, and the `ci` profile runs 1,000 at depth 40.
+The suite has 77 tests: 68 unit tests (52 in `Levy.t.sol`, 9 in `FailureCooldown.t.sol`, 7 for the deploy script) and 9 fuzzed invariants. A handler throws random plans, approvals, subscriptions, charges, plan changes, pauses, resumes, cancels and sweeps at the system. Defaults are 256 runs at depth 15, and the `ci` profile runs 1,000 at depth 40.
 
 | Invariant | Meaning |
 |---|---|
@@ -128,6 +128,7 @@ The suite has 65 tests: 57 unit tests (41 in `Levy.t.sol`, 9 in `FailureCooldown
 | `creditBacked` | Credit never exceeds the USDC the subscription has actually paid |
 | `failuresSpaced` | Recorded failures are never closer than `retryGap` allows, however often `charge` is called |
 | `managerHoldsNothing` | The manager's USDC balance is always 0 |
+| `noBackToBackCharges` | A successful `charge` never leaves its subscription chargeable, so missed cycles are never pulled back to back |
 
 See [Testing](Testing.md) for how to run them.
 

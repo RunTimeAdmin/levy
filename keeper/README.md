@@ -8,7 +8,7 @@ Two independent loops run in one process (`src/index.ts`).
 
 **Charge loop** (every `LEVY_POLL_MS`, default 30s):
 
-1. **Sync:** fetches new logs (in chunks of `LEVY_LOG_CHUNK_BLOCKS`) and refreshes subscription and plan state from chain into SQLite.
+1. **Sync:** fetches new logs (in chunks of `LEVY_LOG_CHUNK_BLOCKS`) and refreshes subscription and plan state from chain into SQLite. For a PAUSED subscription that includes `pausedByMerchant`, so the dashboard offers Resume only on the merchant's own pause.
 2. **Charge due:** calls `charge(subId)` for TRIAL and ACTIVE subscriptions past `nextChargeAt` that have no open dunning entry. Anyone can call `charge()`; the keeper is just the always-on caller.
 3. **Dunning retries:** re-calls `charge()` for failed subscriptions (including PAST_DUE ones) on the backoff schedule: 1 day after the first failure, 3 days after the second, then 7 days after each later one (`LEVY_DUNNING_DAYS`). A success clears the schedule. The contract enforces the same gaps (`retryGap`), so configured gaps can be longer but not shorter (a sooner retry reverts `RetryTooSoon` and falls into the revert backoff).
 4. **Re-sync:** picks up this cycle's own receipts immediately.
@@ -67,7 +67,7 @@ dead-lettered, not held. Delivery state lives in `webhook_deliveries`
 ## Tests
 
 ```bash
-npm test                 # unit tests + anvil integration test (55 tests)
+npm test                 # unit tests + anvil integration test (56 tests)
 npm run test:integration # the anvil test alone
 ```
 

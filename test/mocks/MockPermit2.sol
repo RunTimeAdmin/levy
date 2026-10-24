@@ -8,7 +8,8 @@ import {IPermit2} from "../../src/IPermit2.sol";
 ///         scheme (domain "Permit2", PermitSingle typehash) so tests exercise
 ///         the full sign -> permit -> subscribeWithPermit2 flow with genuine
 ///         signatures. Allowance accounting mirrors Permit2's: permit() sets
-///         (owner, token, spender) -> amount; transferFrom() spends it down.
+///         (owner, token, spender) -> amount and expiration; transferFrom()
+///         spends it down and refuses once it has expired.
 /// @dev The mock ALSO requires the owner to have approve()d the mock for the
 ///      token, mirroring real Permit2 (which pulls via its own ERC-20 allowance).
 contract MockPermit2 is IPermit2 {
@@ -22,8 +23,13 @@ contract MockPermit2 is IPermit2 {
     bytes32 private constant _EIP712DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,uint256 chainId,address verifyingContract)");
 
-    // owner => token => spender => amount
-    mapping(address => mapping(address => mapping(address => uint256))) public allowance;
+    struct Allowed {
+        uint160 amount;
+        uint48 expiration;
+    }
+
+    // owner => token => spender => amount and expiration
+    mapping(address => mapping(address => mapping(address => Allowed))) private _allowed;
     // owner => token => spender => nonce
     mapping(address => mapping(address => mapping(address => uint48))) public nonce;
 
@@ -31,6 +37,18 @@ contract MockPermit2 is IPermit2 {
     error ExpiredPermit();
     error BadNonce();
     error InsufficientPermitAllowance();
+    error AllowanceExpired();
+
+    /// @notice Same shape as real Permit2's allowance(): amount, expiration, nonce.
+    function allowance(address owner, address token, address spender)
+        external
+        view
+        override
+        returns (uint160, uint48, uint48)
+    {
+        Allowed memory a = _allowed[owner][token][spender];
+        return (a.amount, a.expiration, nonce[owner][token][spender]);
+    }
 
     function DOMAIN_SEPARATOR() public view returns (bytes32) {
         return keccak256(
@@ -81,7 +99,12 @@ contract MockPermit2 is IPermit2 {
         address signer = ecrecover(digest, v, r, s);
         if (signer == address(0) || signer != owner) revert BadSignature();
 
-        allowance[owner][permitSingle.details.token][permitSingle.spender] = permitSingle.details.amount;
+        // As in real Permit2, a zero expiration means "this block only".
+        uint48 expiration = permitSingle.details.expiration == 0
+            ? uint48(block.timestamp)
+            : permitSingle.details.expiration;
+        _allowed[owner][permitSingle.details.token][permitSingle.spender] =
+            Allowed(permitSingle.details.amount, expiration);
         nonce[owner][permitSingle.details.token][permitSingle.spender] =
             permitSingle.details.nonce + 1;
     }
@@ -92,9 +115,10 @@ contract MockPermit2 is IPermit2 {
         uint160 amount,
         address token
     ) external override {
-        uint256 allowed = allowance[from][token][msg.sender];
-        if (allowed < amount) revert InsufficientPermitAllowance();
-        allowance[from][token][msg.sender] = allowed - amount;
+        Allowed storage a = _allowed[from][token][msg.sender];
+        if (block.timestamp > a.expiration) revert AllowanceExpired();
+        if (a.amount < amount) revert InsufficientPermitAllowance();
+        a.amount -= amount;
         // Mirrors real Permit2: pulls via its own ERC-20 allowance from `from`.
         IERC20(token).transferFrom(from, to, amount);
     }

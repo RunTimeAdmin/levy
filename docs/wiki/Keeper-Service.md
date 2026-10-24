@@ -55,7 +55,7 @@ Transactions are sent one at a time and each waits for its receipt, so nonces st
 
 PAST_DUE subscriptions are deliberately left out of the first query: after a failed pull, the dunning schedule owns the retries. The consequence is that a PAST_DUE subscription with no dunning row is never retried, which happens if the database is deleted and rebuilt from chain.
 
-A charge advances `nextChargeAt` by one cycle, not to "now". A subscription overdue by several cycles is therefore charged once per keeper cycle until it catches up.
+A charge normally advances `nextChargeAt` by one cycle from its stored value, so a late keeper keeps the billing date. After failed attempts, or when a whole cycle went by uncharged (a keeper outage), it moves to the payment time plus one cycle instead, so a successful charge never leaves the subscription due again: an overdue subscription is charged once, not once per missed cycle.
 
 ## What a charge call can produce
 

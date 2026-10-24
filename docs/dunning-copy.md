@@ -69,7 +69,7 @@ Subject: Your subscription is paused
 
 > Your subscription was paused after {n} failed payment attempts. No further charges will be attempted until it is resumed.
 >
-> To restart: top up USDC or approve more, then resume the subscription in your portal: {portal_url}. Billing restarts from the day you resume. Your merchant can also resume it for you.
+> To restart: top up USDC or approve more, then resume the subscription in your portal: {portal_url}. Billing restarts from the day you resume. Only you can resume it.
 
 ## 5. Successful retry
 
@@ -80,7 +80,7 @@ Subject: Your subscription payment went through
 
 > Your payment of {amount} USDC was collected successfully and the retry schedule is cleared.
 >
-> If more than one payment was missed, the next one is collected right away.
+> Your next payment is due one billing period from today. The days it was overdue are not charged.
 
 ## 6. Approval running low
 

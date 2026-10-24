@@ -2,7 +2,7 @@
 
 Adversarial read of `SubscriptionManager.sol` and `FeeRouter.sol` before any
 paid audit, plus a short section on the off-chain services. Goal: find
-problems, not confirm correctness. Last revised 2026-10-07.
+problems, not confirm correctness. Last revised 2026-10-24.
 
 ## 1. Access control
 
@@ -12,10 +12,11 @@ problems, not confirm correctness. Last revised 2026-10-07.
 | `subscribe(planId, ref)` | anyone, as themselves | OK: the subscriber is `msg.sender`. `ref` is chosen by the caller and public; see §7. |
 | `subscribeWithPermit2(planId, ref, permit, sig)` | the permit signer only | OK: the owner is `msg.sender`, so a relayer cannot pick the plan. See §6. |
 | `charge` | anyone | OK by design; see §4. |
-| `pause/resume/cancelSubscription` | subscriber or plan merchant | OK: `_onlySubscriberOrMerchant`. |
+| `pause/cancelSubscription` | subscriber or plan merchant | OK: `_onlySubscriberOrMerchant`. |
+| `resumeSubscription` | subscriber, or the merchant for a pause it made | OK since 2026-10-24 (M-1 in the 2026-10-24 review): resuming restarts billing against the subscriber's allowance, and the merchant could resume a subscriber's pause or an auto-pause. Now only a pause recorded in `pausedByMerchant`; otherwise `NotSubscriber`. |
 | `changePlan` | subscriber only, same-merchant plans only | OK: `msg.sender != sub.subscriber` reverts; a plan from another merchant reverts `DifferentMerchant`. The merchant cannot force-migrate. |
 | `FeeRouter.sweep` | anyone | OK: the destination is fixed to `treasury`. |
-| `FeeRouter.setTreasury` | current treasury only | OK. |
+| `FeeRouter.proposeTreasury` / `acceptTreasury` | current treasury proposes, the proposed address accepts | OK: two steps since 2026-10-24 (L-3), so a mistyped address never takes over. |
 
 No missing access control found. Plans are immutable (no edit function), so
 there is no repricing or merchant-swap attack.
@@ -94,9 +95,12 @@ recorded, and the contract spaces those on the dunning schedule (§3).
 
 - `treasury` is set at construction. `script/Deploy.s.sol` refuses a mainnet
   deploy unless it is a contract (the Safe from `ops/treasury-multisig.md`),
-  but `setTreasury` can later point it at any non-zero address, including an
-  EOA. If the treasury's keys are lost, `sweep()` still works (it is
-  permissionless) but sends to an address nobody controls.
+  but the treasury can later hand over to any non-zero address that accepts,
+  including an EOA. The handover takes two transactions since 2026-10-24
+  (`proposeTreasury`, then `acceptTreasury` from the new address), so a typo
+  can no longer send future fees to an address nobody controls. If the
+  treasury's keys are lost, `sweep()` still works (it is permissionless) but
+  sends to an address nobody controls.
 - `sweep()` with a zero balance emits `Swept(0)`; harmless.
 - The router cannot be paused or killed, and fee payments cannot get stuck:
   `subscribe`, `charge` and `changePlan` push the fee to the router in the same
@@ -120,10 +124,12 @@ recorded, and the contract spaces those on the dunning schedule (§3).
   almost at once.
   Removed 2026-09-25. Relaying could come back only with a second signature
   that binds the plan.
-- Open, low: anyone who sees the signed permit in the mempool can submit it to
-  Permit2 directly first, using up the nonce, so `subscribeWithPermit2`
-  reverts. No funds are lost (the allowance is still granted to Levy); the
-  subscriber can then call plain `subscribe`.
+- Fixed 2026-10-24 (L-2 in the 2026-10-24 review): anyone who sees the signed
+  permit in the mempool can submit it to Permit2 directly first, using up the
+  nonce, and `subscribeWithPermit2` reverted. No funds were lost. It now
+  catches the failed `permit()` and goes on when the subscriber's Permit2
+  allowance for Levy already covers one cycle of the plan and has not
+  expired; otherwise it re-throws Permit2's own error.
 - `_tryPull` tries the direct `transferFrom` first, then Permit2. A subscriber
   with both allowances spends the direct one first (tested). The first success
   returns, so there is no double spend.
@@ -228,6 +234,34 @@ recorded, and the contract spaces those on the dunning schedule (§3).
   exercised on the current manager" (S5 subscribed through it as #5). The
   soak host stays on `08991fa` until the soak ends; fixes land on `main` and
   deploy afterwards.
+- **Fourth external review (2026-10-24, `docs/REVIEW_2026-10-24.md`).**
+  Conditional go for mainnet once M-1 and M-2 were fixed. All of it was
+  checked against the code. Fixed as below; both contracts change, so the
+  fixes need a new deployment after the soak:
+  - M-1, a merchant could resume a pause the subscriber made, or an
+    auto-pause, and bill again at once. `pausedByMerchant` now records a
+    merchant's pause, the only kind the merchant may resume (§1). The
+    dashboard offers Resume only for those.
+  - M-2, after a run of failures `nextChargeAt` stayed in the past, so once
+    the subscriber's allowance or balance came back anyone could call
+    `charge()` repeatedly and pull every missed cycle in one block (on a
+    daily plan, one pull per missed day). A successful charge after failed
+    attempts now starts a fresh cycle at the payment, as resume does, and so
+    does one after a whole cycle passed with no charge at all.
+    `invariant_noBackToBackCharges` checks that a successful charge never
+    leaves the subscription chargeable; with the fix removed, the CI profile
+    (1000 x 40) fails it, the default 256 x 15 does not.
+  - L-2, the Permit2 nonce front-run (§6, open item 4).
+  - L-3, a single-step `setTreasury` (§5, open item 6).
+  - The `fast-uri` advisories (GHSA-w74x-v6f9-j3xg, GHSA-xhq7-xmqj-769h and
+    two later ones) and a low `fastify` advisory: the API lock file now has
+    fastify 5.12.7; `npm audit` is clean for both services.
+  Already in place, so no change: the keeper backs off charges that revert
+  (L-1, see §8); the checkout approves price times N cycles, not unlimited,
+  and the Permit2 script sets an expiry (L-4); CI runs the node tests on
+  Node 24 (the reviewer's Node 20 lacked `node:sqlite`; on Node 22.23 the
+  keeper's 56 and the API's 55 tests pass). Not done: paying the merchant by
+  withdrawal instead of a push (L-1, open item 5).
 
 **Open** (for the paid audit and M4):
 
@@ -237,10 +271,16 @@ recorded, and the contract spaces those on the dunning schedule (§3).
 2. CEI inverted in `_collect` callers, and unguarded pause/resume/cancel (§2).
    Safe with USDC; flag for the auditor.
 3. `changePlan` and resume both forgive an overdue cycle (economically the same
-   as cancel and resubscribe). Confirm this is the intended product behaviour.
-4. Permit nonce front-run makes `subscribeWithPermit2` revert (§6). Low.
+   as cancel and resubscribe), and since 2026-10-24 so does a charge that
+   recovers from failures. Decided 2026-10-24: forgiving is intended; a
+   recovery starts a fresh cycle instead of keeping the billing date.
+4. Fixed 2026-10-24: the permit nonce front-run no longer makes
+   `subscribeWithPermit2` revert (§6).
 5. A USDC-blocklisted merchant makes every charge for their plans revert (§8).
-6. `setTreasury` can move the treasury to an EOA after deploy (§5).
+   The 2026-10-24 review (L-1) suggests holding the merchant's share for
+   withdrawal instead of pushing it; not done.
+6. The treasury can still hand over to an EOA after deploy (§5). Since
+   2026-10-24 the handover is two-step, so a mistyped address cannot take it.
 7. Checkout: a second tab that connected before the first tab's broadcast
    does not stop at the pending record (the Go handler loads it but never
    checks `subscribeHash`), and the record expires after a day or is lost when

@@ -5,8 +5,8 @@ This page covers Levy's trust and threat model, the controls in the code, what t
 ## Trust model
 
 - **Anyone** can call `charge()` and `sweep()`, create plans and subscribe as themselves. They cannot pull anything but a subscriber's pre-approved USDC, send it anywhere but the plan's merchant and the FeeRouter, charge early, record failures faster than `retryGap`, or subscribe someone else.
-- **Merchants** control their own plans (immutable) and can pause, resume or cancel subscriptions on them. They cannot change a price, pull more than it, or move a subscriber to another merchant's plan. A merchant can resume a subscription its subscriber paused; the subscriber's recourse is to cancel or revoke the allowance.
-- **Subscribers** can pause, resume, cancel, switch to another plan of the same merchant and revoke the allowance at any time. They are never charged more than the plan price per cycle, or more than the allowance.
+- **Merchants** control their own plans (immutable) and can pause or cancel subscriptions on them, and resume a pause they made themselves. They cannot change a price, pull more than it, or move a subscriber to another merchant's plan. A merchant cannot resume a pause its subscriber made or a dunning auto-pause (`NotSubscriber`), so a subscriber's pause holds until the subscriber resumes. Before the fix for finding M-1 of the 2026-10-24 review, a merchant could resume either.
+- **Subscribers** can pause, resume (any pause), cancel, switch to another plan of the same merchant and revoke the allowance at any time. They are never charged more than the plan price per cycle, or more than the allowance.
 - **The keeper operator** holds a gas key and the webhook signing key and runs the database. The contracts give the keeper no role: it cannot take user funds or alter plans, only fail to charge or misreport.
 - **Arc, USDC and Permit2** are trusted external dependencies.
 
@@ -26,10 +26,12 @@ This page covers Levy's trust and threat model, the controls in the code, what t
 | `subscribe` | anyone, as themselves | `ref` is public and caller-chosen |
 | `subscribeWithPermit2` | the permit signer only | spender and token checked before `permit()` |
 | `charge` | anyone | see above |
-| `pauseSubscription`, `resumeSubscription`, `cancelSubscription` | subscriber or the plan's merchant | resume is a fresh start |
+| `pauseSubscription`, `cancelSubscription` | subscriber or the plan's merchant | a merchant pause sets `pausedByMerchant` |
+| `resumeSubscription` | subscriber; the plan's merchant only for its own pause | resume is a fresh start |
 | `changePlan` | subscriber only | same-merchant plans only |
 | `FeeRouter.sweep` | anyone | destination fixed to `treasury` |
-| `FeeRouter.setTreasury` | current treasury only | accepts any non-zero address |
+| `FeeRouter.proposeTreasury` | current treasury only | accepts any non-zero address; sets `pendingTreasury` |
+| `FeeRouter.acceptTreasury` | the pending treasury only | completes the move |
 
 The manager has no owner, admin function, pause switch or upgrade path. Plans are immutable, so there is no repricing attack after a subscriber approves; a new price means a new plan that the subscriber must choose with `changePlan`. The cost is that a bad deployment can only be replaced, and subscribers must approve again.
 
@@ -46,9 +48,9 @@ The earliest auto-pause is `1 + 3 + 7 x (2 x maxFailed - 3)` days after the firs
 ## External dependencies
 
 - **USDC blocklist.** If USDC blocklists a plan's merchant or the FeeRouter, the outgoing transfer reverts and so does the whole charge; the subscriber is not charged and the keeper backs off. Only a new plan fixes a blocked merchant, and since the FeeRouter is immutable in the manager, a blocked one would stop every charge that pulls USDC until a new deployment. A blocklisted subscriber just fails the pull and enters dunning.
-- **Treasury.** The deploy script refuses a mainnet deployment unless the treasury is a contract (a 2-of-3 Safe is planned, signers not yet set), but `setTreasury` can later move it to any non-zero address, including a plain key. If its keys are lost, `sweep()` still works but pays an address nobody controls, so verify every `TreasuryUpdated` event. On testnet the treasury is a plain key.
+- **Treasury.** The deploy script refuses a mainnet deployment unless the treasury is a contract (a 2-of-3 Safe is planned, signers not yet set), but the treasury can later move itself to any non-zero address, including a plain key: `proposeTreasury` from the current treasury, then `acceptTreasury` from the new one. The second step (added after finding L-3 of the 2026-10-24 review) means a mistyped address cannot take over the fees. If its keys are lost, `sweep()` still works but pays an address nobody controls, so verify every `TreasuryProposed` and `TreasuryUpdated` event. On testnet the treasury is a plain key.
 - **Deploy checks.** USDC and Permit2 must have code and USDC must report 6 decimals; on mainnet only the canonical addresses pass. Both become immutable.
-- **Permit2.** The signer is `msg.sender`, so a relayer cannot pick the plan (relaying was removed on 2026-09-25). Anyone who sees a signed permit can submit it to Permit2 first, making `subscribeWithPermit2` revert; no funds are lost and plain `subscribe` still works.
+- **Permit2.** The signer is `msg.sender`, so a relayer cannot pick the plan (relaying was removed on 2026-09-25). Anyone who sees a signed permit can submit it to Permit2 first and use up its nonce. `subscribeWithPermit2` then still subscribes when the subscriber's Permit2 allowance already covers one cycle and has not expired, and otherwise re-throws Permit2's error (fixed for finding L-2 of the 2026-10-24 review; before, it always reverted).
 - **`ref`.** Public and chosen by whoever subscribes, so a claim and not proof. Merchants should issue unguessable refs and track subscriptions by `subId`.
 
 ## API and pages
@@ -93,6 +95,7 @@ Docker images exclude `.env`, `*.pem` and `*.db`, and containers run as a non-ro
 | [External, 2026-09-25](https://github.com/RunTimeAdmin/levy/blob/main/docs/REVIEW_2026-09-25.md) | 0 critical, 1 high (H-1), 10 low, 9 info | H-1 fixed 2026-09-26; L-9 (session token in localStorage) fixed 2026-09-26 with an HttpOnly cookie, an Origin check and a CSP; L-10 (event not signed) fixed |
 | [External, 2026-10-02](https://github.com/RunTimeAdmin/levy/blob/main/docs/REVIEW_2026-10-02.md) | 10 findings | fixed: on-chain schedule, canonical mainnet addresses, exact checkout amounts, pending-transaction recovery, chain recheck. Open: keeper policy for uneconomic plans, verified merchant identity on the checkout, Permit2 checkout path and runway check, dunning rebuild after database loss. One finding (soak not started) was a status item |
 | [External, 2026-10-06](https://github.com/RunTimeAdmin/levy/blob/main/docs/REVIEW_2026-10-06.md), received 2026-10-07 | none needs a contract change | items 7 to 12 below confirmed and open; the rest raised again or not defects. Fixes land on `main` and deploy after the soak |
+| [Review, 2026-10-24](https://github.com/RunTimeAdmin/levy/blob/main/docs/REVIEW_2026-10-24.md) | 0 critical, 0 high, 2 medium, 4 low, 5 info | fixed 2026-10-24 with regression tests and the invariant `noBackToBackCharges`: M-1 (a merchant could resume the subscriber's pause or an auto-pause), M-2 (missed cycles pulled back to back after a PAST_DUE recovery), L-2 (Permit2 front-run) and L-3 (single-step treasury move). Not yet deployed |
 
 Two earlier testnet deployments, one without the H-1 fix and one with only a flat 1-day gap, were superseded and never used for billing. The soak started on 2026-10-07 on the current deployment. For the test suites and invariants see [Testing](Testing.md).
 
@@ -102,10 +105,10 @@ From `SECURITY_REVIEW.md` section 9, all before mainnet:
 
 1. Self-funded spam subscriptions cost the keeper a charge a day each, unbounded.
 2. CEI inverted; pause, resume and cancel unguarded (safe with USDC).
-3. `changePlan` and resume forgive an overdue cycle; confirm this is intended.
-4. A Permit2 nonce front-run makes `subscribeWithPermit2` revert.
+3. `changePlan`, resume, and (since the 2026-10-24 review) a charge after failures or after a whole skipped cycle forgive the overdue time; confirm this is intended.
+4. Fixed 2026-10-24: a Permit2 nonce front-run made `subscribeWithPermit2` revert. It now subscribes on the existing Permit2 allowance when that covers one cycle and has not expired (L-2 in the 2026-10-24 review).
 5. A USDC-blocklisted merchant makes its charges revert.
-6. `setTreasury` can move the treasury to a plain key.
+6. Narrowed 2026-10-24: the treasury move is two-step (`proposeTreasury`, then `acceptTreasury` from the new address), so a mistyped address cannot take over the fees (L-3 in the 2026-10-24 review). A plain key that accepts can still become the treasury.
 7. Checkout: a second pre-connected tab does not stop at a pending subscribe, and the pending record expires after a day.
 8. Portal top-up can add rounds twice after an unreadable approval receipt.
 9. Keeper replay after a crash can duplicate webhook deliveries and stamp failures with sync time.

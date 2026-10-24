@@ -17,17 +17,17 @@
     "name": "allowance",
     "inputs": [
       {
-        "name": "",
+        "name": "owner",
         "type": "address",
         "internalType": "address"
       },
       {
-        "name": "",
+        "name": "token",
         "type": "address",
         "internalType": "address"
       },
       {
-        "name": "",
+        "name": "spender",
         "type": "address",
         "internalType": "address"
       }
@@ -35,8 +35,18 @@
     "outputs": [
       {
         "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
+        "type": "uint160",
+        "internalType": "uint160"
+      },
+      {
+        "name": "",
+        "type": "uint48",
+        "internalType": "uint48"
+      },
+      {
+        "name": "",
+        "type": "uint48",
+        "internalType": "uint48"
       }
     ],
     "stateMutability": "view"
@@ -159,6 +169,11 @@
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "error",
+    "name": "AllowanceExpired",
+    "inputs": []
   },
   {
     "type": "error",

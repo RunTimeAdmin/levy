@@ -15,11 +15,15 @@ contract FeeRouter {
 
     IERC20 public immutable usdc;
     address public treasury;
+    /// @notice The treasury's proposed successor, until it accepts; zero when none.
+    address public pendingTreasury;
 
     event Swept(uint256 amount, address indexed treasury);
+    event TreasuryProposed(address indexed treasury, address indexed pendingTreasury);
     event TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury);
 
     error OnlyTreasury();
+    error OnlyPendingTreasury();
     error ZeroAddress();
 
     constructor(address _usdc, address _treasury) {
@@ -36,10 +40,22 @@ contract FeeRouter {
         emit Swept(balance, treasury);
     }
 
-    function setTreasury(address _treasury) external {
+    /// @notice Step one of moving the treasury: the current treasury proposes
+    ///         its successor, which takes over only once it calls
+    ///         acceptTreasury, so a mistyped address never receives the fees.
+    ///         Proposing again replaces the proposal.
+    function proposeTreasury(address _treasury) external {
         if (msg.sender != treasury) revert OnlyTreasury();
         if (_treasury == address(0)) revert ZeroAddress();
-        emit TreasuryUpdated(treasury, _treasury);
-        treasury = _treasury;
+        pendingTreasury = _treasury;
+        emit TreasuryProposed(treasury, _treasury);
+    }
+
+    /// @notice Step two: the proposed treasury takes over.
+    function acceptTreasury() external {
+        if (msg.sender != pendingTreasury) revert OnlyPendingTreasury();
+        emit TreasuryUpdated(treasury, msg.sender);
+        treasury = msg.sender;
+        delete pendingTreasury;
     }
 }

@@ -88,6 +88,11 @@ contract SubscriptionManager is ReentrancyGuard {
     /// @notice When the subscription's last failed charge was recorded; zero
     ///         when none has been since it started or was last resumed.
     mapping(uint256 => uint64) public lastFailedAt;
+    /// @notice True while the subscription is paused by its merchant, not by
+    ///         the subscriber or by dunning. A resume restarts billing against
+    ///         the subscriber's allowance, so the merchant may resume only a
+    ///         pause it made itself; the subscriber may resume any pause.
+    mapping(uint256 => bool) public pausedByMerchant;
 
     event PlanCreated(uint256 indexed planId, address indexed merchant, uint256 price, uint256 cycleSeconds);
     event Subscribed(
@@ -181,6 +186,10 @@ contract SubscriptionManager is ReentrancyGuard {
     ///      the first cycle at once.
     ///      The signed amount is the subscriber's choice; later charges simply
     ///      fail (and dunning handles it) once it runs out.
+    ///      Anyone who sees the signed permit can submit it to Permit2 first
+    ///      and use up its nonce. So a failed permit is not fatal while the
+    ///      subscriber's Permit2 allowance already covers one cycle and has
+    ///      not expired; otherwise Permit2's own error is re-thrown.
     function subscribeWithPermit2(
         uint256 planId,
         bytes32 ref,
@@ -189,7 +198,14 @@ contract SubscriptionManager is ReentrancyGuard {
     ) external nonReentrant returns (uint256 subId) {
         if (permitSingle.spender != address(this)) revert BadPermitSpender();
         if (permitSingle.details.token != address(usdc)) revert BadPermitToken();
-        permit2.permit(msg.sender, permitSingle, signature);
+        try permit2.permit(msg.sender, permitSingle, signature) {} catch (bytes memory reason) {
+            (uint160 amount, uint48 expiration, ) = permit2.allowance(msg.sender, address(usdc), address(this));
+            if (amount < plans[planId].price || expiration < block.timestamp) {
+                assembly ("memory-safe") {
+                    revert(add(reason, 32), mload(reason))
+                }
+            }
+        }
         return _subscribe(planId, msg.sender, ref);
     }
 
@@ -228,6 +244,11 @@ contract SubscriptionManager is ReentrancyGuard {
     /// @dev A failed pull is recorded for dunning instead of reverting, no
     ///      sooner than retryGap after the last recorded failure; a failing
     ///      call before that reverts RetryTooSoon and changes nothing.
+    ///      A successful pull after failed ones starts a fresh cycle now, as
+    ///      resume does, so the overdue time is forgiven, not billed; so is a
+    ///      cycle that ended with no charge at all. A successful charge
+    ///      therefore never leaves the next one already due, and missed
+    ///      cycles cannot be pulled back to back.
     function charge(uint256 subId) external nonReentrant {
         Subscription storage sub = subscriptions[subId];
         if (sub.subscriber == address(0)) revert UnknownSubscription();
@@ -245,7 +266,11 @@ contract SubscriptionManager is ReentrancyGuard {
             return;
         }
 
-        sub.nextChargeAt = sub.nextChargeAt + uint64(plan.cycleSeconds);
+        uint64 next = sub.nextChargeAt + uint64(plan.cycleSeconds);
+        if (sub.failedAttempts > 0 || next <= block.timestamp) {
+            next = uint64(block.timestamp) + uint64(plan.cycleSeconds);
+        }
+        sub.nextChargeAt = next;
         sub.failedAttempts = 0;
         if (sub.status == Status.TRIAL || sub.status == Status.PAST_DUE) {
             sub.status = Status.ACTIVE;
@@ -323,6 +348,7 @@ contract SubscriptionManager is ReentrancyGuard {
         _onlySubscriberOrMerchant(sub);
         if (sub.status == Status.PAUSED || sub.status == Status.CANCELLED) revert NotChargeable();
         sub.status = Status.PAUSED;
+        pausedByMerchant[subId] = msg.sender != sub.subscriber;
         emit Paused(subId);
     }
 
@@ -330,14 +356,17 @@ contract SubscriptionManager is ReentrancyGuard {
     ///         never billed: if the next charge date passed during the pause,
     ///         billing restarts now (an overdue cycle is forgiven, as with
     ///         changePlan). The failure count and the retry timer reset for a
-    ///         new dunning run.
+    ///         new dunning run. The subscriber can resume any pause; the
+    ///         merchant only its own (see pausedByMerchant).
     function resumeSubscription(uint256 subId) external {
         Subscription storage sub = subscriptions[subId];
         _onlySubscriberOrMerchant(sub);
         if (sub.status != Status.PAUSED) revert NotChargeable();
+        if (msg.sender != sub.subscriber && !pausedByMerchant[subId]) revert NotSubscriber();
         if (sub.nextChargeAt < block.timestamp) sub.nextChargeAt = uint64(block.timestamp);
         sub.failedAttempts = 0;
         delete lastFailedAt[subId];
+        delete pausedByMerchant[subId];
         sub.status = Status.ACTIVE;
         emit Resumed(subId);
     }

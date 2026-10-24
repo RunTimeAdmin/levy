@@ -63,9 +63,9 @@ Arc testnet, chain 5042002, deployed 2026-10-03 in block 65201372 from commit `0
 | FeeRouter | `0x4819975f4fa3a693ec67539bcb121eb06f280541` |
 | Deployer and treasury | `0xe305652DB35Ed45A567538438c9B29ede7097162` (testnet only) |
 
-Built with solc 0.8.33. `foundry.toml` does not pin the compiler, so another version gives a different metadata tail (`SECURITY_REVIEW.md` section 9, item 12). The source is not yet verified on the explorer. Two earlier testnet deployments (blocks 64020204 and 64031023) are superseded and were never used for billing; the README lists them.
+Built with solc 0.8.33. `foundry.toml` does not pin the compiler, so another version gives a different metadata tail (`SECURITY_REVIEW.md` section 9, item 12). The source is not yet verified on the explorer. Two earlier testnet deployments (blocks 64020204 and 64031023) are superseded and were never used for billing; the README lists them. This deployment predates the fixes from the 2026-10-24 review (merchant resume, the next charge date after failures, the Permit2 fallback, the two-step treasury move), so it keeps the old behavior, including a single-step `setTreasury`, until the next deployment.
 
-The contracts have no owner and no upgrade path; the only admin function is `FeeRouter.setTreasury`. A fix means a new deployment: new addresses in `ops/.env`, a fresh database, and new plans and subscriptions. The soak host did this twice and kept the old database aside each time.
+The contracts have no owner and no upgrade path; the only admin functions are the FeeRouter's two-step treasury move, `proposeTreasury` and `acceptTreasury`. A fix means a new deployment: new addresses in `ops/.env`, a fresh database, and new plans and subscriptions. The soak host did this twice and kept the old database aside each time.
 
 ## Keeper and API with Docker Compose
 
@@ -144,7 +144,7 @@ The 1% fee accrues in `FeeRouter` until anyone calls `sweep()`, which sends it t
 
 - **Before:** the Safe exists on chain 5042, every signer has proven they hold their key, and `getThreshold()` reads 2. SPEC.md records code at the canonical Safe v1.4.1 addresses on Arc mainnet (checked 2026-10-07, exact versions unverified), so confirm before relying on it.
 - **After:** `treasury()` returns the Safe, a `sweep()` lands USDC in it, and one real `charge()` plus a sweep delivers exactly the 1%.
-- **Later:** only the current treasury can call `setTreasury`, and it accepts any non-zero address, a plain key included. Treat every `TreasuryUpdated` event as something to verify.
+- **Later:** only the current treasury can call `proposeTreasury`, and it accepts any non-zero address, a plain key included; the new address takes over only when it calls `acceptTreasury`. Treat every `TreasuryProposed` and `TreasuryUpdated` event as something to verify.
 
 Before mainnet the README also requires a soak of at least a week (day 0 was 2026-10-07), Permit2 checked end to end on Arc, the open items in `SECURITY_REVIEW.md` section 9 dealt with, and an external audit. See [Security](Security.md).
 

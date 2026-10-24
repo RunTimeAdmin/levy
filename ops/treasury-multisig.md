@@ -36,22 +36,49 @@ a contract. So the order is: deploy the Safe, then deploy Levy with it.
 
 ## Changing the treasury later
 
-`setTreasury(address)` is guarded: **only the current treasury can call it**
-(`OnlyTreasury`), and it emits `TreasuryUpdated(oldTreasury, newTreasury)`.
+A move takes two transactions. `proposeTreasury(address)` is guarded: **only
+the current treasury can call it** (`OnlyTreasury`; the zero address reverts
+`ZeroAddress`). It stores the address as `pendingTreasury` and emits
+`TreasuryProposed(treasury, pendingTreasury)`; proposing again replaces the
+proposal. Nothing moves until **the proposed address itself** calls
+`acceptTreasury()` (anyone else reverts `OnlyPendingTreasury`), which emits
+`TreasuryUpdated(oldTreasury, newTreasury)` and clears `pendingTreasury`. A
+mistyped address can therefore never take over the fees.
 
-- **Replacing the Safe:** the Safe itself calls `setTreasury(<NEW_SAFE>)` as a
-  2-of-3 executed transaction.
-- **Testnet, or any deploy that started with a plain key** (allowed off
-  mainnet): the current key sends the call, e.g.
+- **Replacing the Safe:** the old Safe calls `proposeTreasury(<NEW_SAFE>)` as a
+  2-of-3 executed transaction, then the new Safe calls `acceptTreasury()` as one
+  of its own. In between, confirm the proposal:
 
   ```bash
-  cast send <FEEROUTER_ADDRESS> "setTreasury(address)" <SAFE_ADDRESS> \
+  cast call <FEEROUTER_ADDRESS> "pendingTreasury()(address)" --rpc-url $LEVY_RPC_URL
+  ```
+
+- **Testnet, or any deploy that started with a plain key** (allowed off
+  mainnet): the current key proposes, then the new treasury accepts, e.g.
+
+  ```bash
+  cast send <FEEROUTER_ADDRESS> "proposeTreasury(address)" <SAFE_ADDRESS> \
     --rpc-url $LEVY_RPC_URL --private-key <CURRENT_TREASURY_KEY>
   ```
 
-Note that `setTreasury` accepts any non-zero address, including a plain key, so
-the deploy-time check does not stop a later move away from the Safe. Treat any
-`TreasuryUpdated` event as something to verify.
+  then `<SAFE_ADDRESS>` executes `acceptTreasury()` as a Safe transaction. A
+  plain-key successor accepts with:
+
+  ```bash
+  cast send <FEEROUTER_ADDRESS> "acceptTreasury()" \
+    --rpc-url $LEVY_RPC_URL --private-key <NEW_TREASURY_KEY>
+  ```
+
+  The testnet FeeRouter deployed 2026-10-03 predates the two-step move and still
+  has the single-step `setTreasury(address)`.
+
+After the accept, `cast call <FEEROUTER_ADDRESS> "treasury()(address)"` returns the
+new address and `pendingTreasury()` returns zero.
+
+Note that `proposeTreasury` accepts any non-zero address, and a plain key that
+accepts becomes the treasury, so the deploy-time check does not stop a later
+move away from the Safe. Treat any `TreasuryProposed` or `TreasuryUpdated` event
+as something to verify.
 
 ## Notes
 

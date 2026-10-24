@@ -60,7 +60,7 @@ At every start the keeper calls `backfillAll()`: it reads `planCount` and `subCo
 | USDC `Transfer` | Insert into `usdc_transfers` | none |
 | USDC `Approval` to the manager | Mark the owner's `subscriber_funds` row stale | none |
 
-A refresh reads `subscriptions(subId)`, `plans(planId)` and `subscriptionRef(subId)` at the chain head and upserts the row, so it reflects chain state at sync time even if later events are still unread. A zero `ref` is stored as NULL. The webhook for each event is built after the refresh, using the merchant from the refreshed row. The `allowance.low` webhook is not a contract event; the keeper's allowance check queues it ([Keeper Service](Keeper-Service.md)). Payload fields are in [Webhooks](Webhooks.md).
+A refresh reads `subscriptions(subId)`, `plans(planId)` and `subscriptionRef(subId)` at the chain head, plus `pausedByMerchant(subId)` when the subscription is PAUSED, and upserts the row, so it reflects chain state at sync time even if later events are still unread. A zero `ref` is stored as NULL. The webhook for each event is built after the refresh, using the merchant from the refreshed row. The `allowance.low` webhook is not a contract event; the keeper's allowance check queues it ([Keeper Service](Keeper-Service.md)). Payload fields are in [Webhooks](Webhooks.md).
 
 ### Replay and duplicates
 
@@ -68,14 +68,14 @@ The cursor is saved after a chunk is handled, so a crash mid-chunk re-reads that
 
 ## Schema
 
-The schema is created with `CREATE TABLE IF NOT EXISTS` when the database opens. One migration exists: it adds `subscriptions.ref` to files created before that column. There are no foreign keys; tables relate by id. Address columns can differ in letter case between rows, so the queries that need it compare with `COLLATE NOCASE`.
+The schema is created with `CREATE TABLE IF NOT EXISTS` when the database opens. One migration exists: it adds `subscriptions.ref` and `subscriptions.pausedByMerchant` to files created before those columns. There are no foreign keys; tables relate by id. Address columns can differ in letter case between rows, so the queries that need it compare with `COLLATE NOCASE`.
 
 ### Chain mirror and billing records
 
 | Table | Key | Main columns | Purpose |
 |---|---|---|---|
 | `plans` | `planId` | `merchant`, `price`, `cycleSeconds`, `trialSeconds`, `maxFailed` | Mirror of the immutable plan registry, including plans nobody has joined. `graceSeconds` is not stored. |
-| `subscriptions` | `subId` | `subscriber`, `planId`, `merchant`, `price`, `cycleSeconds`, `status`, `nextChargeAt`, `failedAttempts`, `ref` | Each subscription with its plan terms. `status`: 0 TRIAL, 1 ACTIVE, 2 PAST_DUE, 3 PAUSED, 4 CANCELLED. `ref` is the merchant's bytes32 reference or NULL. |
+| `subscriptions` | `subId` | `subscriber`, `planId`, `merchant`, `price`, `cycleSeconds`, `status`, `nextChargeAt`, `failedAttempts`, `ref`, `pausedByMerchant` | Each subscription with its plan terms. `status`: 0 TRIAL, 1 ACTIVE, 2 PAST_DUE, 3 PAUSED, 4 CANCELLED. `ref` is the merchant's bytes32 reference or NULL. `pausedByMerchant` is 1 while the merchant's own pause holds the subscription (the only pause the merchant may resume), else 0. |
 | `charges` | `id`, unique (`txHash`, `chargeCount`) | `subId`, `amount`, `fee`, `invoiceRef`, `txHash`, `blockNumber`, `chargeCount` | One row per `Charged` event. These are the invoices. `amount` is 0 when proration credit covered the cycle. |
 | `charge_failures` | `id` | `subId`, `failedAttempts`, `txHash`, `blockNumber`, `at` | One row per `ChargeFailed` event. `at` is chain time when the log was indexed. |
 | `dunning` | `subId` | `attempts`, `nextRetryAt`, `updatedAt` | The open retry schedule. It exists from a failure until a charge succeeds, the subscription resumes, or the keeper finds the subscription no longer chargeable. |

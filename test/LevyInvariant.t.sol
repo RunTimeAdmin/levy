@@ -26,6 +26,7 @@ contract LevyHandler is Test {
     mapping(uint256 => uint256) public paid; // USDC pulled per subscription, summed from Charged
     mapping(uint256 => uint256) public lastFailureSeen; // from ChargeFailed; cleared on resume, as the contract does
     bool public failuresTooClose; // two recorded failures of one subscription closer than retryGap allows
+    bool public dueAfterCharge; // a successful charge() left its subscription chargeable
 
     constructor(MockUSDC _usdc, FeeRouter _router, SubscriptionManager _manager, address _treasury) {
         usdc = _usdc;
@@ -105,8 +106,16 @@ contract LevyHandler is Test {
         uint256 subId = subIds[subSeed % subIds.length];
         daysForward = bound(daysForward, 0, 60);
         vm.warp(block.timestamp + daysForward * 1 days);
+        _charge(subId);
+    }
+
+    function _charge(uint256 subId) internal {
+        (, , , , , , uint256 before, ) = manager.subscriptions(subId);
         vm.recordLogs();
-        try manager.charge(subId) {} catch {}
+        try manager.charge(subId) {
+            (, , , , , , uint256 count, ) = manager.subscriptions(subId);
+            if (count > before && manager.isChargeable(subId)) dueAfterCharge = true;
+        } catch {}
         _recordPaid();
     }
 
@@ -117,9 +126,7 @@ contract LevyHandler is Test {
         uint256 subId = subIds[subSeed % subIds.length];
         times = bound(times, 2, 4);
         for (uint256 i = 0; i < times; i++) {
-            vm.recordLogs();
-            try manager.charge(subId) {} catch {}
-            _recordPaid();
+            _charge(subId);
         }
     }
 
@@ -251,6 +258,12 @@ contract LevyInvariantTest is Test {
     ///         always spaced by the dunning schedule (retryGap: 1, 3, then 7 days).
     function invariant_failuresSpaced() public view {
         assertFalse(handler.failuresTooClose());
+    }
+
+    /// @notice A successful charge never leaves the next one already due, so
+    ///         missed cycles can never be pulled back to back (M-2, 2026-10-24 review).
+    function invariant_noBackToBackCharges() public view {
+        assertFalse(handler.dueAfterCharge());
     }
 
     /// @notice The manager never holds funds at rest: every pull is fully split.

@@ -223,8 +223,12 @@ const CONFIRM = {
   cancel: (id) => `Cancel subscription #${id}? This is final: it cannot be resumed, and time already paid for is not refunded on-chain.`,
 };
 
-function actionButtons(subId, status) {
-  return (ACTIONS[status] || []).map((a) =>
+// The contract lets a merchant resume only a pause it made itself; a pause by
+// the customer or after failed payments is the customer's to resume.
+function actionButtons(subId, status, pausedByMerchant) {
+  const customerPause = status === "paused" && !pausedByMerchant;
+  const actions = (ACTIONS[status] || []).filter((a) => !(customerPause && a === "resume"));
+  return (customerPause ? `<span class="muted">customer resumes</span> ` : "") + actions.map((a) =>
     `<button class="${a === "cancel" ? "danger" : "ghost"} small" data-act="${a}" data-sub="${subId}">${a[0].toUpperCase() + a.slice(1)}</button>`).join("");
 }
 
@@ -240,7 +244,7 @@ async function loadSubs(subsP) {
       <td>${s.nextChargeAtIso.slice(0, 10)}</td><td>${s.failedAttempts}</td>
       <td>${s.fundsLow === 1 ? pill(`low: ${s.cyclesCovered}`, "past_due")
            : s.cyclesCovered == null ? `<span class="muted">not checked</span>` : `${s.cyclesCovered} cycles`}</td>
-      <td><div class="actions-cell" data-actions="${s.subId}">${actionButtons(s.subId, s.statusName)}</div></td></tr>`).join("") +
+      <td><div class="actions-cell" data-actions="${s.subId}">${actionButtons(s.subId, s.statusName, s.pausedByMerchant === 1)}</div></td></tr>`).join("") +
     `</tbody></table>`;
   bindActions($("subs"));
 }
@@ -260,7 +264,7 @@ async function merchantAct(subId, action) {
     // The table refreshes from the keeper's index later; show the on-chain result now.
     const status = DONE[action];
     document.querySelector(`[data-pill="${subId}"]`).innerHTML = pill(status);
-    box.innerHTML = actionButtons(subId, status);
+    box.innerHTML = actionButtons(subId, status, action === "pause");
     bindActions(box);
     line($("subsStatus"), `Done: subscription #${subId} is ${status} on-chain.`, "ok");
   } catch (e) {

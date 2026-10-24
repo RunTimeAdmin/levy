@@ -8,7 +8,7 @@ Amounts are USDC with 6 decimals (1 USDC = 1,000,000 units). The pages show exac
 
 | Page | URL | For | Signs in | On-chain actions |
 |---|---|---|---|---|
-| Merchant dashboard | `/` | A merchant | Yes | `createPlan`, pause, resume, cancel |
+| Merchant dashboard | `/` | A merchant | Yes | `createPlan`, pause, resume (its own pause only), cancel |
 | Customer portal | `/portal.html` | A subscriber | Yes | pause, resume, cancel, `changePlan`, allowance top-up and revoke |
 | Checkout | `/checkout.html?plan=<id>&ref=<ref>` | Anyone with a merchant's link | No | `approve`, `subscribe` |
 
@@ -21,7 +21,7 @@ Dashboard and portal sign in with the wallet ([Authentication.md](Authentication
 | Create plan | Dashboard | `createPlan(price, cycleSeconds, trialSeconds, 0, maxFailed)` | Anyone; the sender becomes the plan's merchant |
 | Approve allowance | Checkout, portal | `approve(manager, total)` on the USDC contract | The USDC holder |
 | Subscribe | Checkout | `subscribe(planId, ref)` | The subscriber |
-| Pause, resume, cancel | Dashboard, portal | `pauseSubscription`, `resumeSubscription`, `cancelSubscription` | The subscriber or the plan's merchant |
+| Pause, resume, cancel | Dashboard, portal | `pauseSubscription`, `resumeSubscription`, `cancelSubscription` | The subscriber or the plan's merchant. The merchant can resume only a pause it made itself |
 | Change plan | Portal | `changePlan(subId, newPlanId)` | The subscriber only, to another plan of the same merchant, while trial, active or past due |
 
 The `graceSeconds` argument is informational on-chain and the pages send 0. Balance, allowance and the manager's `subscriptions(subId)` getter are read through the wallet as `eth_call`.
@@ -33,14 +33,14 @@ The `graceSeconds` argument is informational on-chain and the pages send 0. Bala
 - **Metric cards.** MRR, active subscriptions, charge success rate, dunning queue length, total collected, past due and paused counts.
 - **Plans.** The merchant's plans with price, trial, failed payments before past due, live subscriber count and a copyable checkout link. Adding `&ref=` and an id of up to 31 characters tags a customer.
 - **New plan.** Price in USDC (up to 6 decimals), cycle (daily, weekly, 30, 90 or 365 days, or custom from 1 to 3650), trial days (shorter than the cycle), failed payments before past due (1 to 255). A summary states what customers pay, that a subscription pauses after twice that many failures, and Levy's 1% share. Plans are immutable. The plan id comes from the `PlanCreated` log, and the page polls `/api/plans` every 5 seconds for up to 90 seconds until the keeper's index has the plan.
-- **Subscriptions.** Subscriber, reference (readable if ASCII, else shortened hex), plan, price, status, next charge, failed attempts and allowance runway (`low: N`, `N cycles` or `not checked`). Pause and Cancel while trial, active or past due; Resume and Cancel while paused; nothing once cancelled. Each asks for confirmation, then a signature, then updates its row at once; the rest follows the keeper's next sync.
+- **Subscriptions.** Subscriber, reference (readable if ASCII, else shortened hex), plan, price, status, next charge, failed attempts and allowance runway (`low: N`, `N cycles` or `not checked`). Pause and Cancel while trial, active or past due; Resume and Cancel while paused by the merchant (`pausedByMerchant` 1); a "customer resumes" label and Cancel while paused by the customer or after failed payments; nothing once cancelled. Each asks for confirmation, then a signature, then updates its row at once; the rest follows the keeper's next sync.
 - **Dunning queue.** Subscription, subscriber, attempts, next retry (UTC).
 - **Webhooks.** Endpoints with latest delivery status, a log of the last 20 deliveries, Enable or Disable (confirmed first, because queued deliveries are dropped) and Delete. Adding takes an https URL and the ten event types, all ticked by default. Limits are in [API-Reference.md](API-Reference.md).
 - **Invoices.** The latest 50 charges with explorer links. "Export CSV" fetches `/api/invoices?format=csv` with the session and saves `levy-invoices.csv`.
 
 ## Customer portal
 
-The allowance panel comes first, then one card per subscription: status, plan, price, next charge (none once cancelled), failed attempts, merchant and invoice history. Pause, Resume and Cancel follow the dashboard's rules. Cancel is final, and refunds are the merchant's decision off-chain. "Change plan" appears for trial, active and past due subscriptions when the merchant has another plan.
+The allowance panel comes first, then one card per subscription: status, plan, price, next charge (none once cancelled), failed attempts, merchant and invoice history. Pause, Resume and Cancel follow the dashboard's rules, except that Resume shows on every paused subscription, since the subscriber can resume any pause. Cancel is final, and refunds are the merchant's decision off-chain. "Change plan" appears for trial, active and past due subscriptions when the merchant has another plan.
 
 **Plan change quote.** Before the wallet is involved, the portal reads the subscription from the contract and applies the contract's own arithmetic: unused time on a paid cycle becomes credit, the new plan's first cycle is paid from credit first, and the rest is pulled now. The panel states what is due, what carries over and the next charge date, and keeps the switch button disabled if the allowance would not cover it. See [Plan-Changes-and-Proration.md](Plan-Changes-and-Proration.md).
 

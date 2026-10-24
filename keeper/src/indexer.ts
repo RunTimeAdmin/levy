@@ -2,7 +2,7 @@ import { decodeEventLog, parseAbiItem, toEventSelector } from "viem";
 import type { ChainClients } from "./chain.js";
 import { managerAbi } from "./chain.js";
 import type { LevyConfig } from "./config.js";
-import { LevyDb } from "./db.js";
+import { LevyDb, Status } from "./db.js";
 import { clearDunning, recordFailure } from "./dunning.js";
 import { buildWebhookEvents, type WebhookSink } from "./webhooks.js";
 
@@ -238,10 +238,12 @@ export class Indexer {
     // Plan: [merchant, price, cycleSeconds, trialSeconds, graceSeconds, maxFailed, exists]
     const sub = (await this.clients.manager.read.subscriptions([BigInt(subId)])) as any[];
     if (sub[0] === "0x0000000000000000000000000000000000000000") return;
-    const [plan, ref] = (await Promise.all([
+    const paused = Number(sub[7]) === Status.PAUSED;
+    const [plan, ref, pausedByMerchant] = (await Promise.all([
       this.clients.manager.read.plans([sub[1]]),
       this.clients.manager.read.subscriptionRef([BigInt(subId)]),
-    ])) as [any[], `0x${string}`];
+      paused ? this.clients.manager.read.pausedByMerchant([BigInt(subId)]) : false,
+    ])) as [any[], `0x${string}`, boolean];
     this.upsertPlan((sub[1] as bigint).toString(), plan);
     this.db.upsertSubscription({
       subId,
@@ -254,6 +256,7 @@ export class Indexer {
       nextChargeAt: Number(sub[3] as bigint),
       failedAttempts: Number(sub[4] as bigint),
       ref: /^0x0{64}$/.test(ref) ? null : ref,
+      pausedByMerchant: pausedByMerchant ? 1 : 0,
     });
   }
 

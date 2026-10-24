@@ -332,6 +332,7 @@ describe("data is scoped to the signed-in address", () => {
     assert.equal(r.status, 200);
     assert.deepEqual(r.json.map((s: any) => s.subId), ["1", "2"]);
     assert.deepEqual(r.json.map((s: any) => s.ref), [REF, null]); // the merchant's own reference
+    assert.deepEqual(r.json.map((s: any) => s.pausedByMerchant), [0, 0]); // the dashboard offers resume only at 1
 
     const s = await get(`/api/subscriptions?subscriber=${SUBSCRIBER}&status=2`, SUBSCRIBER);
     assert.deepEqual(s.json.map((x: any) => x.subId), ["2"]);

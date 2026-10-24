@@ -20,7 +20,7 @@ flowchart TD
     G -->|"Yes"| I["credit = 0, fee = due / 100, merchant gets due minus fee, FeeRouter gets fee"]
     E --> J["chargeCount plus 1, emit Charged"]
     I --> J
-    J --> K["nextChargeAt plus one cycle, failedAttempts = 0, TRIAL or PAST_DUE becomes ACTIVE"]
+    J --> K["nextChargeAt plus one cycle, or now plus one cycle after failures or a skipped cycle; failedAttempts = 0, TRIAL or PAST_DUE becomes ACTIVE"]
 ```
 
 1. **Preconditions.** The subscription must exist (`UnknownSubscription`), have status TRIAL, ACTIVE or PAST_DUE, and have reached `nextChargeAt` (the last two revert `NotChargeable`). A reverted call changes nothing.
@@ -28,9 +28,9 @@ flowchart TD
 3. **The pull.** `_tryPull` tries `usdc.transferFrom(subscriber, manager, due)` against the direct allowance, then falls back to Permit2 ([Permit2](Permit2.md)). If both fail, `_collect` returns false having changed nothing, credit included, and `charge` records a failure instead of reverting ([Dunning and Failures](Dunning-and-Failures.md)).
 4. **The 99/1 split.** Credit is set to zero, `fee = due / 100`, and the manager sends `due - fee` to the merchant and `fee` to the FeeRouter in the same transaction. If USDC refuses a payout (a blocklisted merchant, say), the whole charge reverts, no failure is recorded, and the keeper backs off.
 5. **Events.** `chargeCount` goes up by one and `Charged(subId, amount, fee, invoiceRef, chargeCount)` is emitted. `amount` is `due`, the tokens actually pulled, so it is 0 for a cycle paid from credit.
-6. **Advance.** `nextChargeAt` moves forward by one `cycleSeconds`, `failedAttempts` resets to 0, and TRIAL or PAST_DUE becomes ACTIVE.
+6. **Advance.** `nextChargeAt` moves forward by one `cycleSeconds` (or to now plus one cycle, below), `failedAttempts` resets to 0, and TRIAL or PAST_DUE becomes ACTIVE.
 
-Step 6 adds the cycle to the stored `nextChargeAt`, not to the current time. A late keeper does not shift the schedule, and a subscription several cycles behind needs one `charge` call per missed cycle to catch up.
+Step 6 normally adds the cycle to the stored `nextChargeAt`, not to the current time, so a late keeper does not shift the schedule. It starts a fresh cycle at the payment instead (now plus one cycle) in two cases: the charge follows failed attempts (`failedAttempts > 0`, which includes every PAST_DUE recovery), or one cycle after the stored date has already passed, meaning a whole cycle went by with no charge (a keeper outage, say). The overdue time is forgiven, the same way resume forgives paused time and `changePlan` forgives an overdue cycle. A successful charge therefore never leaves the next one already due, and missed cycles cannot be pulled back to back (invariant `noBackToBackCharges`).
 
 ## One routine, three entry points
 
@@ -93,11 +93,13 @@ It is not the merchant's `ref`. The `ref` is chosen by whoever calls `subscribe`
 | `usdc` | Immutable. The same token the manager uses. |
 | `treasury` | Where fees go. Set at construction, never zero. |
 | `sweep()` | Callable by anyone. Sends the router's whole USDC balance to `treasury` and emits `Swept(amount, treasury)`. An empty balance emits `Swept` with amount 0. |
-| `setTreasury(address)` | Callable only by the current treasury (`OnlyTreasury`). The new address cannot be zero (`ZeroAddress`). Emits `TreasuryUpdated(old, new)`. |
+| `pendingTreasury` | The proposed successor until it accepts; zero when none. |
+| `proposeTreasury(address)` | Callable only by the current treasury (`OnlyTreasury`). The address cannot be zero (`ZeroAddress`). Stores it as `pendingTreasury`, replacing any earlier proposal, and emits `TreasuryProposed(treasury, pendingTreasury)`. |
+| `acceptTreasury()` | Callable only by `pendingTreasury` (`OnlyPendingTreasury`). Makes the caller the treasury, clears `pendingTreasury` and emits `TreasuryUpdated(old, new)`. |
 
 Fees arrive in the same transaction as the pull they come from, so they cannot get stuck, and the router cannot be paused. `sweep` is safe to leave open because it can only pay `treasury`. Nothing sweeps on a schedule: the keeper never calls it, so an operator has to (the testnet soak sweeps by hand on day 7).
 
-The contract does not require the treasury to be a contract: `setTreasury` accepts any nonzero address, including a plain key. Only `script/Deploy.s.sol` checks more. On Arc mainnet (chain 5042) it refuses to deploy unless the treasury has code and USDC and Permit2 are the canonical Arc addresses, and on every chain it requires USDC to report 6 decimals. On testnet the treasury is the deployer's key. Treat every `TreasuryUpdated` event as something to verify. The mainnet plan is a Safe multisig ([ops/treasury-multisig.md](https://github.com/RunTimeAdmin/levy/blob/main/ops/treasury-multisig.md)).
+Moving the treasury takes both steps, so a mistyped address cannot take over the fees: it would have to call `acceptTreasury` itself. The contract still does not require the treasury to be a contract: `proposeTreasury` accepts any nonzero address, and a plain key that accepts becomes the treasury. Only `script/Deploy.s.sol` checks more. On Arc mainnet (chain 5042) it refuses to deploy unless the treasury has code and USDC and Permit2 are the canonical Arc addresses, and on every chain it requires USDC to report 6 decimals. On testnet the treasury is the deployer's key. Treat every `TreasuryProposed` and `TreasuryUpdated` event as something to verify. The mainnet plan is a Safe multisig ([ops/treasury-multisig.md](https://github.com/RunTimeAdmin/levy/blob/main/ops/treasury-multisig.md)).
 
 ## Money-math rules
 

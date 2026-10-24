@@ -45,7 +45,7 @@ The contract does not check the allowance size at subscribe. Later pulls simply 
 | `nextChargeAt` | start + `cycleSeconds` | start + `trialSeconds` |
 | If the pull fails | The whole call reverts `PaymentFailed` | Not applicable |
 
-With a trial, the first `charge` at trial end bills the first paid cycle, and `nextChargeAt` then advances by one cycle from the trial end.
+With a trial, the first `charge` at trial end bills the first paid cycle, and `nextChargeAt` then advances by one cycle from the trial end (from the payment instead, if that charge failed first).
 
 ## The merchant reference
 
@@ -85,17 +85,18 @@ flowchart TD
 |---|---|---|---|
 | `charge` | Anyone | `TRIAL`, `ACTIVE`, `PAST_DUE`, once `nextChargeAt` has passed | Success: `ACTIVE`. Failure: recorded, then `PAST_DUE` or `PAUSED` at the thresholds |
 | `pauseSubscription` | Subscriber or merchant | `TRIAL`, `ACTIVE`, `PAST_DUE` | `PAUSED` |
-| `resumeSubscription` | Subscriber or merchant | `PAUSED` | `ACTIVE` |
+| `resumeSubscription` | Subscriber, or the merchant if it made the pause | `PAUSED` | `ACTIVE` |
 | `cancelSubscription` | Subscriber or merchant | Any status but `CANCELLED` | `CANCELLED` |
 | `changePlan` | Subscriber | `TRIAL`, `ACTIVE`, `PAST_DUE` | `ACTIVE` on the new plan |
 
-A call from the wrong state reverts `NotChargeable`, and a stranger calling pause, resume or cancel reverts `NotSubscriberOrMerchant`. `changePlan` is not drawn above: it moves any chargeable state to `ACTIVE`.
+A call from the wrong state reverts `NotChargeable`, and a stranger calling pause, resume or cancel reverts `NotSubscriberOrMerchant`. A merchant resuming a pause it did not make reverts `NotSubscriber`. `changePlan` is not drawn above: it moves any chargeable state to `ACTIVE`.
 
-**Charging.** A successful `charge` clears `failedAttempts`, moves `TRIAL` or `PAST_DUE` to `ACTIVE`, and advances `nextChargeAt` by one cycle from its stored value, not from the current time. After an outage each missed cycle therefore needs its own `charge` call, and they are collectable back to back. Failures follow the dunning schedule. See [Charging and Fees](Charging-and-Fees.md).
+**Charging.** A successful `charge` clears `failedAttempts`, moves `TRIAL` or `PAST_DUE` to `ACTIVE`, and normally advances `nextChargeAt` by one cycle from its stored value, not from the current time, so a late keeper keeps the billing date. When the charge follows failed attempts, or one cycle after the stored date has already passed (an outage that skipped a whole cycle), `nextChargeAt` becomes the payment time plus one cycle instead: the overdue time is forgiven, as with resume. A successful charge therefore never leaves the next one already due, and missed cycles are never collected back to back. Failures follow the dunning schedule. See [Charging and Fees](Charging-and-Fees.md).
 
-**Pause.** Nothing but the status changes, and time already paid for keeps running. `nextChargeAt`, the failure count and credit stay as they were. Emits `Paused`.
+**Pause.** Nothing but the status changes (and `pausedByMerchant` records whether the merchant made the pause), and time already paid for keeps running. `nextChargeAt`, the failure count and credit stay as they were. Emits `Paused`.
 
 **Resume is a fresh start.**
+- The subscriber can resume any pause. The merchant can resume only one it made itself (`pausedByMerchant`), so a pause by the subscriber or a dunning auto-pause needs the subscriber. Resume clears `pausedByMerchant`.
 - If `nextChargeAt` passed during the pause it moves to the resume time. Paused cycles are never billed, and an overdue cycle is forgiven. One `charge` then bills a new cycle at once. If the date is still ahead, it is left alone.
 - `failedAttempts` resets to 0 and the retry timer (`lastFailedAt`) is cleared, so a still-unfunded subscription gets a full new dunning run.
 - The status is always `ACTIVE`, even if the pause began during a trial. `chargeCount` and `credit` are untouched.
