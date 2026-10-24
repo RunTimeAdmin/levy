@@ -69,9 +69,6 @@ mistyped address can therefore never take over the fees.
     --rpc-url $LEVY_RPC_URL --private-key <NEW_TREASURY_KEY>
   ```
 
-  The testnet FeeRouter deployed 2026-10-03 predates the two-step move and still
-  has the single-step `setTreasury(address)`.
-
 After the accept, `cast call <FEEROUTER_ADDRESS> "treasury()(address)"` returns the
 new address and `pendingTreasury()` returns zero.
 

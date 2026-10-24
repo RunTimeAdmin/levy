@@ -8,10 +8,10 @@ Amounts are USDC integers with 6 decimals (1 USDC = 1,000,000 units), moved thro
 
 | Contract | Arc testnet address (chain 5042002) |
 |---|---|
-| SubscriptionManager | `0x62a6512335d630ef19fcadb497adf98d883f77c6` |
-| FeeRouter | `0x4819975f4fa3a693ec67539bcb121eb06f280541` |
+| SubscriptionManager | `0xea24ac9c1217a671139d93225fdcf19ea3c4df4e` |
+| FeeRouter | `0x9e62309243da8be600a718a323fbbdfce00f3ce8` |
 
-Deployed 2026-10-03 in block 65201372, built with solc 0.8.33. The constants below were read back from the deployed manager. See [Deployment](Deployment.md) for the process.
+Deployed 2026-10-24 in blocks 68869601 and 68869602 from `54724d0`, built with solc 0.8.33. The constants below were read back from the deployed manager. See [Deployment](Deployment.md) for the process.
 
 ## How the pieces fit
 

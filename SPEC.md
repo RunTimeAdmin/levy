@@ -1,6 +1,6 @@
 # LEVY: Subscription Billing on Arc
 
-**Status:** living build doc, updated 2026-10-24. Contracts, keeper, API, merchant dashboard, customer portal and checkout are built and tested. The contracts are deployed on Arc testnet for the M4 soak (addresses in README, Deployments); nothing is on mainnet. The fixes from the 2026-10-24 review change both contracts, so they need a new deployment after the soak. Verified chain facts are in `VERIFICATION.md`.
+**Status:** living build doc, updated 2026-10-24. Contracts, keeper, API, merchant dashboard, customer portal and checkout are built and tested. The contracts are deployed on Arc testnet for the M4 soak (addresses in README, Deployments); nothing is on mainnet. Soak 1 ran from 2026-10-07 to 2026-10-24; the contracts with the fixes from the 2026-10-24 review were deployed that day for soak 2. Verified chain facts are in `VERIFICATION.md`.
 **One-liner:** Stripe Billing for Arc. Merchants create plans, subscribers approve a USDC allowance once, Levy pulls USDC every cycle with dunning, proration, webhooks and invoice records built in.
 
 ## Why this, why Arc, why now

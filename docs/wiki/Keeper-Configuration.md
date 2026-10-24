@@ -8,7 +8,7 @@ The keeper and the API are configured entirely through environment variables. Th
 |---|---|---|---|---|
 | `LEVY_RPC_URL` | no | `http://127.0.0.1:8545` | JSON-RPC endpoint for reads, log queries and charge transactions. The default is a local anvil node. | `https://rpc.testnet.arc.io` |
 | `LEVY_CHAIN_ID` | no | `5042` (Arc mainnet) | Chain id the keeper signs for. Set `5042002` for Arc testnet. | `5042002` |
-| `LEVY_MANAGER_ADDRESS` | yes | none | The SubscriptionManager contract. | `0x62a6512335d630ef19fcadb497adf98d883f77c6` (testnet) |
+| `LEVY_MANAGER_ADDRESS` | yes | none | The SubscriptionManager contract. | `0xea24ac9c1217a671139d93225fdcf19ea3c4df4e` (testnet) |
 | `LEVY_USDC_ADDRESS` | yes | none | USDC ERC-20 interface (6 decimals). Used for allowance and balance reads and for log filters. | `0x3600000000000000000000000000000000000000` |
 | `LEVY_KEEPER_KEY` | yes | none | Private key of the keeper account, `0x` plus 64 hex digits. | from your secret store |
 | `LEVY_POLL_MS` | no | `30000` | Pause between charge cycles, in ms. | `30000` |
@@ -28,7 +28,7 @@ For Arc testnet, the public values are:
 ```bash
 LEVY_RPC_URL=https://rpc.testnet.arc.io
 LEVY_CHAIN_ID=5042002
-LEVY_MANAGER_ADDRESS=0x62a6512335d630ef19fcadb497adf98d883f77c6
+LEVY_MANAGER_ADDRESS=0xea24ac9c1217a671139d93225fdcf19ea3c4df4e
 LEVY_USDC_ADDRESS=0x3600000000000000000000000000000000000000
 LEVY_KEEPER_KEY=0x<64 hex digits>
 ```

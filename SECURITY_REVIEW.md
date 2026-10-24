@@ -236,8 +236,8 @@ recorded, and the contract spaces those on the dunning schedule (§3).
   deploy afterwards.
 - **Fourth external review (2026-10-24, `docs/REVIEW_2026-10-24.md`).**
   Conditional go for mainnet once M-1 and M-2 were fixed. All of it was
-  checked against the code. Fixed as below; both contracts change, so the
-  fixes need a new deployment after the soak:
+  checked against the code. Fixed as below; both contracts change, and they
+  were deployed to Arc testnet on 2026-10-24 for soak 2:
   - M-1, a merchant could resume a pause the subscriber made, or an
     auto-pause, and bill again at once. `pausedByMerchant` now records a
     merchant's pause, the only kind the merchant may resume (§1). The

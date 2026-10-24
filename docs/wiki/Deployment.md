@@ -55,15 +55,15 @@ The script prints the FeeRouter address, the treasury, a block number (the keepe
 
 ## Current testnet deployment
 
-Arc testnet, chain 5042002, deployed 2026-10-03 in block 65201372 from commit `08991fa`. `retryGap` reads 1, 3 and 7 days.
+Arc testnet, chain 5042002, deployed 2026-10-24 in blocks 68869601 and 68869602 from commit `54724d0`, with the fixes from the 2026-10-24 review. `retryGap` reads 1, 3 and 7 days. The deploy used 4.12M gas at 25 gwei, about 0.10 USDC.
 
 | Contract | Address |
 |---|---|
-| SubscriptionManager | `0x62a6512335d630ef19fcadb497adf98d883f77c6` |
-| FeeRouter | `0x4819975f4fa3a693ec67539bcb121eb06f280541` |
+| SubscriptionManager | `0xea24ac9c1217a671139d93225fdcf19ea3c4df4e` |
+| FeeRouter | `0x9e62309243da8be600a718a323fbbdfce00f3ce8` |
 | Deployer and treasury | `0xe305652DB35Ed45A567538438c9B29ede7097162` (testnet only) |
 
-Built with solc 0.8.33. `foundry.toml` does not pin the compiler, so another version gives a different metadata tail (`SECURITY_REVIEW.md` section 9, item 12). The source is not yet verified on the explorer. Two earlier testnet deployments (blocks 64020204 and 64031023) are superseded and were never used for billing; the README lists them. This deployment predates the fixes from the 2026-10-24 review (merchant resume, the next charge date after failures, the Permit2 fallback, the two-step treasury move), so it keeps the old behavior, including a single-step `setTreasury`, until the next deployment.
+Built with solc 0.8.33. `foundry.toml` does not pin the compiler, so another version gives a different metadata tail (`SECURITY_REVIEW.md` section 9, item 12). The source is not yet verified on the explorer. The deployment of 2026-10-03 (block 65201372, SubscriptionManager `0x62a6512335d630ef19fcadb497adf98d883f77c6`, commit `08991fa`) ran soak 1 and is retired: it predates the 2026-10-24 fixes, including the two-step treasury move. Two earlier testnet deployments (blocks 64020204 and 64031023) are superseded and were never used for billing; the README lists them all.
 
 The contracts have no owner and no upgrade path; the only admin functions are the FeeRouter's two-step treasury move, `proposeTreasury` and `acceptTreasury`. A fix means a new deployment: new addresses in `ops/.env`, a fresh database, and new plans and subscriptions. The soak host did this twice and kept the old database aside each time.
 

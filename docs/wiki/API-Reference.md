@@ -22,7 +22,7 @@ The Levy API is a Fastify server that reads the keeper's SQLite database and ser
 Testnet `/api/config` today:
 
 ```json
-{"chainId":5042002,"managerAddress":"0x62a6512335d630ef19fcadb497adf98d883f77c6","usdcAddress":"0x3600000000000000000000000000000000000000"}
+{"chainId":5042002,"managerAddress":"0xea24ac9c1217a671139d93225fdcf19ea3c4df4e","usdcAddress":"0x3600000000000000000000000000000000000000"}
 ```
 
 ## Auth routes

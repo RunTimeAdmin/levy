@@ -142,22 +142,23 @@ forge script script/Deploy.s.sol --rpc-url arc_testnet --broadcast # deploy
 
 On Windows, `script/deploy-testnet.ps1` does the testnet broadcast for you: it asks for the deployer's key without echoing it, checks that the key belongs to the address you give and that the wallet holds enough USDC, and clears the key when forge exits.
 
-Use `--rpc-url arc_mainnet` for mainnet, and add `--legacy` if fee estimation fails. `LEVY_USDC` and `LEVY_PERMIT2` override the defaults on testnet; on mainnet the script accepts only the canonical USDC and Permit2. The current testnet deploy used 3.79M gas at 29.7 gwei, about 0.11 USDC (2026-10-03). Broadcast records land in `broadcast/`; commit the testnet and mainnet ones as the deployment record. If the keeper first starts more than `LEVY_LOOKBACK_BLOCKS` (default 5000, about 40 minutes) after the deploy, raise it to reach back to the deploy block.
+Use `--rpc-url arc_mainnet` for mainnet, and add `--legacy` if fee estimation fails. `LEVY_USDC` and `LEVY_PERMIT2` override the defaults on testnet; on mainnet the script accepts only the canonical USDC and Permit2. The current testnet deploy used 4.12M gas at 25 gwei, about 0.10 USDC (2026-10-24). Broadcast records land in `broadcast/`; commit the testnet and mainnet ones as the deployment record. If the keeper first starts more than `LEVY_LOOKBACK_BLOCKS` (default 5000, about 40 minutes) after the deploy, raise it to reach back to the deploy block.
 
 To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --build` (copy `ops/.env.example` first; `LEVY_PUBLIC_ORIGIN` is required). The API is published on the host's loopback only; put a TLS reverse proxy in front (`ops/nginx-app.conf.example` is the nginx site the testnet host uses). `ops/keeper.service` is the systemd alternative for the keeper.
 
 ## Deployments
 
-**Arc testnet** (chain 5042002), deployed 2026-10-03 in block 65201372 from `08991fa`, which enforces the dunning schedule on-chain (`retryGap`; `SECURITY_REVIEW.md` §9). The record is `broadcast/Deploy.s.sol/5042002/run-1790987718240.json` (also `run-latest.json`).
+**Arc testnet** (chain 5042002), deployed 2026-10-24 in blocks 68869601 and 68869602 from `54724d0`, which has the fixes from the 2026-10-24 review (merchant resume, the next charge date after failures, the Permit2 fallback, the two-step treasury move; `SECURITY_REVIEW.md` §9). The record is `broadcast/Deploy.s.sol/5042002/run-1792849705649.json` (also `run-latest.json`).
 
 | Contract | Address | Transaction |
 |---|---|---|
-| SubscriptionManager | `0x62a6512335d630ef19fcadb497adf98d883f77c6` | `0x10c796c8dcb1be605a979792db25104f94fc4f11e39618cb91af64721de23a4c` |
-| FeeRouter | `0x4819975f4fa3a693ec67539bcb121eb06f280541` | `0x390f2308baa57fd862ccb34a45b39c0c85d527077eff16b63aba8b97ee74f0c4` |
+| SubscriptionManager | `0xea24ac9c1217a671139d93225fdcf19ea3c4df4e` | `0xa4b003da02c4631e8d1921a1f754183eba2eb047ee15cf477b1296dbbb1e730a` |
+| FeeRouter | `0x9e62309243da8be600a718a323fbbdfce00f3ce8` | `0x0cd9161275c616ecd3d19f977558ffdd3b544ba10a558b0ae180805ab79106a0` |
 
 - Deployer and treasury: `0xe305652DB35Ed45A567538438c9B29ede7097162` (testnet only; mainnet uses the Safe).
-- Code: built with solc 0.8.33 from the sources at `08991fa`, the runtime bytecode of both contracts matches the chain byte for byte outside the constructor-set immutables, build metadata included. A different solc version gives a different metadata tail (`foundry.toml` does not pin one yet; `SECURITY_REVIEW.md` §9, item 12). `retryGap` reads 1, 3 and 7 days on-chain. Source is not yet verified on the explorer. It predates the fixes from the 2026-10-24 review (merchant resume, the next charge date after failures, the Permit2 fallback, the two-step treasury move), which take effect at the next deployment.
-- Soak host: keeper and API at `https://app.getlevy.xyz`.
+- Code: built with solc 0.8.33 from the sources at `54724d0`, the runtime bytecode of both contracts matches the chain byte for byte outside the constructor-set immutables, build metadata included. A different solc version gives a different metadata tail (`foundry.toml` does not pin one yet; `SECURITY_REVIEW.md` §9, item 12). `retryGap` reads 1, 3 and 7 days on-chain. Source is not yet verified on the explorer.
+- Soak host: keeper and API at `https://app.getlevy.xyz`, running soak 2 (`ops/testnet-soak.md`).
+- **Retired** after soak 1 (`ops/testnet-soak-1.md`, 2026-10-07 to 2026-10-24, 58 charges): 2026-10-03, block 65201372 (SubscriptionManager `0x62a6512335d630ef19fcadb497adf98d883f77c6`, FeeRouter `0x4819975f4fa3a693ec67539bcb121eb06f280541`, record `run-1790987718240.json`, code `08991fa`). It predates the 2026-10-24 fixes. The keeper no longer charges it and its fees were swept on 2026-10-24; its subscriptions keep whatever allowance their wallets left on it.
 - **Superseded**, never used for billing, and nothing points at them:
   - 2026-09-26, block 64031023 (SubscriptionManager `0x33c8e7e46583bdfd2e001f55ac1c58bd84eb739f`, FeeRouter `0xa6efee5f5a2eb2afae102f790b4889fcc01fe848`, record `run-1790390636694.json`, code `08dd7b7`; the record itself says `58ed3ba`, the head when forge ran before the fix was committed): recorded failures only a day apart, so a caller could pause a subscription on day 3 instead of day 11 (finding 2 of the 2026-10-02 review). No plan or subscription was ever created on it.
   - 2026-09-26, block 64020204 (SubscriptionManager `0x9df75ab83bde215f773af982af95b00646318189`, FeeRouter `0x79c6bb4030c688e64efdd2d33f0178e63fdf0b9f`, record `run-1790385119083.json`): predates the H-1 fix.

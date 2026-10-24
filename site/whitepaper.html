@@ -90,7 +90,7 @@
   <p class="lede">How Levy collects recurring payments from a one-time USDC allowance, what the contract guarantees to customers and merchants, and what it does not.</p>
 
   <div class="status">
-    <p><strong>Status.</strong> Everything described here is built and tested, and the contracts have been on Arc testnet since 26 September 2026. The current deployment, from 3 October 2026, is the one the week-long soak runs on (Appendix D). Nothing is on mainnet and nothing is audited yet. The paper describes the contracts as of commit <code>08991fa</code>, which is the code deployed, and the services as of the same commit. Figures from our own measurements say how they were taken.</p>
+    <p><strong>Status.</strong> Everything described here is built and tested, and the contracts have been on Arc testnet since 26 September 2026. The current deployment, from 24 October 2026, is the one the second week-long soak runs on (Appendix D). Nothing is on mainnet and nothing is audited yet. The paper describes the contracts as of commit <code>54724d0</code>, which is the code deployed, and the services as of the same commit. Figures from our own measurements say how they were taken.</p>
   </div>
 
   <p class="pdf-link"><a href="levy-whitepaper.pdf">Download this paper as a PDF</a></p>
@@ -575,7 +575,7 @@ credit = credit + floor(price_old * r / cycle_old)</div>
 
   <!-- 10 -->
   <h2 id="roadmap">10. Roadmap and future work</h2>
-  <p>The contracts, keeper, API, dashboard, portal and checkout are built, and the contracts have been live on Arc testnet since 26 September 2026, the current ones since 3 October 2026. What remains before real money flows:</p>
+  <p>The contracts, keeper, API, dashboard, portal and checkout are built, and the contracts have been live on Arc testnet since 26 September 2026, the current ones since 24 October 2026. What remains before real money flows:</p>
   <ol>
     <li><strong>A soak of at least a week on the testnet deployment,</strong> running real billing cycles end to end: trials, failed payments through to auto-pause, pause and resume, cancellation, plan changes with credit, and the Permit2 path against Arc's own Permit2.</li>
     <li><strong>An external audit</strong> of the contracts, with the open items in &sect;6.8 and the exposure bound in &sect;6.2 in scope.</li>
@@ -656,10 +656,10 @@ credit = credit + floor(price_old * r / cycle_old)</div>
   <div class="table-wrap"><table>
     <thead><tr><th>Contract</th><th>Address</th></tr></thead>
     <tbody>
-      <tr><td>SubscriptionManager</td><td><a href="https://explorer.testnet.arc.io/address/0x62a6512335d630ef19fcadb497adf98d883f77c6"><code>0x62a6512335d630ef19fcadb497adf98d883f77c6</code></a></td></tr>
-      <tr><td>FeeRouter</td><td><a href="https://explorer.testnet.arc.io/address/0x4819975f4fa3a693ec67539bcb121eb06f280541"><code>0x4819975f4fa3a693ec67539bcb121eb06f280541</code></a></td></tr>
+      <tr><td>SubscriptionManager</td><td><a href="https://explorer.testnet.arc.io/address/0xea24ac9c1217a671139d93225fdcf19ea3c4df4e"><code>0xea24ac9c1217a671139d93225fdcf19ea3c4df4e</code></a></td></tr>
+      <tr><td>FeeRouter</td><td><a href="https://explorer.testnet.arc.io/address/0x9e62309243da8be600a718a323fbbdfce00f3ce8"><code>0x9e62309243da8be600a718a323fbbdfce00f3ce8</code></a></td></tr>
     </tbody>
-    <caption>Arc testnet (chain 5042002), deployed on 3 October 2026 in block 65201372. The runtime bytecode of both contracts matches a build of the contract sources at commit <code>08991fa</code>, apart from the addresses set at construction. On testnet the fee treasury is the deploying wallet; on mainnet it will be a Safe multisig. Two earlier deployments on 26 September 2026, in blocks 64020204 and 64031023, predate the fixes in &sect;6.8 and are not used.</caption>
+    <caption>Arc testnet (chain 5042002), deployed on 24 October 2026 in blocks 68869601 and 68869602. The runtime bytecode of both contracts matches a build of the contract sources at commit <code>54724d0</code>, apart from the addresses set at construction. On testnet the fee treasury is the deploying wallet; on mainnet it will be a Safe multisig. The deployment of 3 October 2026 (block 65201372) ran the first testnet soak and predates the 24 October fixes in &sect;6.8; two earlier deployments on 26 September 2026, in blocks 64020204 and 64031023, predate the fixes before that. None of them is used.</caption>
   </table></div>
 
   <h2 id="references">References</h2>

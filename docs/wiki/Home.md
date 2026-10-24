@@ -2,7 +2,7 @@
 
 Levy is pull-based USDC subscription billing on Arc. A merchant creates a plan, a subscriber approves a USDC allowance once, and a keeper triggers each cycle's payment. The protocol keeps 1% of every collected payment and sends the rest to the merchant.
 
-> **Status.** Levy runs on Arc testnet only. Nothing is on mainnet and nothing is audited. The week-long testnet soak started on 2026-10-07. Current contracts: SubscriptionManager `0x62a6512335d630ef19fcadb497adf98d883f77c6` and FeeRouter `0x4819975f4fa3a693ec67539bcb121eb06f280541` (deployed 2026-10-03). See [Deployment](Deployment.md) and [Security](Security.md).
+> **Status.** Levy runs on Arc testnet only. Nothing is on mainnet and nothing is audited. The first testnet soak ran from 2026-10-07 to 2026-10-24; the second runs against the contracts deployed on 2026-10-24 with the fixes from that day's review. Current contracts: SubscriptionManager `0xea24ac9c1217a671139d93225fdcf19ea3c4df4e` and FeeRouter `0x9e62309243da8be600a718a323fbbdfce00f3ce8`. See [Deployment](Deployment.md) and [Security](Security.md).
 
 ## How it works
 

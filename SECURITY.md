@@ -16,7 +16,7 @@ Please keep it private until it is fixed or we have agreed a date to publish tog
 
 ## Scope
 
-- The Levy contracts on Arc testnet, `SubscriptionManager` `0x62a6512335d630ef19fcadb497adf98d883f77c6` and `FeeRouter` `0x4819975f4fa3a693ec67539bcb121eb06f280541`, and the mainnet contracts once they are deployed.
+- The Levy contracts on Arc testnet, `SubscriptionManager` `0xea24ac9c1217a671139d93225fdcf19ea3c4df4e` and `FeeRouter` `0x9e62309243da8be600a718a323fbbdfce00f3ce8`, and the mainnet contracts once they are deployed.
 - The app at app.getlevy.xyz: the API, merchant dashboard, customer portal and checkout.
 - The keeper: charging, dunning, and the signing and delivery of webhooks.
 - The website, getlevy.xyz.
