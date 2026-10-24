@@ -291,7 +291,7 @@ async function loadHooks(m) {
   const rows = await Promise.all(hooks.map(async (h) => {
     const del = await api(`/api/deliveries?webhookId=${h.id}&limit=1`).catch(() => []);
     const last = del[0];
-    return `<tr><td class="url-cell" title="${esc(h.url)}">${esc(h.url)}</td>
+    return `<tr><td>${Number(h.id)}</td><td class="url-cell" title="${esc(h.url)}">${esc(h.url)}</td>
       <td title="${esc(h.events.join(", "))}">${h.events.length === EVENTS.length ? "all events" : `${h.events.length} events`}</td>
       <td>${h.active ? "on" : "off"}</td>
       <td>${last ? `${pill(last.status)} ${esc(last.event_type)}` : `<span class="muted">none</span>`}</td>
@@ -300,7 +300,7 @@ async function loadHooks(m) {
       <button class="danger small" data-del="${h.id}">Delete</button></div></td></tr>`;
   }));
   $("hooks").innerHTML = `<table><thead><tr>
-    <th>URL</th><th>Events</th><th>Active</th><th>Last delivery</th><th></th></tr></thead>
+    <th title="Your receiver checks signatures against this id (X-Levy-Webhook)">ID</th><th>URL</th><th>Events</th><th>Active</th><th>Last delivery</th><th></th></tr></thead>
     <tbody>${rows.join("")}</tbody></table>`;
   $("hooks").querySelectorAll("[data-log]").forEach(b => b.onclick = () => toggleLog(b));
   $("hooks").querySelectorAll("[data-toggle]").forEach(b => b.onclick = async () => {

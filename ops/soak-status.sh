@@ -47,18 +47,25 @@ if not os.path.exists(path):
     print("no deliveries received yet")
     sys.exit(0)
 rows = [json.loads(l) for l in open(path) if l.strip()]
+# The endpoint is public: only signed deliveries count as evidence. Unsigned
+# requests are reported, never counted towards the events or redeliveries.
+good = [r for r in rows if r.get("sigValid")]
 bad = [r for r in rows if not r.get("sigValid")]
-stale = [r for r in rows if not r.get("fresh")]
-dups = [r for r in rows if r.get("duplicate")]
+stale = [r for r in good if not r.get("fresh")]
+dups = [r for r in good if r.get("duplicate")]
+other = [r for r in good if r.get("merchantOk") is False]
 seen = {}
-for r in rows:
+for r in good:
     seen[r.get("event")] = seen.get(r.get("event"), 0) + 1
-print(f"received {len(rows)}: signature invalid {len(bad)}, outside the 5-minute window {len(stale)}, redelivered {len(dups)}")
+print(f"signed deliveries {len(good)}: outside the 5-minute window {len(stale)}, redelivered {len(dups)}, naming another merchant {len(other)}")
+print(f"unsigned or invalid requests: {len(bad)} (not counted below)")
 print("by event: " + ", ".join(f"{e} {n}" for e, n in sorted(seen.items(), key=lambda x: str(x[0]))))
 missing = [e for e in events if e not in seen]
 print("not seen yet: " + (", ".join(missing) if missing else "none, all ten received"))
-for r in bad:
+for r in bad[-5:]:
     print(f"! INVALID SIGNATURE: delivery {r.get('delivery')} ({r.get('event')}) at {r.get('receivedAt')}")
+if len(bad) > 5:
+    print(f"  ... and {len(bad) - 5} more")
 PY
 
 echo

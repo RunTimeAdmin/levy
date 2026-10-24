@@ -64,7 +64,7 @@ The earliest auto-pause is `1 + 3 + 7 x (2 x maxFailed - 3)` days after the firs
 ## Webhooks
 
 - **URL guard.** https on port 443, no credentials, public addresses only: loopback, private, link-local, carrier-grade NAT, multicast and reserved IPv4 ranges are refused and IPv6 must be global unicast. The check runs at registration and again at connect time, so DNS rebinding does not help. Redirects are never followed, requests time out after 5 seconds, and a merchant may register 5 endpoints.
-- **Signatures.** Ed25519 over `{timestamp}.{deliveryId}.{event}.{body}`. Receivers should reject timestamps more than 5 minutes off, drop delivery ids they have seen and reject unknown event types: event names contain dots, so signing the event closes a re-splitting attack (finding L-10). See [Webhooks](Webhooks.md).
+- **Signatures.** Ed25519 over `{timestamp}.{deliveryId}.{webhookId}.{event}.{body}`. Receivers should reject timestamps more than 5 minutes off, drop delivery ids they have seen, reject unknown event types and malformed delivery ids (event names contain dots, so signing the event closes a re-splitting attack, finding L-10), verify against their own webhook id, and check that `merchant` is their address. One key signs for every merchant, so the webhook id is what stops a delivery made for one merchant's endpoint being forwarded to another's (H-1, 2026-10-24 infrastructure review). Delivery ids carry a random prefix fixed per database, so a recreated database never repeats one (M-3). See [Webhooks](Webhooks.md).
 - **Isolation.** Delivery has its own loop, so a hanging endpoint cannot stall charging. Failures are stored only as coarse reasons (`HTTP 500`, `timeout after 5s`, `connection failed`, `refused: ...`).
 
 ## Key handling

@@ -9,6 +9,7 @@ import { LevyDb } from "../src/db.js";
 import {
   buildWebhookEvents,
   canonicalJson,
+  DELIVERY_ID_RE,
   keyId,
   loadSigningKey,
   nextRetryAt,
@@ -231,6 +232,25 @@ describe("WebhookDispatcher", () => {
     assert.deepEqual(capped, [a, b, a]);
     db.close();
   });
+
+  it("never repeats a delivery id after the database is recreated", () => {
+    // Row ids restart at 1 in a fresh database while the signing key stays the
+    // same, so receivers that store ids would drop new events (M-3, 2026-10-24
+    // infrastructure review). The epoch part differs; it also survives a reopen.
+    const key = testKey();
+    const path = join(tmp, "epoch.db");
+    const first = new LevyDb(path);
+    const id1 = new WebhookDispatcher(first, key).deliveryId(1);
+    first.close();
+    const reopened = new LevyDb(path);
+    assert.equal(new WebhookDispatcher(reopened, key).deliveryId(1), id1);
+    reopened.close();
+    const fresh = testDb();
+    const id2 = new WebhookDispatcher(fresh, key).deliveryId(1);
+    fresh.close();
+    assert.match(id1, DELIVERY_ID_RE);
+    assert.notEqual(id1, id2);
+  });
 });
 
 describe("dispatchDue (live HTTP)", () => {
@@ -265,7 +285,7 @@ describe("dispatchDue (live HTTP)", () => {
     const db = testDb();
     const key = testKey();
     const d = new WebhookDispatcher(db, key, LOCAL);
-    d.register(MERCHANT, `http://127.0.0.1:${port}/hook`, ["charge.succeeded"], 1000);
+    const hookId = d.register(MERCHANT, `http://127.0.0.1:${port}/hook`, ["charge.succeeded"], 1000);
     d.enqueue("charge.succeeded", MERCHANT, { subId: "9", amount: "500" }, 1000);
 
     const out = await d.dispatchDue(1000);
@@ -274,16 +294,23 @@ describe("dispatchDue (live HTTP)", () => {
     const [r] = received;
     assert.equal(r.headers["x-levy-event"], "charge.succeeded");
     assert.equal(r.headers["x-levy-key-id"], keyId(key));
+    assert.equal(r.headers["x-levy-webhook"], String(hookId));
     // The delivery must verify against the published public key, and the
-    // signature must cover the timestamp, delivery id and event, not just the body.
+    // signature must cover the timestamp, delivery id, destination webhook and
+    // event, not just the body.
     const h = (name: string) => r.headers[name] as string;
     const check = (over: Partial<Parameters<typeof verifyDelivery>[0]> = {}) => verifyDelivery({
       publicKeyPem: publicKeyPem(key), body: r.body, timestamp: h("x-levy-timestamp"),
-      deliveryId: h("x-levy-delivery"), event: h("x-levy-event"), signature: h("x-levy-signature"), ...over,
+      deliveryId: h("x-levy-delivery"), webhookId: hookId, event: h("x-levy-event"),
+      signature: h("x-levy-signature"), ...over,
     });
     assert.ok(check());
     assert.ok(Math.abs(Number(h("x-levy-timestamp")) - Date.now() / 1000) < 60);
-    assert.equal(check({ deliveryId: "999" }), false, "delivery id is signed");
+    assert.match(h("x-levy-delivery"), DELIVERY_ID_RE);
+    assert.equal(check({ deliveryId: h("x-levy-delivery").replace(/-\d+$/, "-999") }), false, "delivery id is signed");
+    // H-1: one key signs for every merchant, so a delivery forwarded to another
+    // merchant's endpoint must fail that endpoint's own check.
+    assert.equal(check({ webhookId: hookId + 1 }), false, "destination webhook is signed");
     assert.equal(check({ event: "charge.failed" }), false, "event is signed");
     // The same signed bytes re-split at another dot must not verify either.
     assert.equal(

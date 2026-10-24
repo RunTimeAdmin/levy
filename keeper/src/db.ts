@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
 /** Subscription status enum, mirrors SubscriptionManager.Status. */
@@ -647,6 +648,18 @@ export class LevyDb {
          ON CONFLICT (key) DO UPDATE SET value = excluded.value`
       )
       .run(key, value);
+  }
+
+  /**
+   * A random tag fixed when this database first needs one. Delivery ids are
+   * `${epoch}-${rowId}`, so a recreated database (row ids from 1 again, same
+   * signing key) never repeats an id a receiver has already stored.
+   */
+  deliveryEpoch(): string {
+    this.db
+      .prepare(`INSERT OR IGNORE INTO sync_state (key, value) VALUES ('delivery_epoch', ?)`)
+      .run(randomBytes(8).toString("hex"));
+    return this.getSync("delivery_epoch")!;
   }
 
   // ---- API auth ----

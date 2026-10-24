@@ -262,6 +262,30 @@ recorded, and the contract spaces those on the dunning schedule (§3).
   Node 24 (the reviewer's Node 20 lacked `node:sqlite`; on Node 22.23 the
   keeper's 56 and the API's 55 tests pass). Not done: paying the merchant by
   withdrawal instead of a push (L-1, open item 5).
+- **Infrastructure review (2026-10-24, `docs/REVIEW_INFRA_2026-10-24.md`).**
+  The keeper, API and pages, operations, CI, site, images and the live host,
+  with npm audit, trufflehog, Trivy, Semgrep, hadolint, shellcheck and
+  actionlint. Fixed the same day, before soak 2's day 0:
+  - H-1, one key signs webhooks for every merchant and nothing named the
+    destination, so a delivery for an attacker's own endpoint (a 1-unit
+    payment made with a victim merchant's customer reference) verified at the
+    victim's endpoint. The signature now covers the destination webhook id
+    (§10), and receivers check `merchant` and the plan.
+  - M-1, parallel registrations raced past the 5-webhook cap; the count is
+    now taken again just before the insert, and URLs are capped at 2,048
+    characters.
+  - M-3, delivery ids started again at 1 on a fresh database with the same
+    key; they now carry a random prefix fixed per database.
+  - M-4, the public soak receiver logged every request with its body; it now
+    keeps bodies only for valid signatures, caps what unsigned requests can
+    write, and is rate limited in nginx, and the soak report counts only
+    signed deliveries.
+  - M-5, PR #5 (the 2026-10-17 sweep) is merged, which fixes L-5, L-6, the
+    keeper key on `sed`'s command line (L-7) and the action pinning (L-8).
+  Open before mainnet: M-2 (the API container holds and can create the
+  webhook signing key; with item 14) and the signing-key race fix still on
+  branch `claude/awesome-mendel-xzq52r`, L-1 to L-4, the rest of L-7 and L-8,
+  L-9 to L-12 (including a dedicated host for the keeper), and I-1 to I-3.
 
 **Open** (for the paid audit and M4):
 
@@ -364,6 +388,13 @@ Reviewed independently on 2026-09-25; details in `api/README.md` and
   wallets only (no ERC-1271); merchant
   backends sign in with their payout wallet (no scoped API keys yet).
 - **Fixed (L-10 in docs/REVIEW_2026-09-25.md):** the signature now covers the
-  `X-Levy-Event` header: `{timestamp}.{deliveryId}.{event}.{body}`. Receivers
-  reject unknown event types, so the signed text cannot be split at a
-  different dot (event names contain dots).
+  `X-Levy-Event` header. Receivers reject unknown event types, so the signed
+  text cannot be split at a different dot (event names contain dots).
+- **Fixed (H-1 and M-3 in docs/REVIEW_INFRA_2026-10-24.md):** the signature
+  now covers the destination webhook id too,
+  `{timestamp}.{deliveryId}.{webhookId}.{event}.{body}`, so a delivery made
+  for one merchant's endpoint does not verify at another's (one key signs for
+  every merchant), and the merchant guide tells receivers to check
+  `merchant` and the plan. Delivery ids are `{16 hex digits}-{row id}` with
+  the prefix fixed per database, so recreating the database never repeats an
+  id a receiver has stored.

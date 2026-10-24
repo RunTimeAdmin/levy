@@ -42,7 +42,8 @@ Every payload carries `subId` (string), `merchant` (the plan's merchant address)
 POST /hooks/levy HTTP/1.1
 Content-Type: application/json
 X-Levy-Event: charge.succeeded
-X-Levy-Delivery: 42
+X-Levy-Delivery: 9f3c1a2b4d5e6f70-42
+X-Levy-Webhook: 3
 X-Levy-Timestamp: 1790990000
 X-Levy-Key-Id: 0123456789abcdef
 X-Levy-Signature: <base64 Ed25519 signature>
@@ -55,7 +56,8 @@ The body is canonical JSON: keys sorted recursively, no whitespace. The values a
 | Header | Meaning |
 |---|---|
 | `X-Levy-Event` | The event type. Signed. |
-| `X-Levy-Delivery` | Delivery id, unique per event per endpoint and unchanged across retries. Signed. |
+| `X-Levy-Delivery` | Delivery id: 16 hex digits fixed for the database, a dash and the row number. Unique per event per endpoint, unchanged across retries, and never reused, even after the database is recreated. Signed. |
+| `X-Levy-Webhook` | The id of the endpoint the delivery was made for. Signed; check it against your own (step 4). |
 | `X-Levy-Timestamp` | Unix seconds when this attempt was signed. Retries get a fresh one. Signed. |
 | `X-Levy-Key-Id` | First 16 hex characters of the SHA-256 of the public key (SPKI DER). |
 | `X-Levy-Signature` | Base64 Ed25519 signature. |
@@ -65,8 +67,10 @@ The body is canonical JSON: keys sorted recursively, no whitespace. The values a
 The signature covers this UTF-8 string, built from the headers and the raw body:
 
 ```text
-{X-Levy-Timestamp}.{X-Levy-Delivery}.{X-Levy-Event}.{raw body}
+{X-Levy-Timestamp}.{X-Levy-Delivery}.{your webhook id}.{X-Levy-Event}.{raw body}
 ```
+
+One key signs for every merchant. The webhook id is what ties a delivery to one endpoint: without it, a delivery made for one merchant would verify at another merchant's endpoint too (finding H-1 of the 2026-10-24 infrastructure review). Until that review the string was `{timestamp}.{deliveryId}.{event}.{body}` and delivery ids were plain row numbers.
 
 Fetch the public key from `GET /api/webhooks/public-key`. It needs no sign-in and returns `algorithm` (`ed25519`), `keyId`, `publicKey` (SPKI PEM) and the event list. Levy signs with one key per deployment; see [Keeper Configuration](Keeper-Configuration.md) for how the key is created and shared with the API.
 
@@ -74,14 +78,16 @@ Steps for every request:
 
 1. Read the raw body before any JSON parsing. Re-serialized JSON will not match.
 2. Reject a timestamp more than 5 minutes from your clock.
-3. Reject an event type that is not one of the ten above. Event names contain dots, so without this check the same signed text could be split differently.
-4. Rebuild the signed string and verify the signature.
+3. Reject an event type that is not one of the ten above, and a delivery id that is not 16 hex digits, a dash and a number. Event names contain dots, so without these checks the same signed text could be split differently.
+4. Rebuild the signed string with your own webhook id (from registration or the dashboard, not the `X-Levy-Webhook` header) and verify the signature.
 5. Drop delivery ids you have already processed. The id is signed, so this is safe.
+6. After parsing, reject an event whose `merchant` is not your address, and act only on subscriptions to your own plans.
 
 ```js
 import { createPublicKey, verify } from "node:crypto";
 
 const API = "https://your-levy-host"; // your Levy API base URL
+const WEBHOOK_ID = "3"; // this endpoint's id, from registration or the dashboard
 const { publicKey } = await fetch(`${API}/api/webhooks/public-key`).then((r) => r.json());
 const key = createPublicKey(publicKey);
 
@@ -95,14 +101,15 @@ const EVENTS = new Set([
 export function isAuthentic(rawBody, headers) {
   const ts = headers["x-levy-timestamp"];
   const event = headers["x-levy-event"];
+  const delivery = headers["x-levy-delivery"];
   if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
-  if (!EVENTS.has(event)) return false;
-  const signed = Buffer.from(`${ts}.${headers["x-levy-delivery"]}.${event}.${rawBody}`, "utf-8");
+  if (!EVENTS.has(event) || !/^[0-9a-f]{16}-[0-9]+$/.test(delivery)) return false;
+  const signed = Buffer.from(`${ts}.${delivery}.${WEBHOOK_ID}.${event}.${rawBody}`, "utf-8");
   return verify(null, signed, key, Buffer.from(headers["x-levy-signature"], "base64"));
 }
 ```
 
-After `isAuthentic` passes, look up `X-Levy-Delivery` in your own store (step 5), then process and answer 2xx. `verifyDelivery` in `keeper/src/webhooks.ts` performs steps 2 to 4 and does not remember ids.
+After `isAuthentic` passes, look up `X-Levy-Delivery` in your own store (step 5), check `merchant` and the plan (step 6), then process and answer 2xx. `verifyDelivery` in `keeper/src/webhooks.ts` performs steps 2 to 4 (pass it your webhook id); it does not remember ids or know your address.
 
 ## Endpoint rules
 

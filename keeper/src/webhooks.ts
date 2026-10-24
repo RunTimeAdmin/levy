@@ -112,20 +112,28 @@ export function verifySignature(
 }
 
 /**
- * What a delivery's X-Levy-Signature covers: `${timestamp}.${deliveryId}.${event}.${body}`.
+ * What a delivery's X-Levy-Signature covers:
+ * `${timestamp}.${deliveryId}.${webhookId}.${event}.${body}`.
  * Signing the timestamp lets receivers reject replays of a captured delivery;
  * signing the delivery id lets them drop duplicates safely; signing the event
- * type lets them route on X-Levy-Event. None of these headers can be changed
- * without breaking the signature.
+ * type lets them route on X-Levy-Event. Signing the destination webhook id
+ * stops a delivery from verifying anywhere else: one key signs for every
+ * merchant, so without it a delivery made for one merchant's endpoint could be
+ * forwarded to another's (H-1, 2026-10-24 infrastructure review). None of
+ * these headers can be changed without breaking the signature.
  */
 export function signedContent(
   timestamp: number | string,
-  deliveryId: number | string,
+  deliveryId: string,
+  webhookId: number | string,
   event: string,
   body: string
 ): string {
-  return `${timestamp}.${deliveryId}.${event}.${body}`;
+  return `${timestamp}.${deliveryId}.${webhookId}.${event}.${body}`;
 }
+
+/** `${epoch}-${rowId}` (see LevyDb.deliveryEpoch); never contains a dot. */
+export const DELIVERY_ID_RE = /^[0-9a-f]{16}-[0-9]+$/;
 
 /**
  * Short id of the signing key (first 16 hex chars of SHA-256 over its SPKI
@@ -139,20 +147,26 @@ export function keyId(key: KeyObject): string {
 export const REPLAY_TOLERANCE_SEC = 300;
 
 /**
- * Receiver-side check of one delivery: the signature matches, and the
- * timestamp is within `toleranceSec` of now. Pass the raw body as received
- * and the X-Levy-Timestamp / X-Levy-Delivery / X-Levy-Event / X-Levy-Signature
- * headers. Receivers should also drop delivery ids they have already processed.
+ * Receiver-side check of one delivery: the signature matches, it was made for
+ * this receiver's own webhook, and the timestamp is within `toleranceSec` of
+ * now. Pass the raw body as received, the X-Levy-Timestamp / X-Levy-Delivery /
+ * X-Levy-Event / X-Levy-Signature headers, and `webhookId`: the id Levy gave
+ * this endpoint at registration (not the X-Levy-Webhook header, which only
+ * says where the delivery was meant to go). Receivers should also drop
+ * delivery ids they have already processed, and check that the payload's
+ * `merchant` is their own address.
  *
- * Unknown event types are rejected. Event names contain dots, so without that
- * check the same signed bytes could be re-split (delivery id "7.charge", event
- * "succeeded"); no tail or head of a real event name is itself an event name.
+ * Unknown event types are rejected and the delivery id must match its format.
+ * Event names contain dots, so without those checks the same signed bytes
+ * could be re-split (delivery id "7.charge", event "succeeded"); no tail or
+ * head of a real event name is itself an event name.
  */
 export function verifyDelivery(opts: {
   publicKeyPem: string;
   body: string;
   timestamp: string;
   deliveryId: string;
+  webhookId: number | string;
   event: string;
   signature: string;
   nowSec?: number;
@@ -162,9 +176,10 @@ export function verifyDelivery(opts: {
   const now = opts.nowSec ?? Math.floor(Date.now() / 1000);
   if (!Number.isInteger(ts) || Math.abs(now - ts) > (opts.toleranceSec ?? REPLAY_TOLERANCE_SEC)) return false;
   if (!isWebhookEventType(opts.event)) return false;
+  if (!DELIVERY_ID_RE.test(opts.deliveryId) || !/^[0-9]+$/.test(String(opts.webhookId))) return false;
   return verifySignature(
     opts.publicKeyPem,
-    signedContent(opts.timestamp, opts.deliveryId, opts.event, opts.body),
+    signedContent(opts.timestamp, opts.deliveryId, opts.webhookId, opts.event, opts.body),
     opts.signature
   );
 }
@@ -418,9 +433,17 @@ export class WebhookDispatcher {
    * `lookup` hook refuses private addresses at connect time (see
    * webhook-url.ts), and redirects are never followed (a 3xx is a failure).
    */
+  private epoch?: string;
+
+  /** The X-Levy-Delivery header for a delivery row. */
+  deliveryId(rowId: number): string {
+    this.epoch ??= this.db.deliveryEpoch();
+    return `${this.epoch}-${rowId}`;
+  }
+
   private post(
     url: string,
-    d: { id: number; event_type: string; payload: string }
+    d: { id: number; webhook_id: number; event_type: string; payload: string }
   ): Promise<{ ok: true } | { ok: false; error: string }> {
     let u: URL;
     try {
@@ -433,7 +456,11 @@ export class WebhookDispatcher {
 
     // Signed at send time, so every retry carries a fresh timestamp.
     const timestamp = Math.floor(Date.now() / 1000);
-    const signature = signPayload(this.privateKey, signedContent(timestamp, d.id, d.event_type, d.payload));
+    const deliveryId = this.deliveryId(d.id);
+    const signature = signPayload(
+      this.privateKey,
+      signedContent(timestamp, deliveryId, d.webhook_id, d.event_type, d.payload)
+    );
     const body = Buffer.from(d.payload, "utf-8");
     return new Promise((resolve) => {
       const req = (u.protocol === "https:" ? https : http).request(u, {
@@ -445,7 +472,8 @@ export class WebhookDispatcher {
           "X-Levy-Timestamp": String(timestamp),
           "X-Levy-Key-Id": keyId(this.privateKey),
           "X-Levy-Event": d.event_type,
-          "X-Levy-Delivery": String(d.id),
+          "X-Levy-Delivery": deliveryId,
+          "X-Levy-Webhook": String(d.webhook_id),
         },
         lookup: this.policy.allowPrivate ? undefined : (publicOnlyLookup as any),
       }, (res) => {

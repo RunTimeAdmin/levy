@@ -169,24 +169,27 @@ Content-Type: application/json
   <h2 id="verify">6. Verify webhook signatures</h2>
   <p>Every delivery carries these headers:</p>
   <ul>
-    <li><code>X-Levy-Signature</code>: base64 Ed25519 signature over <code>{timestamp}.{deliveryId}.{event}.{raw body}</code></li>
+    <li><code>X-Levy-Signature</code>: base64 Ed25519 signature over <code>{timestamp}.{deliveryId}.{webhookId}.{event}.{raw body}</code></li>
     <li><code>X-Levy-Timestamp</code>: unix seconds when this attempt was signed (retries get a new one)</li>
-    <li><code>X-Levy-Delivery</code>: the delivery id; store it and ignore repeats</li>
+    <li><code>X-Levy-Delivery</code>: the delivery id, 16 hex digits, a dash and a number; the same across retries and never reused, so store it and ignore repeats</li>
+    <li><code>X-Levy-Webhook</code>: the id of the endpoint the delivery was made for; yours is returned at registration and shown in the dashboard</li>
     <li><code>X-Levy-Event</code>: the event type, for example <code>charge.succeeded</code></li>
     <li><code>X-Levy-Key-Id</code>: which signing key was used</li>
   </ul>
-  <p>The public key, its <code>keyId</code> and the event list are at <code>GET https://app.getlevy.xyz/api/webhooks/public-key</code>. For every delivery:</p>
+  <p>One key signs for every merchant, so a valid signature proves Levy sent a delivery, not that it was sent to you. Checking it against your own webhook id and address stops someone forwarding you a delivery made for their endpoint. The public key, its <code>keyId</code> and the event list are at <code>GET https://app.getlevy.xyz/api/webhooks/public-key</code>. For every delivery:</p>
   <ol>
     <li>Read the raw body exactly as received, before parsing it.</li>
     <li>Reject it if <code>X-Levy-Timestamp</code> is more than 5 minutes from your clock, so a captured delivery cannot be replayed.</li>
-    <li>Reject it if <code>X-Levy-Event</code> is not one of the ten event types. Event names contain dots, and this check stops the signed text being split at a different dot.</li>
-    <li>Verify <code>X-Levy-Signature</code> over <code>{X-Levy-Timestamp}.{X-Levy-Delivery}.{X-Levy-Event}.{raw body}</code> with the public key.</li>
+    <li>Reject it if <code>X-Levy-Event</code> is not one of the ten event types, or <code>X-Levy-Delivery</code> is not 16 hex digits, a dash and a number. Event names contain dots, and these checks stop the signed text being split at a different dot.</li>
+    <li>Verify <code>X-Levy-Signature</code> over <code>{X-Levy-Timestamp}.{X-Levy-Delivery}.{your webhook id}.{X-Levy-Event}.{raw body}</code> with the public key, using the id you stored for this endpoint, not the header.</li>
     <li>Ignore it if you already processed that <code>X-Levy-Delivery</code> id. The id is signed, so this is safe.</li>
+    <li>After parsing, reject the event if <code>merchant</code> is not your address, and act only on subscriptions to your own plans.</li>
   </ol>
   <p>In Node.js, with no dependencies:</p>
 <pre><code>import { createPublicKey, verify } from "node:crypto";
 
 const API = "https://app.getlevy.xyz";
+const WEBHOOK_ID = "1"; // this endpoint's id, from registration or the dashboard
 const { publicKey } = await fetch(API + "/api/webhooks/public-key").then((r) =&gt; r.json());
 const key = createPublicKey(publicKey);
 const EVENTS = new Set(["subscription.created", "subscription.updated", "charge.succeeded",
@@ -197,9 +200,10 @@ const EVENTS = new Set(["subscription.created", "subscription.updated", "charge.
 function isValid(rawBody, headers) {
   const ts = headers["x-levy-timestamp"];
   const event = headers["x-levy-event"];
+  const delivery = headers["x-levy-delivery"];
   if (Math.abs(Date.now() / 1000 - Number(ts)) &gt; 300) return false;
-  if (!EVENTS.has(event)) return false;
-  const signed = Buffer.from(`${ts}.${headers["x-levy-delivery"]}.${event}.${rawBody}`, "utf-8");
+  if (!EVENTS.has(event) || !/^[0-9a-f]{16}-[0-9]+$/.test(delivery)) return false;
+  const signed = Buffer.from(`${ts}.${delivery}.${WEBHOOK_ID}.${event}.${rawBody}`, "utf-8");
   return verify(null, signed, key, Buffer.from(headers["x-levy-signature"], "base64"));
 }</code></pre>
   <p>Levy signs with one key per deployment. Trust a new key only when the public-key endpoint returns it.</p>

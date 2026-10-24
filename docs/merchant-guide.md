@@ -110,11 +110,14 @@ Deliveries retry with backoff (1 minute, 5 minutes, 15 minutes, 1 hour, then eve
 
 Every webhook POST carries these headers:
 
-- `X-Levy-Signature`: base64 Ed25519 signature over `{timestamp}.{deliveryId}.{event}.{raw body}`.
+- `X-Levy-Signature`: base64 Ed25519 signature over `{timestamp}.{deliveryId}.{webhookId}.{event}.{raw body}`.
 - `X-Levy-Timestamp`: unix seconds when this attempt was signed (retries get a fresh one).
-- `X-Levy-Delivery`: the delivery id. Store it and ignore repeats.
+- `X-Levy-Delivery`: the delivery id, 16 hex digits, a dash and a number (for example `9f3c1a2b4d5e6f70-42`). It is the same across retries of one delivery and never reused. Store it and ignore repeats.
+- `X-Levy-Webhook`: the id of the endpoint this delivery was made for. Your endpoint's id is returned when you register it and shown in the dashboard's Webhooks table.
 - `X-Levy-Key-Id`: which signing key was used (matches `keyId` below).
 - `X-Levy-Event`: the event type, e.g. `charge.succeeded`.
+
+One key signs deliveries for every merchant, so a valid signature alone only proves Levy sent the delivery, not that it was sent to you. Checking it against your own webhook id (step 4) and your own address (step 6) is what stops someone forwarding you a delivery made for their endpoint, such as a 1-unit payment to a plan of their own made with your customer's reference.
 
 Fetch the public key:
 
@@ -128,9 +131,10 @@ Verification steps:
 
 1. Read the raw request body exactly as received (before JSON parsing).
 2. Reject the request if `X-Levy-Timestamp` is more than 5 minutes from your clock. A captured delivery then cannot be replayed later.
-3. Reject the request if `X-Levy-Event` is not one of the event types listed above. Event names contain dots, and this check stops the signed text from being split at a different dot.
-4. Build `{X-Levy-Timestamp}.{X-Levy-Delivery}.{X-Levy-Event}.{raw body}` and verify the base64 `X-Levy-Signature` over it with the public key. Reject on failure.
+3. Reject the request if `X-Levy-Event` is not one of the event types listed above, or if `X-Levy-Delivery` is not 16 hex digits, a dash and a number. Event names contain dots, and these checks stop the signed text from being split at a different dot.
+4. Build `{X-Levy-Timestamp}.{X-Levy-Delivery}.{your webhook id}.{X-Levy-Event}.{raw body}` and verify the base64 `X-Levy-Signature` over it with the public key. Use the id you stored for this endpoint, not the `X-Levy-Webhook` header. Reject on failure.
 5. Drop the request if you already processed that `X-Levy-Delivery` id (the id is signed, so this is safe).
+6. After parsing, reject the event if `merchant` is not your own address, and act on a subscription only if its `planId` is one of your plans.
 
 Example in Node.js:
 
@@ -138,6 +142,7 @@ Example in Node.js:
 import { createPublicKey, verify } from "node:crypto";
 
 const API = "https://your-levy-host"; // your Levy API base URL
+const WEBHOOK_ID = "1"; // this endpoint's id, from registration or the dashboard
 const { publicKey } = await fetch(API + "/api/webhooks/public-key").then(r => r.json());
 const key = createPublicKey(publicKey);
 const EVENTS = new Set(["subscription.created", "subscription.updated", "charge.succeeded",
@@ -147,14 +152,17 @@ const EVENTS = new Set(["subscription.created", "subscription.updated", "charge.
 function isValid(rawBody, headers) {
   const ts = headers["x-levy-timestamp"];
   const event = headers["x-levy-event"];
+  const delivery = headers["x-levy-delivery"];
   if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
-  if (!EVENTS.has(event)) return false;
-  const signed = Buffer.from(`${ts}.${headers["x-levy-delivery"]}.${event}.${rawBody}`, "utf-8");
+  if (!EVENTS.has(event) || !/^[0-9a-f]{16}-[0-9]+$/.test(delivery)) return false;
+  const signed = Buffer.from(`${ts}.${delivery}.${WEBHOOK_ID}.${event}.${rawBody}`, "utf-8");
   return verify(null, signed, key, Buffer.from(headers["x-levy-signature"], "base64"));
 }
 ```
 
-`verifyDelivery` in `keeper/src/webhooks.ts` does the same checks except the last: it does not remember delivery ids, so store them yourself.
+`verifyDelivery` in `keeper/src/webhooks.ts` does steps 2 to 4 (pass it your webhook id). It does not remember delivery ids or know your address, so do steps 5 and 6 yourself.
+
+Before 2026-10-24 the signature covered `{timestamp}.{deliveryId}.{event}.{raw body}` and delivery ids were plain row numbers that started again at 1 when Levy's database was recreated. Receivers written for that format must be updated.
 
 Rotate your trust only when the public key endpoint returns a new key. Levy signs with one key per deployment.
 

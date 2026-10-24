@@ -16,7 +16,7 @@ The terms Levy's code, API and docs use, in alphabetical order, with where each 
 | Credit (proration) | The balance in `Subscription.credit`. A plan change adds `oldPrice x remainingSeconds / oldCycleSeconds`, rounded down, for unused paid time. It is spent before any pull and is always backed by USDC the subscription paid. Trial time earns none | `changePlan`, `_collect`, `invariant_creditBacked` |
 | Cycle | The billing period, `cycleSeconds`, from `MIN_CYCLE` (1 day) to `MAX_CYCLE` (10 years). The dashboard's "Monthly" is a fixed 30 days | `Plan.cycleSeconds` |
 | Dead letter | A webhook delivery given up on: status `dead` once its next retry would pass 24 hours of age (last attempt about 19 h 21 min), or when its webhook is deleted or deactivated | `webhook_deliveries.status`, `nextRetryAt` in `keeper/src/webhooks.ts` |
-| Delivery id | The `webhook_deliveries` row id, sent as `X-Levy-Delivery` and covered by the signature. It is the same across retries of one delivery, so receivers use it to drop duplicates | `signedContent`, `GET /api/deliveries` |
+| Delivery id | `{16 hex digits}-{row id}`: a random prefix fixed per database and the `webhook_deliveries` row id, sent as `X-Levy-Delivery` and covered by the signature. It is the same across retries of one delivery and never reused, so receivers use it to drop duplicates | `signedContent`, `LevyDb.deliveryEpoch` |
 | Dunning | Handling of failed payments: an on-chain failure counter with spaced recording, an off-chain retry schedule, and webhooks | `_recordFailure`, `retryGap`, `keeper/src/dunning.ts`, `dunning` table, `GET /api/dunning` |
 | FEE_BPS | The constant `100`. Despite the name it is a divisor: `fee = amount / 100`, which is 1% rounded down; the merchant keeps the remainder | `_collect`, `FEE_MATH_AUDIT.md` |
 | FeeRouter | The contract that receives the 1% fee and holds it until `sweep()` | `src/FeeRouter.sol` |
@@ -44,7 +44,7 @@ The terms Levy's code, API and docs use, in alphabetical order, with where each 
 | Treasury | The address that receives swept fees and the only one that can call `proposeTreasury`; the proposed address becomes treasury when it calls `acceptTreasury`. Mainnet requires a contract (a 2-of-3 Safe is planned); on testnet it is the deployer's key | `FeeRouter.treasury`, `FeeRouter.pendingTreasury`, `ops/treasury-multisig.md` |
 | Trial | `trialSeconds`, shorter than the cycle: no charge at subscribe, status TRIAL, first charge at start plus trial. Trial time earns no credit | `_subscribe` |
 | USDC | The stablecoin that is also Arc's gas token. Levy uses its ERC-20 face at `0x3600000000000000000000000000000000000000`, which has 6 decimals | `LEVY_USDC_ADDRESS`, `script/Deploy.s.sol` |
-| Webhook | A signed HTTPS POST from the keeper to a merchant endpoint, one of ten event types, with `X-Levy-Signature`, `X-Levy-Timestamp`, `X-Levy-Delivery`, `X-Levy-Key-Id` and `X-Levy-Event` headers (Ed25519 over `{timestamp}.{deliveryId}.{event}.{body}`) | `keeper/src/webhooks.ts`, `webhooks` table |
+| Webhook | A signed HTTPS POST from the keeper to a merchant endpoint, one of ten event types, with `X-Levy-Signature`, `X-Levy-Timestamp`, `X-Levy-Delivery`, `X-Levy-Webhook`, `X-Levy-Key-Id` and `X-Levy-Event` headers (Ed25519 over `{timestamp}.{deliveryId}.{webhookId}.{event}.{body}`) | `keeper/src/webhooks.ts`, `webhooks` table |
 
 ## Source files
 

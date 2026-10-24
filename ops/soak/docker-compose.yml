@@ -5,12 +5,21 @@
 #   docker compose -f ops/soak/docker-compose.yml up -d
 #
 # nginx on the host proxies https://app.getlevy.xyz/soak-hooks to 127.0.0.1:3002.
-# Add this inside the app.getlevy.xyz server block, then `nginx -t && systemctl reload nginx`:
+# The endpoint is public, so it is rate limited. Add the zone next to the
+# file's other limit_req_zone (outside the server block) and the location
+# inside the app.getlevy.xyz server block, then `nginx -t && systemctl reload nginx`:
+#
+#     limit_req_zone $binary_remote_addr zone=levy_soak:1m rate=60r/m;
 #
 #     location ^~ /soak-hooks {
+#         limit_req zone=levy_soak burst=30 nodelay;
+#         limit_req_status 429;
 #         proxy_pass http://127.0.0.1:3002;
 #         include /etc/nginx/proxy_params;
 #     }
+#
+# WEBHOOK_ID must be the id the dashboard shows for the /soak-hooks endpoint
+# (1 on a fresh database); the receiver verifies signatures against it.
 #
 # Remove both after the soak (ops/testnet-soak.md, After the soak).
 
@@ -25,6 +34,8 @@ services:
     environment:
       PUBLIC_KEY_URL: https://app.getlevy.xyz/api/webhooks/public-key
       LOG_PATH: /data/hooks.jsonl
+      WEBHOOK_ID: ${SOAK_WEBHOOK_ID:-1}
+      MERCHANT: "0x83F45b842c15c1417fDbCE296D966b1CE17544bD"
     volumes:
       - ./webhook-receiver.mjs:/soak/webhook-receiver.mjs:ro
       - ./data:/data

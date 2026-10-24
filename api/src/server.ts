@@ -91,6 +91,7 @@ const MONTH_SECONDS = 30n * 86_400n;
 
 /** Each webhook costs a delivery per event; keep one merchant from flooding the dispatcher. */
 const MAX_WEBHOOKS_PER_MERCHANT = 5;
+const MAX_WEBHOOK_URL_LENGTH = 2048;
 
 const STATUS_NAMES: Record<number, string> = {
   [Status.TRIAL]: "trial",
@@ -339,8 +340,11 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
     const me = requireSession(req);
     const body = req.body as { merchant?: string; url?: string; events?: string[] };
     checkOwnAddress(body?.merchant, me, "merchant");
-    if (db.listWebhooks(me).length >= MAX_WEBHOOKS_PER_MERCHANT) {
-      return bad(400, `webhook limit reached (${MAX_WEBHOOKS_PER_MERCHANT} per merchant)`);
+    const full = () => db.listWebhooks(me).length >= MAX_WEBHOOKS_PER_MERCHANT;
+    const limitReached = () => bad(400, `webhook limit reached (${MAX_WEBHOOKS_PER_MERCHANT} per merchant)`);
+    if (full()) return limitReached();
+    if (typeof body?.url === "string" && body.url.length > MAX_WEBHOOK_URL_LENGTH) {
+      return bad(400, `url is longer than ${MAX_WEBHOOK_URL_LENGTH} characters`);
     }
     const url = await checkWebhookUrl(body?.url, { allowPrivate: opts.webhookAllowPrivate ?? false });
     if (!url.ok) return bad(400, url.error);
@@ -350,6 +354,9 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
     for (const e of body.events) {
       if (!isWebhookEventType(e)) return bad(400, `unknown event type: ${e}`);
     }
+    // Count again after the DNS lookup and insert with no await in between:
+    // parallel requests all passed the first check while their lookups ran.
+    if (full()) return limitReached();
     const id = db.registerWebhook(me, url.url, [...new Set(body.events)], Math.floor(Date.now() / 1000));
     return { id };
   });

@@ -61,6 +61,7 @@ subscription starts from a zero allowance. One new wallet is needed on day 7.
 - [x] Old source tree and database set aside on the host (`/root/levy-src-08991fa`, `/root/levy-db-pre-d2b5455`), keeper and API rebuilt from `d2b5455` with the new `LEVY_MANAGER_ADDRESS`, a fresh database and the same webhook signing key (keyId `27628a5331108c43`)
 - [x] `https://app.getlevy.xyz/api/config` shows the new manager; the keeper log shows it and the keeper address above
 - [x] Receiver for webhooks still running at `https://app.getlevy.xyz/soak-hooks`; its log restarts at `/docker/levy/ops/soak/data/hooks.jsonl` (the soak 1 log is kept beside it as `hooks-soak1.jsonl`)
+- [ ] Fixes from the 2026-10-24 infrastructure review deployed (`docs/REVIEW_INFRA_2026-10-24.md`): webhooks signed for their destination webhook id with new-style delivery ids, the webhook cap enforced under concurrency, the receiver verifying against webhook id 1 and the soak merchant, `/soak-hooks` rate limited in nginx
 
 ### 2. Dashboard and webhooks (you)
 
@@ -68,6 +69,7 @@ The fresh database has no webhook registrations and no sessions.
 
 - [ ] At https://app.getlevy.xyz, sign in with the merchant wallet
 - [ ] Under Webhooks, add `https://app.getlevy.xyz/soak-hooks` with all ten events ticked
+- [ ] The Webhooks table shows it with ID **1**. The receiver verifies every signature against that id, so if it shows another number, tell Claude before going on
 
 ### 3. Plans (you, from the merchant wallet)
 

@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateKeyPairSync } from "node:crypto";
+import dns from "node:dns";
 import { writeFileSync } from "node:fs";
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { parseSiweMessage } from "viem/siwe";
@@ -501,6 +502,36 @@ describe("webhooks", () => {
     });
     assert.equal(sixth.status, 400);
     assert.ok(sixth.body.includes("limit"));
+  });
+
+  it("refuses a URL longer than 2048 characters", async () => {
+    const r = await call("POST", "/api/webhooks", {
+      as: MERCHANT, body: { url: `https://8.8.8.8/${"a".repeat(3000)}`, events: ["charge.succeeded"] },
+    });
+    assert.equal(r.status, 400);
+    assert.ok(r.body.includes("longer than"));
+  });
+
+  it("holds the cap when registrations arrive at the same time", async () => {
+    // Each request awaits its URL check between counting and inserting; the
+    // count is taken again just before the insert (M-1, 2026-10-24 review).
+    // A slow DNS answer keeps every request inside that window, as an
+    // attacker's own nameserver could.
+    const lookup = dns.promises.lookup;
+    (dns.promises as any).lookup = async () => {
+      await new Promise((r) => setTimeout(r, 100));
+      return [{ address: "93.184.216.34", family: 4 }];
+    };
+    try {
+      const before = (await get("/api/webhooks", OTHER)).json.length;
+      const results = await Promise.all(Array.from({ length: 20 }, (_, i) => call("POST", "/api/webhooks", {
+        as: OTHER, body: { url: `https://hooks.example.org/race${i}`, events: ["charge.succeeded"] },
+      })));
+      assert.equal(results.filter((r) => r.status === 200).length, 5 - before);
+      assert.equal((await get("/api/webhooks", OTHER)).json.length, 5);
+    } finally {
+      (dns.promises as any).lookup = lookup;
+    }
   });
 });
 
