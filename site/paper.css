@@ -189,6 +189,8 @@
   .paper h1 { font-size: 24pt; }
   .paper h2 { font-size: 15pt; margin-top: 22pt; break-after: avoid; }
   .paper h3 { font-size: 12pt; margin-top: 14pt; break-after: avoid; }
+  /* A line that introduces a list stays on the page with it. */
+  .paper p:has(+ ul, + ol) { break-after: avoid; }
   .paper pre, .formula { font-size: 8.8pt; white-space: pre-wrap; }
   .paper table { font-size: 9.5pt; }
   .abstract h2, .toc h2 { font-size: 9pt; margin: 0 0 6pt; }
