@@ -36,10 +36,16 @@ payments.
 
 ## Commerce
 
-**On-chain installment plans (not built yet).** A fixed number of scheduled
-pulls, then the plan ends. Plans have no cycle count or end date today; a
-subscription runs until someone cancels it. Buy-now-pay-later without a lender
-in the middle would need a cycle limit in the contract.
+**On-chain installment plans.** A fixed number of scheduled pulls, then the
+plan ends: a plan with a cycle limit (`maxCycles`, manager v2) completes each
+subscription after its last payment, for example 12 cycles of 100 USDC. A
+limit is a cap, not a commitment. The customer can still cancel at any time,
+so the merchant carries the credit risk, and buy-now-pay-later without a
+lender in the middle works only where that risk is acceptable.
+
+**One-time payments.** A plan with a cycle limit of 1 and no trial collects
+a single payment at subscribe and completes, which turns a checkout link into
+a payment link for a single purchase.
 
 **Domain and hosting renewals.** Recurring renewals for portfolios of
 domains and servers. The pull fails safe: missed payment triggers dunning,
@@ -47,7 +53,7 @@ not silent lapse.
 
 **Tokenized rent collection.** Monthly USDC rent pulled from a tenant
 wallet, with dunning when the pull fails and an on-chain record of every
-cycle.
+cycle. A fixed lease term is a plan with a cycle limit.
 
 ## Public goods
 

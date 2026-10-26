@@ -11,9 +11,16 @@ const LevyWallet = (() => {
     pause: "0x41f23f0a", // pauseSubscription(uint256)
     resume: "0x023a584e", // resumeSubscription(uint256)
     cancel: "0x21235083", // cancelSubscription(uint256)
-    createPlan: "0x4471f934", // createPlan(uint256,uint256,uint256,uint256,uint8)
+    createPlan: "0xc558b5eb", // createPlan(address,(uint256,uint256,uint256,uint8,uint32,uint256,uint32,bool))
     changePlan: "0x7b750eed", // changePlan(uint256,uint256)
     subscriptions: "0x2d5bbf60", // subscriptions(uint256)
+    billedPrice: "0x7e025486", // billedPrice(uint256)
+    setPlanRetired: "0x72c36e75", // setPlanRetired(uint256,bool)
+    setPayout: "0xc2fb1ceb", // setPayout(address,address)
+    transferOwnership: "0x6d435421", // transferOwnership(address,address)
+    acceptOwnership: "0x51710e45", // acceptOwnership(address)
+    proposeTransfer: "0x86bde3d1", // proposeTransfer(uint256,address)
+    acceptTransfer: "0x2fd5867d", // acceptTransfer(uint256,uint256)
   };
   // Subscribed(uint256 indexed subId, address indexed subscriber, uint256 indexed planId, uint64 nextChargeAt, bytes32 ref)
   const SUBSCRIBED_TOPIC = "0xbbb3775bdfa80ff891b19dfb5bf5d13313dca41abb169fce37c277a64e390659";
@@ -145,12 +152,16 @@ const LevyWallet = (() => {
   }
 
   /**
-   * createPlan(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed).
-   * graceSeconds is informational on-chain, so the pages send 0. Returns the
-   * new plan id from PlanCreated.
+   * createPlan(account, terms) for the merchant account `account`, which `from`
+   * must own. `terms` is the contract's PlanTerms, a static tuple, so it is
+   * encoded in place: price, cycleSeconds, trialSeconds, maxFailed, maxCycles
+   * (0 = no limit), introPrice, introCycles, transferable. Returns the new
+   * plan id from PlanCreated.
    */
-  async function createPlan(from, manager, { price, cycleSeconds, trialSeconds, maxFailed }) {
-    const data = SEL.createPlan + word(price) + word(cycleSeconds) + word(trialSeconds) + word(0) + word(maxFailed);
+  async function createPlan(from, manager, account, t) {
+    const data = SEL.createPlan + addr(account) + word(t.price) + word(t.cycleSeconds) + word(t.trialSeconds) +
+      word(t.maxFailed) + word(t.maxCycles ?? 0) + word(t.introPrice ?? 0) + word(t.introCycles ?? 0) +
+      word(t.transferable ? 1 : 0);
     const r = await send(from, manager, data);
     const log = r.logs.find(
       (l) => l.address.toLowerCase() === manager.toLowerCase() && l.topics[0] === PLAN_CREATED_TOPIC
@@ -162,21 +173,59 @@ const LevyWallet = (() => {
   const changePlan = (from, manager, subId, newPlanId) =>
     send(from, manager, SEL.changePlan + word(subId) + word(newPlanId));
 
+  /** Merchant account owner only: stop (or allow again) new subscriptions to a plan. */
+  const setPlanRetired = (from, manager, planId, retired) =>
+    send(from, manager, SEL.setPlanRetired + word(planId) + word(retired ? 1 : 0));
+  /** Owner only: fix where the account's share goes; the zero address follows the owner again. */
+  const setPayout = (from, manager, account, payout) =>
+    send(from, manager, SEL.setPayout + addr(account) + addr(payout));
+  /** Owner only: propose the account's next owner, who must call acceptOwnership. */
+  const transferOwnership = (from, manager, account, newOwner) =>
+    send(from, manager, SEL.transferOwnership + addr(account) + addr(newOwner));
+  const acceptOwnership = (from, manager, account) =>
+    send(from, manager, SEL.acceptOwnership + addr(account));
+  /** Subscriber only: offer the subscription to wallet `to` (zero withdraws the offer). */
+  const proposeTransfer = (from, manager, subId, to) =>
+    send(from, manager, SEL.proposeTransfer + word(subId) + addr(to));
+  /** The offered wallet only; `planId` must be the subscription's current plan. */
+  const acceptTransfer = (from, manager, subId, planId) =>
+    send(from, manager, SEL.acceptTransfer + word(subId) + word(planId));
+
   /**
    * A subscription as the contract holds it right now. The API does not mirror
-   * credit or chargeCount, which a plan change needs. Getter order:
-   * subscriber, planId, start, nextChargeAt, failedAttempts, credit, chargeCount, status.
+   * credit, chargeCount or the billed price, which a plan change needs. Getter
+   * order: subscriber, planId, start, nextChargeAt, failedAttempts, credit,
+   * chargeCount, status. billedPrice is its own mapping.
    */
   async function subscription(manager, subId) {
-    const hex = await rpc("eth_call", [{ to: manager, data: SEL.subscriptions + word(subId) }, "latest"]);
+    const [hex, billedPrice] = await Promise.all([
+      rpc("eth_call", [{ to: manager, data: SEL.subscriptions + word(subId) }, "latest"]),
+      call(manager, SEL.billedPrice + word(subId)),
+    ]);
     const w = (i) => BigInt("0x" + hex.slice(2 + i * 64, 2 + (i + 1) * 64));
-    return { planId: w(1), nextChargeAt: Number(w(3)), credit: w(5), chargeCount: w(6), status: Number(w(7)) };
+    return { planId: w(1), nextChargeAt: Number(w(3)), credit: w(5), chargeCount: w(6), status: Number(w(7)), billedPrice };
+  }
+
+  /** The price of a plan's first payment: its intro price when it has one. */
+  const firstPrice = (plan) => BigInt(Number(plan.introCycles || 0) > 0 ? plan.introPrice : plan.price);
+
+  /**
+   * What a plan's first `n` payments cost: its intro cycles at introPrice, the
+   * rest at price, and never more payments than a limited plan has.
+   */
+  function paymentsTotal(plan, n) {
+    const count = Number(plan.maxCycles || 0) > 0 ? Math.min(n, Number(plan.maxCycles)) : n;
+    const intro = Math.min(count, Number(plan.introCycles || 0));
+    return BigInt(plan.introPrice || 0) * BigInt(intro) + BigInt(plan.price) * BigInt(count - intro);
   }
 
   /**
    * What changePlan would do at `nowSec`, mirroring SubscriptionManager.changePlan:
-   * unused time of a paid cycle on the old plan becomes credit, then the new
-   * plan's first cycle is paid from credit first and the rest is pulled.
+   * unused time of a paid cycle on the old plan becomes credit, at the price
+   * that cycle was billed at (an intro cycle cost less than the plan's price),
+   * then the new plan's first cycle is paid from credit first and the rest is
+   * pulled. A plan change pays the new plan's full price: intro prices stay
+   * with the plan a subscription started on.
    */
   function changePlanQuote(sub, oldPlan, newPlan, nowSec) {
     let credit = sub.credit;
@@ -184,7 +233,7 @@ const LevyWallet = (() => {
       let remaining = BigInt(sub.nextChargeAt - nowSec);
       const cycle = BigInt(oldPlan.cycleSeconds);
       if (remaining > cycle) remaining = cycle;
-      credit += (BigInt(oldPlan.price) * remaining) / cycle;
+      credit += (sub.billedPrice * remaining) / cycle;
     }
     const price = BigInt(newPlan.price);
     return {
@@ -203,7 +252,8 @@ const LevyWallet = (() => {
 
   return {
     connect, balanceOf, allowance, approve, subscribe, manage, createPlan, changePlan,
-    subscription, changePlanQuote, receipt, subscribedFrom, usdcText,
+    setPlanRetired, setPayout, transferOwnership, acceptOwnership, proposeTransfer, acceptTransfer,
+    subscription, changePlanQuote, firstPrice, paymentsTotal, receipt, subscribedFrom, usdcText,
     explorer, chainName, txUrl, faucet, friendly,
   };
 })();

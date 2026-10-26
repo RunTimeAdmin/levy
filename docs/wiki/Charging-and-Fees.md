@@ -1,46 +1,50 @@
 # Charging and Fees
 
-Every payment in Levy goes through one internal routine, `_collect`: it spends proration credit, pulls the rest from the subscriber, and splits the pull 99% to the merchant and 1% to the FeeRouter. `subscribe`, `charge` and `changePlan` all call it. This page covers a charge step by step, the fee arithmetic, the FeeRouter, and the invoice reference each charge emits.
+Every payment in Levy goes through one internal routine, `_collect`: it prices the cycle, spends proration credit, pulls the rest from the subscriber, and splits the pull 99% to the merchant and 1% to the FeeRouter. `subscribe`, `charge` and `changePlan` all call it. In manager v2 ([design](https://github.com/RunTimeAdmin/levy/blob/main/docs/manager-v2-design.md), not yet deployed) it is also the only writer of the billing state that cycle limits and intro prices add, and the merchant's 99% goes to the payout address of the plan's merchant account. This page covers a charge step by step, the fee arithmetic, the FeeRouter, and the invoice reference each charge emits.
 
 Amounts are 6-decimal USDC units: 1 USDC = 1,000,000 units, so $10.00 is `10000000` and the smallest amount is $0.000001.
 
 ## How `charge(subId)` works
 
-Anyone can call `charge`. The keeper does so on every billing date, but the contract does not care who calls. The pull moves USDC only from the subscriber to the manager, and the manager pays out only to the plan's merchant and to the FeeRouter fixed at deployment. A caller never receives funds and cannot redirect them. The function is `nonReentrant`.
+Anyone can call `charge`. The keeper does so on every billing date, but the contract does not care who calls. The pull moves USDC only from the subscriber to the manager, and the manager pays out only to the payout address of the plan's merchant account (`payoutOf`, which only the account's owner can set) and to the FeeRouter fixed at deployment. A caller never receives funds and cannot redirect them. The function is `nonReentrant`.
 
 ```mermaid
 flowchart TD
     A["charge called by anyone"] --> B{"Subscription exists, status TRIAL, ACTIVE or PAST_DUE, and nextChargeAt reached?"}
     B -->|"No"| C["Revert UnknownSubscription or NotChargeable"]
-    B -->|"Yes"| D{"Credit covers the full price?"}
+    B -->|"Yes"| L{"Limited plan already at maxCycles?"}
+    L -->|"Yes"| LR["Revert CycleLimitReached"]
+    L -->|"No"| P["price = introPrice while intro cycles are left, else the plan price"]
+    P --> D{"Credit covers the price?"}
     D -->|"Yes"| E["credit reduced by price, due = 0, no tokens move"]
     D -->|"No"| F["due = price minus credit, pull due from the subscriber"]
     F --> G{"Pull succeeded?"}
     G -->|"No"| H["Record a failure, credit untouched, no revert unless RetryTooSoon"]
-    G -->|"Yes"| I["credit = 0, fee = due / 100, merchant gets due minus fee, FeeRouter gets fee"]
-    E --> J["chargeCount plus 1, emit Charged"]
+    G -->|"Yes"| I["credit = 0, fee = due / 100, payout gets due minus fee, FeeRouter gets fee"]
+    E --> J["billedPrice = price, intro cycle used up, planCycles and chargeCount plus 1, emit Charged; on the last limited cycle COMPLETED and emit Completed"]
     I --> J
     J --> K["nextChargeAt plus one cycle, or now plus one cycle after failures or a skipped cycle; failedAttempts = 0, TRIAL or PAST_DUE becomes ACTIVE"]
 ```
 
-1. **Preconditions.** The subscription must exist (`UnknownSubscription`), have status TRIAL, ACTIVE or PAST_DUE, and have reached `nextChargeAt` (the last two revert `NotChargeable`). A reverted call changes nothing.
-2. **Credit first.** If the subscription's proration `credit` covers the price, the price comes off the credit and no tokens move. Otherwise `due = price - credit`.
-3. **The pull.** `_tryPull` tries `usdc.transferFrom(subscriber, manager, due)` against the direct allowance, then falls back to Permit2 ([Permit2](Permit2.md)). If both fail, `_collect` returns false having changed nothing, credit included, and `charge` records a failure instead of reverting ([Dunning and Failures](Dunning-and-Failures.md)).
-4. **The 99/1 split.** Credit is set to zero, `fee = due / 100`, and the manager sends `due - fee` to the merchant and `fee` to the FeeRouter in the same transaction. If USDC refuses a payout (a blocklisted merchant, say), the whole charge reverts, no failure is recorded, and the keeper backs off.
-5. **Events.** `chargeCount` goes up by one and `Charged(subId, amount, fee, invoiceRef, chargeCount)` is emitted. `amount` is `due`, the tokens actually pulled, so it is 0 for a cycle paid from credit.
-6. **Advance.** `nextChargeAt` moves forward by one `cycleSeconds` (or to now plus one cycle, below), `failedAttempts` resets to 0, and TRIAL or PAST_DUE becomes ACTIVE.
+1. **Preconditions.** The subscription must exist (`UnknownSubscription`), have status TRIAL, ACTIVE or PAST_DUE, and have reached `nextChargeAt` (the last two revert `NotChargeable`). A reverted call changes nothing. `_collect` itself reverts `CycleLimitReached` when a limited plan has already billed `maxCycles` cycles on the subscription. It reverts rather than returning false, which `charge` would record as a failed payment; the status check stops a completed subscription first, so this is a backstop.
+2. **Price.** The cycle costs the plan's `introPrice` while the subscription has intro cycles left (`introCyclesLeft`, set at subscribe) and the plan has intro pricing; otherwise its `price`.
+3. **Credit first.** If the subscription's proration `credit` covers the price, the price comes off the credit and no tokens move. Otherwise `due = price - credit`.
+4. **The pull.** `_tryPull` tries `usdc.transferFrom(subscriber, manager, due)` against the direct allowance, then falls back to Permit2 ([Permit2](Permit2.md)). If both fail, `_collect` returns false having changed nothing, credit included, and `charge` records a failure instead of reverting ([Dunning and Failures](Dunning-and-Failures.md)).
+5. **The 99/1 split.** Credit is set to zero, `fee = due / 100`, and the manager sends `due - fee` to `payoutOf(plan.merchant)` and `fee` to the FeeRouter in the same transaction. If USDC refuses a payout (a blocklisted payout address, say), the whole charge reverts, no failure is recorded, and the keeper backs off. The account's owner fixes it by setting a new payout with `setPayout`.
+6. **Billing state.** Whether the cycle was paid from credit, by a pull or by both: `billedPrice` records the price, an intro cycle is used up if this was one, `planCycles` and `chargeCount` go up by one, and `Charged(subId, amount, fee, invoiceRef, chargeCount)` is emitted. `amount` is `due`, the tokens actually pulled, so it is 0 for a cycle paid from credit. If `planCycles` has reached a limited plan's `maxCycles`, the status becomes COMPLETED and `Completed(subId)` is emitted.
+7. **Advance.** `nextChargeAt` moves forward by one `cycleSeconds` (or to now plus one cycle, below), `failedAttempts` resets to 0, and TRIAL or PAST_DUE becomes ACTIVE. A completion stands, and `nextChargeAt` then marks the end of the last paid cycle.
 
-Step 6 normally adds the cycle to the stored `nextChargeAt`, not to the current time, so a late keeper does not shift the schedule. It starts a fresh cycle at the payment instead (now plus one cycle) in two cases: the charge follows failed attempts (`failedAttempts > 0`, which includes every PAST_DUE recovery), or one cycle after the stored date has already passed, meaning a whole cycle went by with no charge (a keeper outage, say). The overdue time is forgiven, the same way resume forgives paused time and `changePlan` forgives an overdue cycle. A successful charge therefore never leaves the next one already due, and missed cycles cannot be pulled back to back (invariant `noBackToBackCharges`).
+Step 7 normally adds the cycle to the stored `nextChargeAt`, not to the current time, so a late keeper does not shift the schedule. It starts a fresh cycle at the payment instead (now plus one cycle) in two cases: the charge follows failed attempts (`failedAttempts > 0`, which includes every PAST_DUE recovery), or one cycle after the stored date has already passed, meaning a whole cycle went by with no charge (a keeper outage, say). The overdue time is forgiven, the same way resume forgives paused time and `changePlan` forgives an overdue cycle. A successful charge therefore never leaves the next one already due, and missed cycles cannot be pulled back to back (invariant `noBackToBackCharges`).
 
 ## One routine, three entry points
 
 | Entry point | When it calls `_collect` | If the pull fails |
 |---|---|---|
-| `subscribe`, `subscribeWithPermit2` | Only on a plan without a trial, right after `Subscribed` is emitted. | Reverts `PaymentFailed`. No subscription is created. |
+| `subscribe`, `subscribeWithPermit2` | Only on a plan without a trial, right after `Subscribed` is emitted and `introCyclesLeft` is set from the plan. On a `maxCycles = 1` plan this one cycle completes the subscription. | Reverts `PaymentFailed`. No subscription is created. |
 | `charge` | Every due cycle. | The failure is recorded. No revert. |
-| `changePlan` | After the old plan's unused paid time becomes credit. The new plan's first cycle is billed now and `nextChargeAt` becomes now plus the new cycle. | Reverts `PaymentFailed`. Nothing changes. |
+| `changePlan` | After the old cycle's unused paid time becomes credit at its `billedPrice`, and `planCycles` and `introCyclesLeft` are reset to 0. The new plan's first cycle is billed now at its full price and `nextChargeAt` becomes now plus the new cycle. | Reverts `PaymentFailed`. Nothing changes. |
 
-The credit arithmetic is on [Plan Changes and Proration](Plan-Changes-and-Proration.md).
+The credit arithmetic is on [Plan Changes and Proration](Plan-Changes-and-Proration.md). `billedPrice` is written on every billed cycle, including one paid entirely from credit, because credit computed from a stale, higher price would not be backed.
 
 ## Fee math
 
@@ -71,7 +75,7 @@ The late charge did not move the schedule: the next date is T + 60 days, not T +
 ```mermaid
 flowchart LR
     S["Subscriber wallet"] -->|"pull of due"| M["SubscriptionManager"]
-    M -->|"due minus fee"| W["Plan merchant"]
+    M -->|"due minus fee"| W["Payout of the plan's merchant account"]
     M -->|"fee, same transaction"| R["FeeRouter"]
     R -->|"sweep, callable by anyone"| T["Treasury"]
 ```

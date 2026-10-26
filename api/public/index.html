@@ -21,6 +21,14 @@
   .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px 16px; margin-bottom: 12px; }
   .fields label { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
   .fields input, .fields select { width: 100%; }
+  .fields label.check { display: flex; align-items: center; gap: 8px; color: var(--text); }
+  .fields label.check input { width: auto; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; margin: 0 0 14px; font-size: 14px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; overflow-wrap: anywhere; }
+  .mono { font-family: var(--mono); font-size: 13px; }
+  .account-actions { display: grid; gap: 10px; }
+  .account-actions .row input { width: min(100%, 420px); }
   .status-line { min-height: 20px; font-size: 14px; margin: 10px 0 0; }
   .status-line.bad { color: var(--bad); }
   .status-line.ok { color: var(--accent); }
@@ -48,11 +56,21 @@
   <p class="loading" id="booting">Loading...</p>
   <section class="panel" id="signedOut" hidden>
     <h2>Merchant dashboard</h2>
-    <p class="muted" style="margin:0 0 14px">Sign in with the wallet that created your plans to see your revenue, subscriptions, dunning queue, webhooks and invoices. Signing is free and sends no transaction.</p>
+    <p class="muted" style="margin:0 0 14px">Sign in with the wallet that owns your merchant account (the one that created your plans, unless you handed the account on) to see your revenue, subscriptions, dunning queue, webhooks and invoices. Signing is free and sends no transaction.</p>
     <button id="signInMain">Sign in with wallet</button>
   </section>
 
   <div class="stack" id="app" hidden>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Merchant account</h2>
+        <select id="accountPick" aria-label="Merchant account" hidden></select>
+      </div>
+      <div id="account"></div>
+      <p id="accountStatus" class="status-line" role="status" hidden></p>
+    </section>
+
+    <div class="stack" id="accountData">
     <div class="cards" id="cards"></div>
 
     <section class="panel">
@@ -79,9 +97,13 @@
           <label id="pfCustomWrap" hidden>Cycle length (days)<input id="pfCustom" type="number" min="1" max="3650" step="1" value="14"></label>
           <label>Free trial (days)<input id="pfTrial" type="number" min="0" step="1" value="0"></label>
           <label>Failed payments before past due<input id="pfMaxFailed" type="number" min="1" max="255" step="1" value="3"></label>
+          <label>Number of payments (blank: until cancelled)<input id="pfMaxCycles" type="number" min="1" step="1" placeholder="no limit"></label>
+          <label>Intro price per cycle (USDC, optional)<input id="pfIntroPrice" type="text" inputmode="decimal" placeholder="none" autocomplete="off"></label>
+          <label>Payments at the intro price<input id="pfIntroCycles" type="number" min="0" step="1" value="0"></label>
+          <label class="check"><input id="pfTransferable" type="checkbox"> Customers may move it to another wallet</label>
         </div>
         <p class="muted" id="pfSummary" style="margin:0 0 12px"></p>
-        <p class="note">Plans live on-chain and cannot be edited afterwards: to change a price, create a new plan. Creating one is a transaction from this wallet, with a network fee of a fraction of a cent in USDC.</p>
+        <p class="note">Plans live on-chain and their terms cannot be edited afterwards: to change a price, create a new plan and retire the old one, which stops new sign-ups while its subscribers keep paying. Creating one is a transaction from this wallet, with a network fee of a fraction of a cent in USDC.</p>
         <div class="row" style="margin-top:12px">
           <button type="submit" id="pfCreate">Create plan</button>
           <button type="button" class="ghost" id="pfCancel">Cancel</button>
@@ -118,6 +140,7 @@
       </div>
       <div id="invoices" class="table-scroll"></div>
     </section>
+    </div>
   </div>
 </main>
 <footer class="app-footer">

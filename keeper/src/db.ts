@@ -8,6 +8,7 @@ export const Status = {
   PAST_DUE: 2,
   PAUSED: 3,
   CANCELLED: 4,
+  COMPLETED: 5,
 } as const;
 
 /** States that can start a fresh charge cycle. PAST_DUE is deliberately
@@ -24,6 +25,24 @@ export interface DbPlan {
   cycleSeconds: number;
   trialSeconds: number;
   maxFailed: number;
+  /** 1 while the merchant has retired the plan: no new subscriptions or plan changes into it. */
+  retired?: number;
+  /** 1 when its subscriptions may move to a new wallet. */
+  transferable?: number;
+  /** Cycles billed before a subscription completes; 0 = no limit. */
+  maxCycles?: number;
+  /** 6-decimal USDC; billed for a subscription's first introCycles cycles. "0" when none. */
+  introPrice?: string;
+  introCycles?: number;
+}
+
+/** A merchant account whose owner or payout changed on-chain (see SubscriptionManager.ownerOf). */
+export interface DbAccount {
+  account: string;
+  owner: string;
+  /** Fixed payout address, or null when the account's share follows its owner. */
+  payout: string | null;
+  pendingOwner: string | null;
 }
 
 export interface DbFunds {
@@ -50,6 +69,25 @@ export interface DbSubscription {
   ref?: string | null;
   /** 1 while paused by the merchant, the only pause the merchant may resume. */
   pausedByMerchant?: number;
+  /** Intro-priced cycles left (0 unless the plan has intro pricing). */
+  introCyclesLeft?: number;
+  /** Cycles billed on the current plan (kept only for plans with a cycle limit). */
+  planCycles?: number;
+  /** The wallet the subscriber proposed to move the subscription to, until it accepts. */
+  pendingTransfer?: string | null;
+}
+
+/** A chargeable subscription with the terms that price its next charges. */
+export interface ChargeableSub {
+  subId: string;
+  merchant: string;
+  price: string;
+  nextChargeAt: number;
+  ref: string | null;
+  introCyclesLeft: number;
+  planCycles: number;
+  introPrice: string;
+  maxCycles: number;
 }
 
 export interface DbCharge {
@@ -102,7 +140,20 @@ CREATE TABLE IF NOT EXISTS plans (
   price TEXT NOT NULL,
   cycleSeconds INTEGER NOT NULL,
   trialSeconds INTEGER NOT NULL,
-  maxFailed INTEGER NOT NULL
+  maxFailed INTEGER NOT NULL,
+  retired INTEGER NOT NULL DEFAULT 0,
+  transferable INTEGER NOT NULL DEFAULT 0,
+  maxCycles INTEGER NOT NULL DEFAULT 0,
+  introPrice TEXT NOT NULL DEFAULT '0',
+  introCycles INTEGER NOT NULL DEFAULT 0
+);
+-- Merchant accounts whose owner or payout changed on-chain. A plan's merchant
+-- is its account; an account with no row owns itself and is paid itself.
+CREATE TABLE IF NOT EXISTS merchant_accounts (
+  account TEXT PRIMARY KEY COLLATE NOCASE,
+  owner TEXT NOT NULL,
+  payout TEXT,
+  pendingOwner TEXT
 );
 CREATE TABLE IF NOT EXISTS subscriptions (
   subId TEXT PRIMARY KEY,
@@ -115,7 +166,10 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   nextChargeAt INTEGER NOT NULL,
   failedAttempts INTEGER NOT NULL DEFAULT 0,
   ref TEXT,
-  pausedByMerchant INTEGER NOT NULL DEFAULT 0
+  pausedByMerchant INTEGER NOT NULL DEFAULT 0,
+  introCyclesLeft INTEGER NOT NULL DEFAULT 0,
+  planCycles INTEGER NOT NULL DEFAULT 0,
+  pendingTransfer TEXT
 );
 CREATE TABLE IF NOT EXISTS charges (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -220,12 +274,21 @@ export class LevyDb {
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     this.db.exec(SCHEMA);
-    // Databases created before the ref and pausedByMerchant columns existed.
-    const cols = this.db.prepare(`PRAGMA table_info(subscriptions)`).all() as Array<{ name: string }>;
-    if (!cols.some((c) => c.name === "ref")) this.db.exec(`ALTER TABLE subscriptions ADD COLUMN ref TEXT`);
-    if (!cols.some((c) => c.name === "pausedByMerchant")) {
-      this.db.exec(`ALTER TABLE subscriptions ADD COLUMN pausedByMerchant INTEGER NOT NULL DEFAULT 0`);
-    }
+    // Databases created before these columns existed.
+    this.addColumns("subscriptions", {
+      ref: "TEXT",
+      pausedByMerchant: "INTEGER NOT NULL DEFAULT 0",
+      introCyclesLeft: "INTEGER NOT NULL DEFAULT 0",
+      planCycles: "INTEGER NOT NULL DEFAULT 0",
+      pendingTransfer: "TEXT",
+    });
+    this.addColumns("plans", {
+      retired: "INTEGER NOT NULL DEFAULT 0",
+      transferable: "INTEGER NOT NULL DEFAULT 0",
+      maxCycles: "INTEGER NOT NULL DEFAULT 0",
+      introPrice: "TEXT NOT NULL DEFAULT '0'",
+      introCycles: "INTEGER NOT NULL DEFAULT 0",
+    });
     // The API server may hold the same file open; wait instead of failing
     // on a locked database during brief concurrent writes.
     this.db.exec("PRAGMA busy_timeout = 5000");
@@ -238,25 +301,38 @@ export class LevyDb {
     this.db.close();
   }
 
+  private addColumns(table: string, columns: Record<string, string>): void {
+    const have = new Set(
+      (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name)
+    );
+    for (const [name, type] of Object.entries(columns)) {
+      if (!have.has(name)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+    }
+  }
+
   // ---- subscriptions ----
 
+  /** The subscriber is updated too: a subscription can move to a new wallet. */
   upsertSubscription(s: DbSubscription): void {
     this.db
       .prepare(
         `INSERT INTO subscriptions
-           (subId, subscriber, planId, merchant, price, cycleSeconds, status, nextChargeAt, failedAttempts, ref, pausedByMerchant)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (subId, subscriber, planId, merchant, price, cycleSeconds, status, nextChargeAt, failedAttempts, ref,
+            pausedByMerchant, introCyclesLeft, planCycles, pendingTransfer)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (subId) DO UPDATE SET
+           subscriber = excluded.subscriber,
            planId = excluded.planId, merchant = excluded.merchant,
            price = excluded.price, cycleSeconds = excluded.cycleSeconds,
            status = excluded.status, nextChargeAt = excluded.nextChargeAt,
            failedAttempts = excluded.failedAttempts, ref = excluded.ref,
-           pausedByMerchant = excluded.pausedByMerchant`
+           pausedByMerchant = excluded.pausedByMerchant, introCyclesLeft = excluded.introCyclesLeft,
+           planCycles = excluded.planCycles, pendingTransfer = excluded.pendingTransfer`
       )
       .run(
         s.subId, s.subscriber, s.planId, s.merchant, s.price,
         s.cycleSeconds, s.status, s.nextChargeAt, s.failedAttempts, s.ref ?? null,
-        s.pausedByMerchant ?? 0
+        s.pausedByMerchant ?? 0, s.introCyclesLeft ?? 0, s.planCycles ?? 0, s.pendingTransfer ?? null
       );
   }
 
@@ -376,12 +452,13 @@ export class LevyDb {
 
   /** With the subscriber's allowance runway (null until the keeper has checked it). */
   listSubscriptions(
-    filter: { merchant?: string; subscriber?: string } = {}
+    filter: { merchant?: string; subscriber?: string; pendingTransfer?: string } = {}
   ): Array<DbSubscription & { fundsLow: number | null; cyclesCovered: number | null }> {
     const clauses: string[] = [];
     const params: Array<string | number | null> = [];
     if (filter.merchant) { clauses.push(`s.merchant = ? COLLATE NOCASE`); params.push(filter.merchant); }
     if (filter.subscriber) { clauses.push(`s.subscriber = ? COLLATE NOCASE`); params.push(filter.subscriber); }
+    if (filter.pendingTransfer) { clauses.push(`s.pendingTransfer = ? COLLATE NOCASE`); params.push(filter.pendingTransfer); }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
     return this.db
       .prepare(
@@ -407,15 +484,16 @@ export class LevyDb {
       .all(staleBefore, limit) as Array<{ subscriber: string }>).map((r) => r.subscriber);
   }
 
-  chargeableSubs(
-    subscriber: string
-  ): Array<{ subId: string; merchant: string; price: string; nextChargeAt: number; ref: string | null }> {
+  /** With what the runway check needs to price the next charges (see funds.ts). */
+  chargeableSubs(subscriber: string): ChargeableSub[] {
     return this.db
       .prepare(
-        `SELECT subId, merchant, price, nextChargeAt, ref FROM subscriptions
-         WHERE subscriber = ? COLLATE NOCASE AND status IN (${CHARGEABLE.join(",")})`
+        `SELECT s.subId, s.merchant, s.price, s.nextChargeAt, s.ref, s.introCyclesLeft, s.planCycles,
+                COALESCE(p.introPrice, '0') AS introPrice, COALESCE(p.maxCycles, 0) AS maxCycles
+         FROM subscriptions s LEFT JOIN plans p ON p.planId = s.planId
+         WHERE s.subscriber = ? COLLATE NOCASE AND s.status IN (${CHARGEABLE.join(",")})`
       )
-      .all(subscriber) as Array<{ subId: string; merchant: string; price: string; nextChargeAt: number; ref: string | null }>;
+      .all(subscriber) as unknown as ChargeableSub[];
   }
 
   getFunds(subscriber: string): DbFunds | undefined {
@@ -443,15 +521,66 @@ export class LevyDb {
     this.db.prepare(`UPDATE subscriber_funds SET checked_at = 0 WHERE subscriber = ?`).run(subscriber);
   }
 
-  /** Plans are immutable on-chain, so an upsert only ever fills a row in. */
+  /**
+   * Plan terms are immutable on-chain; only `retired` changes. The other v2
+   * columns are written too, which fills them in on rows from before they existed.
+   */
   upsertPlan(p: DbPlan): void {
     this.db
       .prepare(
-        `INSERT INTO plans (planId, merchant, price, cycleSeconds, trialSeconds, maxFailed)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT (planId) DO NOTHING`
+        `INSERT INTO plans (planId, merchant, price, cycleSeconds, trialSeconds, maxFailed,
+                            retired, transferable, maxCycles, introPrice, introCycles)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (planId) DO UPDATE SET
+           retired = excluded.retired, transferable = excluded.transferable,
+           maxCycles = excluded.maxCycles, introPrice = excluded.introPrice,
+           introCycles = excluded.introCycles`
       )
-      .run(p.planId, p.merchant, p.price, p.cycleSeconds, p.trialSeconds, p.maxFailed);
+      .run(
+        p.planId, p.merchant, p.price, p.cycleSeconds, p.trialSeconds, p.maxFailed,
+        p.retired ?? 0, p.transferable ?? 0, p.maxCycles ?? 0, p.introPrice ?? "0", p.introCycles ?? 0
+      );
+  }
+
+  // ---- merchant accounts ----
+
+  upsertAccount(a: DbAccount): void {
+    this.db
+      .prepare(
+        `INSERT INTO merchant_accounts (account, owner, payout, pendingOwner) VALUES (?, ?, ?, ?)
+         ON CONFLICT (account) DO UPDATE SET
+           owner = excluded.owner, payout = excluded.payout, pendingOwner = excluded.pendingOwner`
+      )
+      .run(a.account, a.owner, a.payout, a.pendingOwner);
+  }
+
+  getAccount(account: string): DbAccount | undefined {
+    return this.db
+      .prepare(`SELECT * FROM merchant_accounts WHERE account = ?`)
+      .get(account) as DbAccount | undefined;
+  }
+
+  /** Who acts for `account`: the account itself until it has handed ownership on. */
+  ownerOf(account: string): string {
+    return this.getAccount(account)?.owner ?? account;
+  }
+
+  /** The accounts `address` acts for: those handed to it, and its own unless it handed that on. */
+  accountsOwnedBy(address: string): string[] {
+    const handed = (this.db
+      .prepare(`SELECT account FROM merchant_accounts WHERE owner = ? COLLATE NOCASE ORDER BY account`)
+      .all(address) as Array<{ account: string }>).map((r) => r.account);
+    const ownsItself = this.ownerOf(address).toLowerCase() === address.toLowerCase();
+    return ownsItself && !handed.some((a) => a.toLowerCase() === address.toLowerCase())
+      ? [address, ...handed]
+      : handed;
+  }
+
+  /** Accounts whose owner has proposed `address` as the next owner. */
+  pendingOwnerships(address: string): DbAccount[] {
+    return this.db
+      .prepare(`SELECT * FROM merchant_accounts WHERE pendingOwner = ? COLLATE NOCASE ORDER BY account`)
+      .all(address) as unknown as DbAccount[];
   }
 
   /** The on-chain plan registry mirror. */

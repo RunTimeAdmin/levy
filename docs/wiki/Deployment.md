@@ -65,7 +65,7 @@ Arc testnet, chain 5042002, deployed 2026-10-24 in blocks 68869601 and 68869602 
 
 Built with solc 0.8.33. `foundry.toml` does not pin the compiler, so another version gives a different metadata tail (`SECURITY_REVIEW.md` section 9, item 12). The source is not yet verified on the explorer. The deployment of 2026-10-03 (block 65201372, SubscriptionManager `0x62a6512335d630ef19fcadb497adf98d883f77c6`, commit `08991fa`) ran soak 1 and is retired: it predates the 2026-10-24 fixes, including the two-step treasury move. Two earlier testnet deployments (blocks 64020204 and 64031023) are superseded and were never used for billing; the README lists them all.
 
-The contracts have no owner and no upgrade path; the only admin functions are the FeeRouter's two-step treasury move, `proposeTreasury` and `acceptTreasury`. A fix means a new deployment: new addresses in `ops/.env`, a fresh database, and new plans and subscriptions. The soak host did this twice and kept the old database aside each time.
+The contracts have no protocol owner and no upgrade path; the only admin functions are the FeeRouter's two-step treasury move, `proposeTreasury` and `acceptTreasury`. (Manager v2's merchant account owners control only their own accounts.) A fix means a new deployment: new addresses in `ops/.env`, a fresh database, and new plans and subscriptions. The soak host did this twice and kept the old database aside each time. Manager v2 ([design](https://github.com/RunTimeAdmin/levy/blob/main/docs/manager-v2-design.md)) is the next such deployment, and the keeper, API and pages that come with it work only against it.
 
 ## Keeper and API with Docker Compose
 

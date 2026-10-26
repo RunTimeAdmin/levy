@@ -21,9 +21,13 @@ const ORIGIN = "https://app.levy.test";
 const merchantAcct = privateKeyToAccount(`0x${"11".repeat(32)}`);
 const subscriberAcct = privateKeyToAccount(`0x${"22".repeat(32)}`);
 const otherAcct = privateKeyToAccount(`0x${"33".repeat(32)}`); // a second merchant
+// A merchant that handed its account to OTHER, and offered it on to MERCHANT (v2).
+const formerAcct = privateKeyToAccount(`0x${"44".repeat(32)}`);
 const MERCHANT = merchantAcct.address;
 const SUBSCRIBER = subscriberAcct.address;
 const OTHER = otherAcct.address;
+const FORMER = formerAcct.address;
+const SAFE = "0x5afE5afe5afE5AFE5aFe5aFE5Afe5aFe5afe5AFE";
 const MANAGER = "0x14220536ACABfC65543E6129b3d48d2272809CF0";
 const USDC = "0x3600000000000000000000000000000000000000";
 const REF = `0x${"7f3a".repeat(16)}`;
@@ -58,6 +62,23 @@ function seed(): void {
     price: "7000000", cycleSeconds: 604800, status: 1,
     nextChargeAt: 1700000000, failedAttempts: 0,
   });
+  // v2: FORMER's account, now owned by OTHER, with a fixed payout and MERCHANT as the proposed next owner.
+  db.upsertPlan({
+    planId: "4", merchant: FORMER, price: "20000000", cycleSeconds: 2592000, trialSeconds: 0, maxFailed: 2,
+    retired: 1, transferable: 1, maxCycles: 2, introPrice: "1000000", introCycles: 1,
+  });
+  db.upsertAccount({ account: FORMER, owner: OTHER, payout: SAFE, pendingOwner: MERCHANT });
+  db.upsertSubscription({
+    subId: "5", subscriber: SUBSCRIBER, planId: "4", merchant: FORMER,
+    price: "20000000", cycleSeconds: 2592000, status: 5,
+    nextChargeAt: 1700000000, failedAttempts: 0, planCycles: 2,
+  });
+  // Offered by SUBSCRIBER to MERCHANT's wallet, awaiting acceptTransfer.
+  db.upsertSubscription({
+    subId: "6", subscriber: SUBSCRIBER, planId: "4", merchant: FORMER,
+    price: "20000000", cycleSeconds: 2592000, status: 1,
+    nextChargeAt: 1700000000, failedAttempts: 0, planCycles: 1, pendingTransfer: MERCHANT,
+  });
   db.insertCharge({
     subId: "1", amount: "10000000", fee: "100000", invoiceRef: "inv-aaa",
     txHash: "0xtx1", blockNumber: 10, chargeCount: 1,
@@ -91,7 +112,7 @@ before(async () => {
   if (typeof addr !== "object" || !addr) throw new Error("no address");
   base = `http://127.0.0.1:${addr.port}`;
 
-  for (const acct of [merchantAcct, subscriberAcct, otherAcct]) {
+  for (const acct of [merchantAcct, subscriberAcct, otherAcct, formerAcct]) {
     tokens[acct.address] = await signIn(acct);
   }
 });
@@ -310,9 +331,19 @@ describe("public endpoints", () => {
   it("GET /api/plans", async () => {
     const r = await get("/api/plans");
     assert.equal(r.status, 200);
-    assert.equal(r.json.length, 3);
+    assert.equal(r.json.length, 4);
     assert.equal(r.json[0].planId, "1");
     assert.equal(r.json[0].priceUsdc, "10.000000");
+    assert.equal(r.json[0].retired, false);
+    assert.equal(r.json[0].maxCycles, 0);
+    assert.equal(r.json[0].introCycles, 0);
+    // v2 terms
+    const v2 = r.json[3];
+    assert.equal(v2.retired, true);
+    assert.equal(v2.transferable, true);
+    assert.equal(v2.maxCycles, 2);
+    assert.equal(v2.introPriceUsdc, "1.000000");
+    assert.equal(v2.introCycles, 1);
   });
 
   it("GET /api/webhooks/public-key serves the SPKI PEM", async () => {
@@ -321,9 +352,69 @@ describe("public endpoints", () => {
     assert.equal(r.json.algorithm, "ed25519");
     assert.match(r.json.keyId, /^[0-9a-f]{16}$/);
     assert.ok(r.json.publicKey.includes("BEGIN PUBLIC KEY"));
-    assert.equal(r.json.events.length, 10);
+    assert.equal(r.json.events.length, 13);
     assert.ok(r.json.events.includes("allowance.low"));
     assert.ok(r.json.events.includes("subscription.updated"));
+    for (const e of ["subscription.completed", "subscription.transferred", "merchant.updated"]) {
+      assert.ok(r.json.events.includes(e), e);
+    }
+  });
+});
+
+describe("merchant accounts (v2)", () => {
+  it("lists the accounts an address owns and those offered to it", async () => {
+    const other = await get("/api/accounts", OTHER);
+    assert.equal(other.status, 200);
+    assert.deepEqual(other.json.owned.map((a: any) => a.account), [OTHER, FORMER]);
+    assert.deepEqual(other.json.owned[1], { account: FORMER, owner: OTHER, payout: SAFE, paidTo: SAFE, pendingOwner: MERCHANT });
+    assert.deepEqual(other.json.owned[0], { account: OTHER, owner: OTHER, payout: null, paidTo: OTHER, pendingOwner: null });
+    assert.deepEqual(other.json.offered, []);
+
+    const merchant = await get("/api/accounts", MERCHANT);
+    assert.deepEqual(merchant.json.owned.map((a: any) => a.account), [MERCHANT]);
+    assert.deepEqual(merchant.json.offered.map((a: any) => a.account), [FORMER]);
+
+    // FORMER handed its own account on: it owns nothing now.
+    assert.deepEqual((await get("/api/accounts", FORMER)).json, { owned: [], offered: [] });
+  });
+
+  it("serves an account's data to its current owner only", async () => {
+    const subs = await get(`/api/subscriptions?merchant=${FORMER}`, OTHER);
+    assert.equal(subs.status, 200);
+    assert.deepEqual(subs.json.map((s: any) => [s.subId, s.statusName]), [["5", "completed"], ["6", "active"]]);
+    const m = await get(`/api/metrics?merchant=${FORMER.toLowerCase()}`, OTHER);
+    assert.equal(m.status, 200);
+    assert.equal(m.json.merchant, FORMER);
+    assert.equal(m.json.completedSubs, 1);
+    assert.equal((await get("/api/subscriptions/5", OTHER)).status, 200);
+
+    // The previous owner lost access, its own address included.
+    assert.equal((await get(`/api/subscriptions?merchant=${FORMER}`, FORMER)).status, 403);
+    assert.equal((await get("/api/metrics", FORMER)).status, 403);
+    assert.equal((await get("/api/webhooks", FORMER)).status, 403);
+    assert.equal((await get("/api/subscriptions/5", FORMER)).status, 404);
+    // A proposed owner has no access until it accepts.
+    assert.equal((await get(`/api/metrics?merchant=${FORMER}`, MERCHANT)).status, 403);
+  });
+
+  it("registers webhooks under the account, for its owner", async () => {
+    const r = await call("POST", "/api/webhooks", {
+      as: OTHER, body: { merchant: FORMER, url: "https://8.8.4.4/former", events: ["merchant.updated"] },
+    });
+    assert.equal(r.status, 200, r.body);
+    const hooks = await get(`/api/webhooks?merchant=${FORMER}`, OTHER);
+    assert.deepEqual(hooks.json.map((h: any) => [h.merchant, h.url]), [[FORMER, "https://8.8.4.4/former"]]);
+    assert.equal((await get("/api/webhooks", OTHER)).json.some((h: any) => h.url.includes("former")), false);
+    assert.equal((await call("DELETE", `/api/webhooks/${r.json.id}`, { as: FORMER })).status, 404);
+    assert.equal((await call("DELETE", `/api/webhooks/${r.json.id}`, { as: OTHER })).status, 200);
+  });
+
+  it("lists subscriptions offered to the signed-in wallet", async () => {
+    const r = await get(`/api/subscriptions?pendingTransfer=${MERCHANT}`, MERCHANT);
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.map((s: any) => s.subId), ["6"]);
+    assert.equal(r.json[0].pendingTransfer, MERCHANT);
+    assert.equal((await get(`/api/subscriptions?pendingTransfer=${MERCHANT}`, SUBSCRIBER)).status, 403);
   });
 });
 

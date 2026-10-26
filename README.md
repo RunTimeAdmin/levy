@@ -4,7 +4,9 @@ Pull-based USDC subscription billing for Arc, like Stripe Billing for a chain wh
 
 Charging is permissionless by design: anyone can call `charge()`, but it can only move the subscriber's pre-approved USDC to that plan's merchant.
 
-**Status:** contracts, keeper (charging, dunning, webhooks, allowance warnings), API with wallet sign-in, merchant dashboard, customer portal and checkout page are built and tested. Contracts: 77 tests green (68 unit + 9 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 56 tests green. API: 55 tests green. **On Arc testnet since 2026-10-03 (current deployment, see Deployments); the M4 soak started 2026-10-07. Not on mainnet. Not audited.** Known open issues are listed in `SECURITY_REVIEW.md` §9.
+**Status:** contracts, keeper (charging, dunning, webhooks, allowance warnings), API with wallet sign-in, merchant dashboard, customer portal and checkout page are built and tested. Contracts: 117 tests green (104 unit + 13 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 81 tests green. API: 73 tests green. **On Arc testnet since 2026-10-03 (current deployment, see Deployments); the M4 soak started 2026-10-07. Not on mainnet. Not audited.** Known open issues are listed in `SECURITY_REVIEW.md` §9.
+
+**Manager v2** ([design](docs/manager-v2-design.md)) is built and tested on this code but not deployed: merchant accounts with a changeable owner and payout address, retiring plans, cycle limits (installments, fixed terms, one-time payments), intro prices, and moving a subscription to another wallet. This README and the docs describe v2. The testnet contracts under Deployments predate it, and v2 replaces them at its deployment, under new addresses.
 
 **Read next:** [Wiki](docs/wiki/Home.md) · [Getting started](docs/wiki/Getting-Started.md) · [Merchant guide](docs/merchant-guide.md) · [Spec](SPEC.md) · [Security](SECURITY.md) · [Whitepaper](https://getlevy.xyz/whitepaper.html) · [getlevy.xyz](https://getlevy.xyz)
 
@@ -77,18 +79,19 @@ For a full local stack (anvil, a local deploy, the keeper and the API) follow [G
 
 ## How charging works
 
-1. A merchant calls `createPlan(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed)` from their wallet, most simply through the dashboard's New plan form. The cycle can be 1 day to 10 years. Price is immutable; repricing means a new plan.
+1. A merchant calls `createPlan(account, (price, cycleSeconds, trialSeconds, maxFailed, maxCycles, introPrice, introCycles, transferable))` from their wallet, most simply through the dashboard's New plan form. `account` is the merchant account, at first the caller's own address, and the caller must own it. The cycle can be 1 day to 10 years. `maxCycles` caps the payments (0 for no limit; 1 with no trial is a one-time payment), `introPrice` (below `price`) is billed for the first `introCycles` cycles, and `transferable` lets subscribers move a subscription to another wallet. Plan terms are immutable; repricing means a new plan, and `setPlanRetired` closes the old one to new subscribers.
 2. A subscriber approves a USDC allowance to the SubscriptionManager and calls `subscribe(planId, ref)`, or calls `subscribeWithPermit2(planId, ref, permit, signature)` with a Permit2 signature (submitted by the subscriber themselves). The checkout page (`/checkout.html?plan=<id>&ref=<ref>`) does the approve-and-subscribe flow for them. Billing is in advance: without a trial, the first cycle is pulled at subscribe, and the subscribe reverts if that pull fails. `ref` is the merchant's own reference for the customer (bytes32, zero for none), stored on-chain and carried on every webhook.
-3. Anyone can call `charge(subId)` once `block.timestamp >= nextChargeAt`; it pays for the cycle that starts then. The contract spends any proration credit first, pulls the rest via `transferFrom`, sends 99% to the merchant and 1% to the FeeRouter, advances the cycle and emits `Charged`. The next charge date moves one cycle on from the stored date, so a late keeper does not shift the schedule; after a failed attempt, or when a whole cycle went by uncharged, it becomes one cycle from the payment instead (the overdue time is not billed). It is permissionless by design: it can only move the subscriber's pre-approved funds to that plan's merchant.
+3. Anyone can call `charge(subId)` once `block.timestamp >= nextChargeAt`; it pays for the cycle that starts then. The contract prices the cycle (the intro price while intro cycles are left), spends any proration credit first, pulls the rest via `transferFrom`, sends 99% to the merchant account's payout address and 1% to the FeeRouter, advances the cycle and emits `Charged`. The cycle that reaches a limited plan's `maxCycles` moves the subscription to `COMPLETED`, which is final. The next charge date moves one cycle on from the stored date, so a late keeper does not shift the schedule; after a failed attempt, or when a whole cycle went by uncharged, it becomes one cycle from the payment instead (the overdue time is not billed). It is permissionless by design: it can only move the subscriber's pre-approved funds to that plan's merchant.
 4. A failed pull does not revert: the contract records it (`ChargeFailed`), marks the subscription `PAST_DUE` at `maxFailed` failures, and auto-pauses it at twice that. It records failures only on the dunning schedule, 1, 3 and then 7 days apart (`retryGap`); a failing call sooner reverts `RetryTooSoon`, so nobody can pause a subscription sooner than its schedule by calling `charge()` (with `maxFailed` 2, not before day 11). The keeper retries on the same schedule.
 5. The subscriber or merchant can pause or cancel. The subscriber can resume any pause; the merchant can resume only a pause it made itself, not one by the subscriber or a dunning auto-pause. Nothing is charged while paused; resuming is a fresh start (paused cycles are never billed, billing restarts at the resume if the charge date passed, and the failure count resets). Cancel is final.
-6. A subscriber can change to another plan from the same merchant: the new plan starts and is billed immediately, less credit for unused paid time on the old plan.
+6. A subscriber can change to another plan from the same merchant account that is not retired: the new plan starts and is billed immediately at its full price, less credit for unused paid time on the old plan at the price that cycle was billed at.
+7. The merchant account's owner can fix a payout address with `setPayout` and hand the account to another wallet in two steps (`transferOwnership`, then `acceptOwnership` by the new owner). On a transferable plan, the subscriber can move a subscription to a new wallet: `proposeTransfer` from the subscriber, then `acceptTransfer` from the new wallet, which pays from then on.
 
 ### Money math
 
 - All amounts are 6-decimal USDC units through the ERC-20 interface (`0x3600...0000`). Native 18-decimal values never enter payment logic.
 - Integer arithmetic only. The fee is `amount / 100`, rounded down, so any rounding (under one unit) goes to the merchant.
-- Credit only comes from a paid cycle (trial time earns none), is added to existing credit, and is spent before any pull. Excess carries forward and survives failed pulls.
+- Credit only comes from a paid cycle, at the price it was billed at (trial time earns none), is added to existing credit, and is spent before any pull. Excess carries forward and survives failed pulls.
 
 ### Invariants (fuzz-tested)
 
@@ -101,15 +104,18 @@ For a full local stack (anvil, a local deploy, the keeper and the API) follow [G
 - Credit never exceeds the largest plan price.
 - The manager holds no funds at rest: every pull is fully split in the same transaction.
 - A successful charge never leaves its subscription chargeable, so missed cycles are never pulled back to back.
+- Completed is terminal, and no subscription is billed more than its plan's `maxCycles` times on that plan.
+- A retired plan gains no subscriptions and no plan changes into it.
+- A subscription changes wallet only when its subscriber proposed that wallet and the wallet accepted.
 
 ## Off-chain services
 
-**Keeper** (`keeper/`, viem + SQLite). Two independent loops: charge cycles (every 30s) and webhook delivery (every 5s), so a slow merchant endpoint can never delay charging. Each charge cycle syncs events (chunked, and only Levy's own logs plus USDC transfers into or out of the manager), charges due subscriptions, runs dunning retries, backs off charges that revert, and checks subscribers' allowance runway. Webhooks are Ed25519-signed over timestamp, delivery id, destination webhook id, event type and body, delivered in parallel and retried with backoff (1 minute, rising to every 6 hours); a delivery still failing after about 19 hours is dead-lettered. Ten event types, including `allowance.low` when a subscriber's allowance covers fewer than 2 more rounds of their subscriptions.
+**Keeper** (`keeper/`, viem + SQLite). Two independent loops: charge cycles (every 30s) and webhook delivery (every 5s), so a slow merchant endpoint can never delay charging. Each charge cycle syncs events (chunked, and only Levy's own logs plus USDC transfers into or out of the manager), charges due subscriptions, runs dunning retries, backs off charges that revert, and checks subscribers' allowance runway. Webhooks are Ed25519-signed over timestamp, delivery id, destination webhook id, event type and body, delivered in parallel and retried with backoff (1 minute, rising to every 6 hours); a delivery still failing after about 19 hours is dead-lettered. Thirteen event types, including `subscription.completed`, `subscription.transferred`, `merchant.updated`, and `allowance.low` when a subscriber's allowance does not cover the next 2 charges of their subscriptions.
 
-**API** (`api/`, Fastify). Merchants and subscribers sign in with their wallet (Sign-In with Ethereum, 24h sessions) and only ever see their own data. It serves:
+**API** (`api/`, Fastify). Merchants and subscribers sign in with their wallet (Sign-In with Ethereum, 24h sessions) and only ever see their own data; a merchant sees the merchant accounts its wallet owns. It serves:
 
-- the merchant dashboard (`/`): metrics, plans with their checkout links and a New plan form, subscriptions with references and allowance runway (each can be paused or cancelled, and resumed if the merchant paused it), dunning queue, webhooks with their delivery log, invoice CSV;
-- the customer portal (`/portal.html`): subscriptions and invoices; pause, resume, cancel and plan changes from the wallet; and the Levy allowance, with a top-up and a revoke;
+- the merchant dashboard (`/`): the merchant account (payout address, handover and accepting an account), metrics, plans with their terms, checkout links, Retire or Reopen and a New plan form, subscriptions with references and allowance runway (each can be paused or cancelled, and resumed if the merchant paused it), dunning queue, webhooks with their delivery log, invoice CSV;
+- the customer portal (`/portal.html`): subscriptions and invoices; pause, resume, cancel, plan changes and moving a subscription to another wallet from the wallet, and accepting one offered to it; and the Levy allowance, with a top-up and a revoke;
 - the checkout page (`/checkout.html?plan=<id>&ref=<ref>`).
 
 Webhook URLs must be https on port 443 at a public address (checked at registration and again at every delivery). The merchant guide (`docs/merchant-guide.md`) covers plans, webhooks and signature verification, checkout links and references, and dunning.
@@ -148,7 +154,7 @@ To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file 
 
 ## Deployments
 
-**Arc testnet** (chain 5042002), deployed 2026-10-24 in blocks 68869601 and 68869602 from `54724d0`, which has the fixes from the 2026-10-24 review (merchant resume, the next charge date after failures, the Permit2 fallback, the two-step treasury move; `SECURITY_REVIEW.md` §9). The record is `broadcast/Deploy.s.sol/5042002/run-1792849705649.json` (also `run-latest.json`).
+**Arc testnet** (chain 5042002), deployed 2026-10-24 in blocks 68869601 and 68869602 from `54724d0`, which has the fixes from the 2026-10-24 review (merchant resume, the next charge date after failures, the Permit2 fallback, the two-step treasury move; `SECURITY_REVIEW.md` §9). It predates manager v2: its `createPlan` takes `(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed)`, and the keeper, API and pages in this tree no longer work against it. The record is `broadcast/Deploy.s.sol/5042002/run-1792849705649.json` (also `run-latest.json`).
 
 | Contract | Address | Transaction |
 |---|---|---|
@@ -174,6 +180,7 @@ To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file 
 ## Before mainnet
 
 - A soak of at least a week on the current testnet deployment (M4; day 0 was 2026-10-07). Checklist and pass criteria: `ops/testnet-soak.md`.
+- Manager v2 (`docs/manager-v2-design.md`): an external review of the diff, a testnet deployment and soak 3. The paid audit should cover v2, not the soak 2 contracts.
 - Treasury multisig signers set (`ops/treasury-multisig.md`).
 - Permit2 end to end against Arc (subscribing through it worked on testnet, soak wallet S5 on 2026-10-07; its recurring charges are still being checked in the soak).
 - Open items in `SECURITY_REVIEW.md` §9, and an external audit.

@@ -34,9 +34,13 @@ const CONFIRM = {
 };
 const DONE = { pause: "paused", resume: "active", cancel: "cancelled" };
 const CHANGEABLE = new Set(["trial", "active", "past_due"]);
+const MOVABLE = new Set(["trial", "active", "past_due", "paused"]);
+const ZERO = "0x0000000000000000000000000000000000000000";
 
+const planOf = (sub) => plans.find((p) => p.planId === sub.planId);
+// A retired plan takes no plan changes into it.
 const otherPlans = (sub) => plans.filter((p) =>
-  p.merchant.toLowerCase() === sub.merchant.toLowerCase() && p.planId !== sub.planId);
+  p.merchant.toLowerCase() === sub.merchant.toLowerCase() && p.planId !== sub.planId && !p.retired);
 
 function renderActions(sub, status) {
   const box = document.querySelector(`[data-actions="${sub.subId}"]`);
@@ -54,7 +58,91 @@ function renderActions(sub, status) {
     b.onclick = () => openChange(sub);
     buttons.unshift(b);
   }
+  if (MOVABLE.has(status) && planOf(sub)?.transferable) {
+    const b = document.createElement("button");
+    b.className = "ghost";
+    if (sub.pendingTransfer) {
+      b.textContent = "Withdraw the offer";
+      b.onclick = () => moveTx(sub, ZERO, `Withdraw the offer of subscription #${sub.subId} to ${sub.pendingTransfer}?`,
+        "Offer withdrawn: the subscription stays with this wallet.");
+    } else {
+      b.textContent = "Move to another wallet";
+      b.onclick = () => openMove(sub);
+    }
+    buttons.push(b);
+  }
   box.replaceChildren(...buttons);
+}
+
+// ---- moving a subscription to another wallet ----
+
+function openMove(sub) {
+  const panel = document.querySelector(`[data-move="${sub.subId}"]`);
+  if (!panel.hidden) { panel.hidden = true; return; }
+  panel.querySelector("[data-close]").onclick = () => { panel.hidden = true; };
+  panel.querySelector("[data-go]").onclick = () => {
+    const to = panel.querySelector("input").value.trim();
+    if (!/^0x[0-9a-fA-F]{40}$/.test(to)) { alert("Enter a 0x address with 40 hex digits."); return; }
+    if (to.toLowerCase() === LevyAuth.address.toLowerCase()) { alert("That is this wallet."); return; }
+    moveTx(sub, to,
+      `Offer subscription #${sub.subId} to ${to}? Once that wallet accepts, the subscription, its paid time and any credit move there for good, and later payments come from that wallet. Only offer it to a wallet you control or trust.`,
+      `Offered to ${short(to)}. It moves when that wallet accepts, from the portal signed in as that wallet.`);
+  };
+  panel.hidden = false;
+  panel.querySelector("input").focus();
+}
+
+/** proposeTransfer from the signed-in wallet; zero withdraws the offer. */
+async function moveTx(sub, to, question, done) {
+  if (!confirm(question)) return;
+  const note = document.querySelector(`[data-status="${sub.subId}"]`);
+  try {
+    note.textContent = "Confirm in your wallet...";
+    note.classList.add("busy");
+    const account = await myWallet();
+    await LevyWallet.proposeTransfer(account, cfg.managerAddress, sub.subId, to);
+    sub.pendingTransfer = to === ZERO ? null : to;
+    document.querySelector(`[data-move="${sub.subId}"]`).hidden = true;
+    renderActions(sub, sub.statusName);
+    note.textContent = `Done on-chain. ${done}`;
+  } catch (e) {
+    note.textContent = e.message || String(e);
+  } finally {
+    note.classList.remove("busy");
+  }
+}
+
+/** Subscriptions another wallet offered to this one, each with an Accept button. */
+function offersPanel(offers) {
+  const box = document.createElement("section");
+  box.className = "banner";
+  const h = document.createElement("h2");
+  h.textContent = "Offered to this wallet";
+  box.append(h);
+  for (const sub of offers) {
+    const p = document.createElement("p");
+    p.style.margin = "0";
+    p.textContent = `Subscription #${sub.subId} from ${short(sub.subscriber)}: ${planLine(sub)}, merchant ${sub.merchant}. ` +
+      "Accepting moves it here: later payments come from this wallet's Levy allowance.";
+    const b = document.createElement("button");
+    b.className = "small";
+    b.textContent = "Accept";
+    b.onclick = async () => {
+      if (!confirm(`Take over subscription #${sub.subId} (${planLine(sub)}, merchant ${sub.merchant})? Its payments will come from this wallet.`)) return;
+      b.disabled = true;
+      try {
+        const account = await myWallet();
+        await LevyWallet.acceptTransfer(account, cfg.managerAddress, sub.subId, sub.planId);
+        p.textContent = `Done: subscription #${sub.subId} is yours. It shows below after Levy's next sync.`;
+      } catch (e) {
+        alert(e.message || String(e));
+        b.disabled = false;
+      }
+    };
+    p.append(" ", b);
+    box.append(p);
+  }
+  return box;
 }
 
 async function act(sub, action) {
@@ -72,6 +160,7 @@ async function act(sub, action) {
     // on-chain result now.
     const status = DONE[action];
     setPill(subId, status);
+    sub.statusName = status;
     renderActions(sub, status);
     document.querySelector(`[data-change="${subId}"]`).hidden = true;
     note.textContent = `Done: subscription #${subId} is ${status} on-chain.`;
@@ -165,9 +254,13 @@ async function doChange(sub) {
     const card = document.querySelector(`[data-card="${sub.subId}"]`);
     card.querySelector("[data-plan]").textContent = planLine(sub);
     card.querySelector("[data-price]").textContent = usd(target.priceUsdc);
-    card.querySelector("[data-next]").textContent = date(Math.floor(Date.now() / 1000) + Number(target.cycleSeconds));
-    setPill(sub.subId, "active");
-    renderActions(sub, "active");
+    // The change pays the new plan's first cycle, which completes a one-payment plan.
+    const status = Number(target.maxCycles) === 1 ? "completed" : "active";
+    const end = date(Math.floor(Date.now() / 1000) + Number(target.cycleSeconds));
+    card.querySelector("[data-next]").textContent = status === "completed" ? `none, paid through ${end}` : end;
+    sub.statusName = status;
+    setPill(sub.subId, status);
+    renderActions(sub, status);
     panel.hidden = true;
     note.textContent = `Done: you are on plan #${target.planId}.`;
   } catch (e) {
@@ -178,7 +271,12 @@ async function doChange(sub) {
   }
 }
 
-const planLine = (sub) => `Plan #${sub.planId}: ${usd(sub.priceUsdc)} every ${every(sub.cycleSeconds)}`;
+const planLine = (sub) => {
+  const p = planOf(sub);
+  if (p?.maxCycles === 1) return `Plan #${sub.planId}: a single payment of ${usd(p.introCycles > 0 ? p.introPriceUsdc : sub.priceUsdc)}`;
+  const limit = p?.maxCycles > 0 ? `, ${p.maxCycles} payments in all` : "";
+  return `Plan #${sub.planId}: ${usd(sub.priceUsdc)} every ${every(sub.cycleSeconds)}${limit}`;
+};
 
 function showSession() {
   const s = LevyAuth.address;
@@ -289,16 +387,18 @@ async function load() {
   if (!s) return;
   const main = $("main");
   main.innerHTML = `<p class="loading">Loading your subscriptions...</p>`;
-  const [subs, config, funds, allPlans] = await Promise.all([
+  const [subs, config, funds, allPlans, offers] = await Promise.all([
     LevyAuth.api(`/api/subscriptions?subscriber=${s}`),
     fetch("/api/config").then((r) => r.json()),
     LevyAuth.api("/api/funds"),
     fetch("/api/plans").then((r) => r.json()),
+    LevyAuth.api(`/api/subscriptions?pendingTransfer=${s}`),
   ]);
   cfg = config;
   plans = allPlans;
   if (!subs.length) {
     main.innerHTML = `<section class="panel"><h2>No subscriptions</h2><p class="empty">This address has no Levy subscriptions. Subscriptions start from a merchant's checkout link.</p></section>`;
+    if (offers.length && cfg.managerAddress) main.prepend(offersPanel(offers));
     return;
   }
   const cards = await Promise.all(subs.map(async (sub) => {
@@ -311,7 +411,9 @@ async function load() {
       <p class="muted" style="margin:-6px 0 0" data-plan>${planLine(sub)}</p>
       <div class="grid">
         <div><div class="label">Price</div><div class="value" data-price>${usd(sub.priceUsdc)}</div></div>
-        <div><div class="label">Next charge</div><div class="value" style="font-size:15px" data-next>${sub.statusName === "cancelled" ? "none" : date(sub.nextChargeAt)}</div></div>
+        ${sub.statusName === "completed"
+          ? `<div><div class="label">Paid through</div><div class="value" style="font-size:15px">${date(sub.nextChargeAt)}</div></div>`
+          : `<div><div class="label">Next charge</div><div class="value" style="font-size:15px" data-next>${sub.statusName === "cancelled" ? "none" : date(sub.nextChargeAt)}</div></div>`}
         <div><div class="label">Failed attempts</div><div class="value">${sub.failedAttempts}</div></div>
         <div><div class="label">Merchant</div><div class="value addr" style="font-size:13px">${short(sub.merchant)}</div></div>
       </div>
@@ -321,6 +423,12 @@ async function load() {
         <p data-quote></p>
         <div class="row"><button data-go disabled>Switch plan</button><button class="ghost" data-close>Keep my plan</button></div>
       </div>
+      <div class="change" data-move="${sub.subId}" hidden>
+        <label>Move to wallet <input placeholder="0x..." aria-label="Wallet to move the subscription to" autocomplete="off"></label>
+        <p class="muted">The other wallet accepts it from this portal, signed in as that wallet. Until then nothing changes, and you can withdraw the offer.</p>
+        <div class="row"><button data-go>Offer it</button><button class="ghost" data-close>Keep it here</button></div>
+      </div>
+      ${sub.pendingTransfer ? `<p class="muted">Offered to <span class="addr">${short(sub.pendingTransfer)}</span>, until that wallet accepts.</p>` : ""}
       <p class="note" data-status="${sub.subId}">Pause, resume, cancel and plan changes are wallet transactions from the account you signed in with.</p>
       <h3>Invoice history</h3>
       ${invoices ? `<div class="table-scroll"><table><thead><tr><th>Invoice</th><th>Amount</th><th>Tx</th></tr></thead><tbody>${invoices}</tbody></table></div>`
@@ -330,6 +438,7 @@ async function load() {
   main.innerHTML = cards.join("");
   if (cfg.managerAddress) subs.forEach((sub) => renderActions(sub, sub.statusName));
   main.prepend(allowancePanel(funds));
+  if (offers.length && cfg.managerAddress) main.prepend(offersPanel(offers));
 }
 
 $("signInMain").onclick = () => LevyAuth.signIn().then(load).catch(e => alert("Sign-in failed: " + e.message));

@@ -71,11 +71,11 @@ The address that creates a plan stays the plan's `merchant`, and it becomes a me
 Rules:
 
 - `setPayout(account, payout)` is owner only and applies from the next collection. Zero resets it to "follow the owner". The manager's own address is refused, since the share would be stuck there. It is one step with no acceptance: payout addresses are often exchange deposit addresses or Safes that cannot easily call back, and the owner can correct a mistake at once.
-- `transferOwnership(account, newOwner)` followed by `acceptOwnership(account)` from the new owner. Two steps, like FeeRouter's treasury handover, so a mistyped address never takes control. Proposing again replaces the proposal, and proposing zero withdraws it. A fixed payout survives the handover, and a payout that follows the owner moves to the new owner. The dashboard asks the new owner to confirm the payout after accepting.
+- `transferOwnership(account, newOwner)` followed by `acceptOwnership(account)` from the new owner. Two steps, like FeeRouter's treasury handover, so a mistyped address never takes control. Proposing again replaces the proposal, and proposing zero withdraws it. A fixed payout survives the handover, and a payout that follows the owner moves to the new owner. The dashboard shows the account's payout, and tells a new owner to check it after accepting.
 - `createPlan` names the account it creates the plan for and requires `ownerOf(account) == msg.sender`, with no other shortcut. A key that handed ownership away can no longer create plans under the account, even though the account is its own address. A new owner can add plans that existing subscribers can switch to. `createPlan(msg.sender, ...)` is today's behavior and needs no setup.
 - Pause, resume, cancel and retire check `ownerOf(plan.merchant)` instead of `plan.merchant`.
 
-This narrows open item 5 without paying merchants by withdrawal. A merchant whose payout address is blocklisted sets a new one, charges succeed again, and the manager still holds nothing at rest. Cycles that came due while the address was blocked are not recovered. Those charges reverted rather than failing, and the first successful charge afterwards starts a fresh cycle, so that revenue is lost, not delayed.
+This narrows open item 5 without paying merchants by withdrawal. A merchant whose payout address is blocklisted sets a new one, charges succeed again, and the manager still holds nothing at rest. Those charges reverted rather than failing, so no failure was recorded and the billing date stayed. The first successful charge afterwards collects one cycle. If less than a cycle has passed since the due date it keeps the billing date; if more has passed it starts a fresh cycle, and the cycles beyond the first are lost, not delayed.
 
 A stolen owner key can still redirect payout and cancel subscriptions. Today a stolen merchant key can empty the wallet the revenue lands in and cancel subscriptions, so that is no worse. With a separate payout address it is better, because the stolen key reaches only future revenue. Events and a `merchant.updated` webhook make every change visible after one keeper sync.
 
@@ -83,8 +83,8 @@ A stolen owner key can still redirect payout and cancel subscriptions. Today a s
 
 `setPlanRetired(planId, retired)`, by the account's owner. While a plan is retired:
 
-- `subscribe` and `subscribeWithPermit2` revert `PlanRetired`.
-- `changePlan` into the plan reverts `PlanRetired`. Changing out of it is allowed.
+- `subscribe` and `subscribeWithPermit2` revert `RetiredPlan`.
+- `changePlan` into the plan reverts `RetiredPlan`. Changing out of it is allowed.
 - Existing subscriptions are untouched. They charge, pause, resume and transfer as before.
 
 Retiring is reversible, because a mistaken retire would otherwise force a new plan id and new checkout links. Price and terms stay immutable, and `retired` is the only plan field that changes.
@@ -319,4 +319,4 @@ An independent review against the contract on 2026-10-25 led to these changes:
 - Merchant-proposed transfers were dropped, because a stolen owner key could use them to take over subscriptions.
 - Intro prices must be below the full price, so setup fees are out of v2. Proration would have turned a setup fee into credit.
 - Plans gained a `transferable` flag, which settled the former open issue on forbidding transfers and stops transfers from getting around a retired plan.
-- Stated plainly: intro eligibility is checked off-chain only, cycles missed while a payout address is blocklisted are lost, the failure count and its timer transfer together, `createPlan`'s owner check has no shortcut, a fixed payout survives an ownership handover, and `subscribeWithPermit2`'s fallback compares against the first billed price.
+- Stated plainly: intro eligibility is checked off-chain only, cycles beyond the first missed while a payout address is blocklisted are lost, the failure count and its timer transfer together, `createPlan`'s owner check has no shortcut, a fixed payout survives an ownership handover, and `subscribeWithPermit2`'s fallback compares against the first billed price.

@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LevyDb } from "../src/db.js";
 import {
+  buildAccountWebhookEvent,
   buildWebhookEvents,
   canonicalJson,
   DELIVERY_ID_RE,
@@ -183,6 +184,33 @@ describe("buildWebhookEvents", () => {
         txHash: "0xtx", blockNumber: 42,
       },
     }]);
+  });
+
+  it("maps Completed and SubscriptionTransferred, and nothing for the v2 events that need none", () => {
+    assert.deepEqual(buildWebhookEvents("Completed", { subId: 4n }, LOG, { merchant: MERCHANT, ref: "0xcafe" }), [{
+      type: "subscription.completed",
+      payload: { subId: "4", merchant: MERCHANT, ref: "0xcafe", txHash: "0xtx", blockNumber: 42 },
+    }]);
+    assert.deepEqual(
+      buildWebhookEvents("SubscriptionTransferred", { subId: 4n, from: "0xold", to: "0xnew" }, LOG, { merchant: MERCHANT }),
+      [{
+        type: "subscription.transferred",
+        payload: { subId: "4", merchant: MERCHANT, ref: null, from: "0xold", to: "0xnew", txHash: "0xtx", blockNumber: 42 },
+      }]
+    );
+    assert.deepEqual(buildWebhookEvents("PlanRetired", { planId: 2n, retired: true }, LOG, { merchant: MERCHANT }), []);
+    assert.deepEqual(buildWebhookEvents("TransferProposed", { subId: 4n, from: "0xold", to: "0xnew" }, LOG, { merchant: MERCHANT }), []);
+  });
+
+  it("builds merchant.updated from the account's state, with no subscription fields", () => {
+    const e = buildAccountWebhookEvent(
+      { account: MERCHANT, owner: "0xowner", payout: null, pendingOwner: "0xnext" },
+      LOG
+    );
+    assert.deepEqual(e, {
+      type: "merchant.updated",
+      payload: { merchant: MERCHANT, owner: "0xowner", payout: null, pendingOwner: "0xnext", txHash: "0xtx", blockNumber: 42 },
+    });
   });
 });
 

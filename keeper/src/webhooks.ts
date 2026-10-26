@@ -25,6 +25,9 @@ export const WEBHOOK_EVENTS = [
   "subscription.cancelled",
   "invoice.ready",
   "allowance.low",
+  "subscription.completed",
+  "subscription.transferred",
+  "merchant.updated",
 ] as const;
 
 export type WebhookEventType = (typeof WEBHOOK_EVENTS)[number];
@@ -296,9 +299,41 @@ export function buildWebhookEvents(
           blockNumber,
         },
       }];
+    case "Completed":
+      // Every cycle of a limited plan is billed; the last charge.succeeded came just before.
+      return [{ type: "subscription.completed", payload: { ...base, txHash, blockNumber } }];
+    case "SubscriptionTransferred":
+      // The subscription now pays from `to`; track it by subId, not by the subscriber.
+      return [{
+        type: "subscription.transferred",
+        payload: { ...base, from: args.from as string, to: args.to as string, txHash, blockNumber },
+      }];
     default:
-      return []; // PlanCreated: no webhook event
+      return []; // PlanCreated, PlanRetired, TransferProposed: no webhook event
   }
+}
+
+/**
+ * merchant.updated, after the account's owner, pending owner or payout
+ * changed. It concerns the account, not a subscription, so it carries no subId
+ * or ref: `owner`, `payout` (null while the share follows the owner) and
+ * `pendingOwner` (null when none) are the account's state after the change.
+ */
+export function buildAccountWebhookEvent(
+  account: { account: string; owner: string; payout: string | null; pendingOwner: string | null },
+  log: ManagerLogRef
+): WebhookEvent {
+  return {
+    type: "merchant.updated",
+    payload: {
+      merchant: account.account,
+      owner: account.owner,
+      payout: account.payout,
+      pendingOwner: account.pendingOwner,
+      txHash: log.transactionHash,
+      blockNumber: Number(log.blockNumber),
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

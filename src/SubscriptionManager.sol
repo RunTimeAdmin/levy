@@ -136,8 +136,9 @@ contract SubscriptionManager is ReentrancyGuard {
     /// @notice The owner a merchant account is being handed to, until it accepts.
     mapping(address => address) public pendingOwner;
     /// @notice Where a merchant account's share goes when fixed; zero follows
-    ///         the owner. Read through payoutOf.
-    mapping(address => address) internal accountPayout;
+    ///         the owner. payoutOf resolves it; this getter tells a fixed payout
+    ///         from one that follows the owner.
+    mapping(address => address) public accountPayout;
 
     event PlanCreated(uint256 indexed planId, address indexed merchant, uint256 price, uint256 cycleSeconds);
     event Subscribed(

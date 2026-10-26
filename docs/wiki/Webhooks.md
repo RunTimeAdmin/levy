@@ -15,11 +15,11 @@ flowchart LR
     DL -->|"signed HTTPS POST"| M["Merchant https endpoint"]
 ```
 
-An event is queued only for endpoints that exist, are active and subscribe to that event type when the keeper indexes it. Nothing is replayed to a new endpoint.
+An event is queued only for endpoints that exist, are active and subscribe to that event type when the keeper indexes it. Nothing is replayed to a new endpoint. An endpoint's event list is fixed at registration, so the three types added with manager v2 reach only endpoints that list them.
 
 ## Event types
 
-Every payload carries `subId` (string), `merchant` (the plan's merchant address) and `ref` (the merchant's reference as `0x` plus 64 lowercase hex digits, or `null`). The table lists the rest.
+Every payload except `merchant.updated` carries `subId` (string), `merchant` (the plan's merchant account) and `ref` (the merchant's reference as `0x` plus 64 lowercase hex digits, or `null`). The table lists the rest.
 
 | Event | Sent when | Extra fields |
 |---|---|---|
@@ -32,9 +32,14 @@ Every payload carries `subId` (string), `merchant` (the plan's merchant address)
 | `subscription.paused` | `Paused` or `AutoPaused` | `auto`: true when the contract paused it after repeated failures |
 | `subscription.resumed` | `Resumed` | none |
 | `subscription.cancelled` | `Cancelled` | none |
+| `subscription.completed` | `Completed`: a limited plan's last cycle was billed | `txHash`, `blockNumber` |
+| `subscription.transferred` | `SubscriptionTransferred`: the subscription moved to another wallet | `from`, `to`, `txHash`, `blockNumber` |
 | `allowance.low` | Keeper allowance check, not a contract event | `subscriber`, `allowance`, `balance`, `cyclesCovered`, `nextChargeAt` |
+| `merchant.updated` | `PayoutChanged`, `OwnershipTransferStarted` or `OwnershipTransferred` | No `subId` or `ref`. `merchant` (the account), `owner`, `payout` (`null` while the share follows the owner), `pendingOwner` (`null` when none), `txHash`, `blockNumber` |
 
 `amount` is 0 on `charge.succeeded` when proration credit covered the cycle. `fee` is the 1% protocol fee, rounded down. `subscription.resumed` and `subscription.cancelled` have identical bodies, so route on the `X-Levy-Event` header. Allowance rules for `allowance.low` are in [Keeper Service](Keeper-Service.md).
+
+`subscription.completed` comes from the same transaction as the `charge.succeeded` and `invoice.ready` that carry the last payment. A one-time payment therefore produces `subscription.created`, `charge.succeeded`, `invoice.ready` and `subscription.completed` from one subscribe. After `subscription.transferred`, later events for the subscription carry the same `subId` and `ref`, and the payer is `to`. `merchant.updated` carries the account's state as the keeper read it from the chain while indexing the event. `PlanRetired` and `TransferProposed` send no webhook.
 
 ## What a delivery looks like
 
@@ -78,10 +83,10 @@ Steps for every request:
 
 1. Read the raw body before any JSON parsing. Re-serialized JSON will not match.
 2. Reject a timestamp more than 5 minutes from your clock.
-3. Reject an event type that is not one of the ten above, and a delivery id that is not 16 hex digits, a dash and a number. Event names contain dots, so without these checks the same signed text could be split differently.
+3. Reject an event type that is not one of the thirteen above, and a delivery id that is not 16 hex digits, a dash and a number. Event names contain dots, so without these checks the same signed text could be split differently.
 4. Rebuild the signed string with your own webhook id (from registration or the dashboard, not the `X-Levy-Webhook` header) and verify the signature.
 5. Drop delivery ids you have already processed. The id is signed, so this is safe.
-6. After parsing, reject an event whose `merchant` is not your address, and act only on subscriptions to your own plans.
+6. After parsing, reject an event whose `merchant` is not your merchant account, and act only on subscriptions to your own plans.
 
 ```js
 import { createPublicKey, verify } from "node:crypto";
@@ -95,6 +100,7 @@ const EVENTS = new Set([
   "subscription.created", "subscription.updated", "charge.succeeded", "charge.failed",
   "dunning.started", "subscription.paused", "subscription.resumed",
   "subscription.cancelled", "invoice.ready", "allowance.low",
+  "subscription.completed", "subscription.transferred", "merchant.updated",
 ]);
 
 // rawBody: the request body as a string; headers: Node's lowercased header map
@@ -123,8 +129,9 @@ Merchants register endpoints with `POST /api/webhooks` ([API Reference](API-Refe
 | At registration | The hostname is resolved and every address must be public. One error covers both "does not resolve" and "resolves privately" |
 | At delivery | Scheme, port and credentials are checked again, and the connection's DNS lookup refuses any non-public answer, which stops DNS rebinding after registration |
 | Redirects | Never followed. A 3xx counts as a failure, so register the final URL |
-| Limit | 5 endpoints per merchant, active or not |
-| Events | A non-empty list of the ten known types |
+| Limit | 5 endpoints per merchant account, active or not |
+| Events | A non-empty list of the thirteen known types |
+| Account | The endpoint belongs to a merchant account, which the registering address must own. Once the account changes hands and the keeper has indexed it, only the new owner can list, change or delete it, and it keeps receiving the account's events |
 
 `LEVY_WEBHOOK_ALLOW_PRIVATE=1` lifts the scheme, port and address rules. It is for local development only.
 
@@ -163,7 +170,8 @@ If attempt 8 fails, the next retry would fall at 25 h 21 min, past 24 hours of a
 - Answer 2xx within 5 seconds, then do slow work.
 - Deduplicate on `X-Levy-Delivery`. For charges, also key on `invoiceRef`, which is unique per charge: if the keeper crashes while indexing, the same event can in rare cases be queued again under a new delivery id.
 - Do not rely on arrival order.
-- Track a subscription by `subId`. The `ref` is chosen by whoever subscribes, so link it to your customer once and then use `subId` (see the [merchant guide](https://github.com/RunTimeAdmin/levy/blob/main/docs/merchant-guide.md)).
+- Track a subscription by `subId`. The `ref` is chosen by whoever subscribes, so link it to your customer once and then use `subId` (see the [merchant guide](https://github.com/RunTimeAdmin/levy/blob/main/docs/merchant-guide.md)). The subscriber can change with `subscription.transferred`; the `subId` never does.
+- Check every `merchant.updated` you did not expect. A stolen owner key that redirects the payout or hands the account on shows up there.
 - Reconcile after any outage longer than about 19 hours. Dead deliveries are not replayed. Check `GET /api/deliveries?status=dead`, then re-read state from `GET /api/invoices` and `GET /api/subscriptions`.
 
 ## Source files

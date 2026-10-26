@@ -1,39 +1,63 @@
 # Security
 
-This page covers Levy's trust and threat model, the controls in the code, what the reviews found and what is still open. Levy runs on Arc testnet only, nothing is on mainnet, nothing has been externally audited and no real money flows through it. The contracts never hold funds at rest. Where `SECURITY_REVIEW.md`, `FEE_MATH_AUDIT.md` and the code disagree, the code wins.
+This page covers Levy's trust and threat model, the controls in the code, what the reviews found and what is still open. Levy runs on Arc testnet only, nothing is on mainnet, nothing has been externally audited and no real money flows through it. The contracts never hold funds at rest. Where `SECURITY_REVIEW.md`, `FEE_MATH_AUDIT.md` and the code disagree, the code wins. The page describes manager v2 ([design](https://github.com/RunTimeAdmin/levy/blob/main/docs/manager-v2-design.md)), which adds merchant accounts, retired plans, cycle limits, intro prices and subscription transfers; the testnet contracts from 2026-10-24 predate it, and the reviews below looked at the code before v2.
 
 ## Trust model
 
-- **Anyone** can call `charge()` and `sweep()`, create plans and subscribe as themselves. They cannot pull anything but a subscriber's pre-approved USDC, send it anywhere but the plan's merchant and the FeeRouter, charge early, record failures faster than `retryGap`, or subscribe someone else.
-- **Merchants** control their own plans (immutable) and can pause or cancel subscriptions on them, and resume a pause they made themselves. They cannot change a price, pull more than it, or move a subscriber to another merchant's plan. A merchant cannot resume a pause its subscriber made or a dunning auto-pause (`NotSubscriber`), so a subscriber's pause holds until the subscriber resumes. Before the fix for finding M-1 of the 2026-10-24 review, a merchant could resume either.
-- **Subscribers** can pause, resume (any pause), cancel, switch to another plan of the same merchant and revoke the allowance at any time. They are never charged more than the plan price per cycle, or more than the allowance.
+- **Anyone** can call `charge()` and `sweep()`, create plans for their own account and subscribe as themselves. They cannot pull anything but a subscriber's pre-approved USDC, send it anywhere but the payout of the plan's merchant account and the FeeRouter, charge early, record failures faster than `retryGap`, subscribe someone else, or make another wallet pay for a subscription.
+- **Merchant account owners** control the account's plans (terms immutable, retirement reversible), its payout address and its ownership. They can pause or cancel subscriptions on its plans, and resume a pause the merchant made. They cannot change a price, pull more than it, move a subscriber to another account's plan, or move a subscription to another wallet. A merchant cannot resume a pause its subscriber made or a dunning auto-pause (`NotSubscriber`), so a subscriber's pause holds until the subscriber resumes. Before the fix for finding M-1 of the 2026-10-24 review, a merchant could resume either. A key that handed the account on keeps none of these powers.
+- **Subscribers** can pause, resume (any pause), cancel, switch to another plan of the same account that is not retired, move the subscription to another wallet on a transferable plan, and revoke the allowance at any time. They are never charged more than the plan price (or its intro price) per cycle, more than a limited plan's cycles, or more than the allowance.
 - **The keeper operator** holds a gas key and the webhook signing key and runs the database. The contracts give the keeper no role: it cannot take user funds or alter plans, only fail to charge or misreport.
 - **Arc, USDC and Permit2** are trusted external dependencies.
 
 ## Why a permissionless `charge()` is safe
 
-`charge(subId)` loads the subscription and plan from storage, which the caller cannot influence. The amount due is the plan price minus credit, and credit only comes from cycles that were paid. The pull moves USDC from the subscriber to the manager, never to the caller, and the manager pays the plan's merchant (fixed per plan) and the FeeRouter (immutable) in the same transaction, so it keeps no balance (`invariant_managerHoldsNothing`). Before `nextChargeAt`, or on a paused or cancelled subscription, the call reverts `NotChargeable`. Front-running changes nothing. The one thing a caller controls is when a failing pull is recorded, which the contract spaces out (see Dunning).
+`charge(subId)` loads the subscription and plan from storage, which the caller cannot influence. The amount due is the cycle's price (the intro price during intro cycles) minus credit, and credit only comes from cycles that were paid, at the price they were billed at. The pull moves USDC from the subscriber to the manager, never to the caller, and the manager pays the payout of the plan's merchant account (which only that account's owner can set) and the FeeRouter (immutable) in the same transaction, so it keeps no balance (`invariant_managerHoldsNothing`). Before `nextChargeAt`, or on a paused, cancelled or completed subscription, the call reverts `NotChargeable`. The v2 state it can write (the cycle count, intro cycles left, the billed price and completion) changes only on a successful, due collection that pays the merchant. Front-running changes nothing. The one thing a caller controls is when a failing pull is recorded, which the contract spaces out (see Dunning).
 
 ## Reentrancy and checks-effects-interactions
 
-`subscribe`, `subscribeWithPermit2`, `charge` and `changePlan` are `nonReentrant`, which covers every path that calls USDC or Permit2; outgoing transfers use SafeERC20. These paths write `nextChargeAt`, `failedAttempts`, `status` and `chargeCount` after the transfers, so they do not follow checks-effects-interactions. With standard USDC, which has no transfer callbacks, no reentrant path exists and the guard is defence in depth. Pause, resume and cancel are unguarded, so with a token that made callbacks a cancel issued inside `changePlan`'s transfer would be overwritten by `status = ACTIVE`. This is open for the auditor; reorder if the token ever changes.
+`subscribe`, `subscribeWithPermit2`, `charge` and `changePlan` are `nonReentrant`, which covers every path that calls USDC or Permit2; outgoing transfers use SafeERC20. These paths write `nextChargeAt`, `failedAttempts`, `status`, `chargeCount` and the v2 billing state after the transfers, so they do not follow checks-effects-interactions. With standard USDC, which has no transfer callbacks, no reentrant path exists and the guard is defence in depth. Pause, resume, cancel, `setPlanRetired`, the account functions and the transfer functions are unguarded and only write storage, so with a token that made callbacks a cancel issued inside `changePlan`'s transfer would be overwritten by `status = ACTIVE`. This is open for the auditor; reorder if the token ever changes.
 
 ## Access control
 
 | Function | Who | Note |
 |---|---|---|
-| `createPlan` | anyone | the caller becomes the plan's merchant |
+| `createPlan(account, terms)` | the current owner of `account` | no shortcut for the account's own address once it handed ownership on |
+| `setPlanRetired` | the owner of the plan's account | stops new subscriptions and plan changes into the plan |
+| `setPayout` | the account's owner | one step; the manager's own address is refused |
+| `transferOwnership`, `acceptOwnership` | the account's owner, then the proposed owner | two steps, so a mistyped address never takes control |
 | `subscribe` | anyone, as themselves | `ref` is public and caller-chosen |
 | `subscribeWithPermit2` | the permit signer only | spender and token checked before `permit()` |
 | `charge` | anyone | see above |
-| `pauseSubscription`, `cancelSubscription` | subscriber or the plan's merchant | a merchant pause sets `pausedByMerchant` |
-| `resumeSubscription` | subscriber; the plan's merchant only for its own pause | resume is a fresh start |
-| `changePlan` | subscriber only | same-merchant plans only |
+| `pauseSubscription`, `cancelSubscription` | subscriber or the owner of the plan's account | a merchant pause sets `pausedByMerchant` |
+| `resumeSubscription` | subscriber; the account's owner only for the merchant's own pause | resume is a fresh start |
+| `changePlan` | subscriber only | same-account plans that are not retired |
+| `proposeTransfer` | subscriber only | transferable plans only |
+| `acceptTransfer` | the proposed wallet only | names the current plan |
 | `FeeRouter.sweep` | anyone | destination fixed to `treasury` |
 | `FeeRouter.proposeTreasury` | current treasury only | accepts any non-zero address; sets `pendingTreasury` |
 | `FeeRouter.acceptTreasury` | the pending treasury only | completes the move |
 
-The manager has no owner, admin function, pause switch or upgrade path. Plans are immutable, so there is no repricing attack after a subscriber approves; a new price means a new plan that the subscriber must choose with `changePlan`. The cost is that a bad deployment can only be replaced, and subscribers must approve again.
+The manager has no admin function, pause switch or upgrade path; merchant account owners control only their own account. Plan terms are immutable, so there is no repricing attack after a subscriber approves; a new price means a new plan that the subscriber must choose with `changePlan`. The cost is that a bad deployment can only be replaced, and subscribers must approve again.
+
+## Merchant accounts and transfers
+
+| Threat | Answer |
+|---|---|
+| Charging a wallet that did not agree, through the shared allowance | Only the proposed wallet can accept a transfer, and acceptance names the plan |
+| A stolen owner key taking over subscriptions | Only the subscriber can propose a transfer |
+| A stolen owner key redirecting revenue | Not prevented. It is visible through `PayoutChanged` and the `merchant.updated` webhook. A Safe as owner, with a separate payout address, limits the damage to future revenue |
+| Control handed to a mistyped address | Ownership moves in two steps |
+| A previous owner creating plans under the account | `createPlan` checks `ownerOf(account)` and nothing else |
+| The merchant's share stuck in the manager | The payout cannot be the manager's own address |
+| Unbacked credit through intro pricing | Credit comes from `billedPrice`, written on every billed cycle, and intro prices are below the full price |
+| Intro prices forever through plan hopping | `changePlan` clears the intro cycles left before billing. Cancelling and subscribing again is allowed, as with trials; eligibility is checked off-chain |
+| A completion undone, then charged again | Only `_collect` sets COMPLETED, `changePlan` sets ACTIVE only when the subscription did not complete, and `_collect` refuses a cycle past `maxCycles` |
+| Retiring a plan to hurt its subscribers | Retiring affects only new subscriptions and plan changes into the plan |
+| Buying a retired plan's terms from an existing subscriber | Plans opt in to transfers at creation |
+| Phishing a wallet into accepting, or a subscriber into proposing | The portal shows the plan, price and merchant before an acceptance, and warns before a proposal that the subscription and its paid time leave the wallet |
+
+`test/ManagerV2.t.sol` covers each guard, and the invariants `completedIsTerminal`, `cycleLimitHolds`, `retiredPlansGainNothing` and `subscriberChangesOnlyByAcceptance` fuzz them alongside `creditBacked` with intro plans and transfers in the handler.
 
 ## Dunning enforced on-chain
 
@@ -47,17 +71,17 @@ The earliest auto-pause is `1 + 3 + 7 x (2 x maxFailed - 3)` days after the firs
 
 ## External dependencies
 
-- **USDC blocklist.** If USDC blocklists a plan's merchant or the FeeRouter, the outgoing transfer reverts and so does the whole charge; the subscriber is not charged and the keeper backs off. Only a new plan fixes a blocked merchant, and since the FeeRouter is immutable in the manager, a blocked one would stop every charge that pulls USDC until a new deployment. A blocklisted subscriber just fails the pull and enters dunning.
+- **USDC blocklist.** If USDC blocklists an account's payout address or the FeeRouter, the outgoing transfer reverts and so does the whole charge; the subscriber is not charged and the keeper backs off. In v2 the account's owner fixes a blocked payout with `setPayout`, and charges succeed again; the first one collects one cycle, and if a whole cycle passed it starts a fresh one, so further missed cycles are lost. Since the FeeRouter is immutable in the manager, a blocked one would stop every charge that pulls USDC until a new deployment. A blocklisted subscriber just fails the pull and enters dunning.
 - **Treasury.** The deploy script refuses a mainnet deployment unless the treasury is a contract (a 2-of-3 Safe is planned, signers not yet set), but the treasury can later move itself to any non-zero address, including a plain key: `proposeTreasury` from the current treasury, then `acceptTreasury` from the new one. The second step (added after finding L-3 of the 2026-10-24 review) means a mistyped address cannot take over the fees. If its keys are lost, `sweep()` still works but pays an address nobody controls, so verify every `TreasuryProposed` and `TreasuryUpdated` event. On testnet the treasury is a plain key.
 - **Deploy checks.** USDC and Permit2 must have code and USDC must report 6 decimals; on mainnet only the canonical addresses pass. Both become immutable.
-- **Permit2.** The signer is `msg.sender`, so a relayer cannot pick the plan (relaying was removed on 2026-09-25). Anyone who sees a signed permit can submit it to Permit2 first and use up its nonce. `subscribeWithPermit2` then still subscribes when the subscriber's Permit2 allowance already covers one cycle and has not expired, and otherwise re-throws Permit2's error (fixed for finding L-2 of the 2026-10-24 review; before, it always reverted).
+- **Permit2.** The signer is `msg.sender`, so a relayer cannot pick the plan (relaying was removed on 2026-09-25). Anyone who sees a signed permit can submit it to Permit2 first and use up its nonce. `subscribeWithPermit2` then still subscribes when the subscriber's Permit2 allowance already covers the first cycle (at the intro price, if the plan has one) and has not expired, and otherwise re-throws Permit2's error (fixed for finding L-2 of the 2026-10-24 review; before, it always reverted).
 - **`ref`.** Public and chosen by whoever subscribes, so a claim and not proof. Merchants should issue unguessable refs and track subscriptions by `subId`.
 
 ## API and pages
 
 - **Sign-in.** Sign-In with Ethereum, EOA wallets only. The server writes the whole message, bound to `LEVY_PUBLIC_ORIGIN` and the chain ID, with a random nonce. A challenge lasts 5 minutes and works once, even if the signature is wrong; at most 10,000 are pending. A session lasts 24 hours and only the SHA-256 of its token is stored. See [Authentication](Authentication.md).
 - **Cookies.** The pages use an `HttpOnly`, `SameSite=Strict` cookie, `__Host-` prefixed and `Secure` over https. A cookie-authenticated write must carry an `Origin` equal to `LEVY_PUBLIC_ORIGIN` or it gets 403, which also stops sibling sites such as getlevy.xyz. Backends use bearer tokens.
-- **Scoping.** Every data route returns only the signed-in address's data: someone else's subscription or webhook id returns 404, and an address parameter naming someone else returns 403.
+- **Scoping.** Every data route returns only the signed-in address's data: someone else's subscription or webhook id returns 404, and an address parameter naming someone else returns 403. Merchant routes act for a merchant account the signed-in address owns now, by the keeper's mirror of `ownerOf`, so a previous owner loses the account's data and webhooks once the handover is indexed.
 - **CSP.** The HTML pages send `script-src 'self'` (no inline scripts), `default-src 'none'`, `connect-src 'self'` and `frame-ancestors 'none'`, and load no third-party code. Static serving rejects paths outside `api/public`.
 - **Rate limiting.** `POST /api/auth/challenge` is the one unauthenticated route that writes; the example nginx site limits it to 10 a minute per IP.
 
@@ -107,7 +131,7 @@ From `SECURITY_REVIEW.md` section 9, all before mainnet:
 2. CEI inverted; pause, resume and cancel unguarded (safe with USDC).
 3. `changePlan`, resume, and (since the 2026-10-24 review) a charge after failures or after a whole skipped cycle forgive the overdue time; confirm this is intended.
 4. Fixed 2026-10-24: a Permit2 nonce front-run made `subscribeWithPermit2` revert. It now subscribes on the existing Permit2 allowance when that covers one cycle and has not expired (L-2 in the 2026-10-24 review).
-5. A USDC-blocklisted merchant makes its charges revert.
+5. A USDC-blocklisted merchant makes its charges revert. Narrowed in manager v2: the account's owner sets a new payout address and charges resume, though cycles missed meanwhile, beyond the one the next charge collects, are lost.
 6. Narrowed 2026-10-24: the treasury move is two-step (`proposeTreasury`, then `acceptTreasury` from the new address), so a mistyped address cannot take over the fees (L-3 in the 2026-10-24 review). A plain key that accepts can still become the treasury.
 7. Checkout: a second pre-connected tab does not stop at a pending subscribe, and the pending record expires after a day.
 8. Portal top-up can add rounds twice after an unreadable approval receipt.

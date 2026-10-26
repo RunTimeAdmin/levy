@@ -31,6 +31,12 @@ const PRICE = 10_000_000n; // $10.00
 const CHECKOUT_REF = `0x${"7f3a".repeat(16)}` as const;
 const CYCLE = 30 * 86_400;
 
+/** createPlan's PlanTerms: $price every 30 days, maxFailed 2, no v2 terms unless given. */
+const terms = (price: bigint, extra: Record<string, unknown> = {}) => ({
+  price, cycleSeconds: BigInt(CYCLE), trialSeconds: 0n, maxFailed: 2,
+  maxCycles: 0, introPrice: 0n, introCycles: 0, transferable: false, ...extra,
+});
+
 let anvil: ChildProcess;
 let keeper: ReturnType<typeof privateKeyToAccount>;
 let alice: ReturnType<typeof privateKeyToAccount>;
@@ -153,7 +159,7 @@ before(async () => {
   }
 
   // Merchant creates a $10 / 30-day plan (maxFailed = 2).
-  await manager.write.createPlan([PRICE, CYCLE, 0, 3 * 86_400, 2], { account: keeper, chain });
+  await manager.write.createPlan([keeper.address, terms(PRICE)], { account: keeper, chain });
 
   // Keeper service under test.
   process.env.LEVY_RPC_URL = RPC;
@@ -412,7 +418,7 @@ describe("keeper integration (anvil)", () => {
   it("indexes plans nobody subscribed to, and reports plan changes", async () => {
     keeperSvc.webhooks.register(keeper.address, "http://127.0.0.1:9/updates", ["subscription.updated"], await chainTime());
     // Plan 2: same merchant, twice the price, no subscribers yet.
-    await mined(await manager.write.createPlan([PRICE * 2n, CYCLE, 0, 3 * 86_400, 2], { account: keeper, chain: publicClient.chain }));
+    await mined(await manager.write.createPlan([keeper.address, terms(PRICE * 2n)], { account: keeper, chain: publicClient.chain }));
     await keeperSvc.runCycle();
     const plan2 = db.listPlans().find((p) => p.planId === "2");
     assert.ok(plan2, "plan 2 indexed without subscribers");
@@ -506,5 +512,88 @@ describe("keeper integration (anvil)", () => {
       "every indexed transfer moves USDC into or out of the manager"
     );
     assert.ok(!rows.some((r) => /^0x0{40}$/.test(r.fromAddr)), "no mints");
+  });
+
+  it("v2: follows intro pricing, a wallet transfer, completion and account changes", async () => {
+    keeperSvc.webhooks.register(
+      keeper.address,
+      "http://127.0.0.1:9/v2",
+      ["subscription.completed", "subscription.transferred", "merchant.updated"],
+      await chainTime()
+    );
+    const as = (who: ReturnType<typeof privateKeyToAccount>) => getContract({
+      address: manager.address, abi: abi("SubscriptionManager"),
+      client: { public: publicClient, wallet: createWalletClient({ account: who, chain: publicClient.chain, transport: http(RPC) }) },
+    });
+    const opts = (who: ReturnType<typeof privateKeyToAccount>) => ({ account: who, chain: publicClient.chain });
+    const payloads = (type: string) => (db["db"]
+      .prepare("SELECT payload FROM webhook_deliveries WHERE event_type = ? ORDER BY id")
+      .all(type) as Array<{ payload: string }>).map((r) => JSON.parse(r.payload));
+
+    // A two-payment, transferable plan whose first payment is $1.
+    await mined(await manager.write.createPlan([keeper.address, terms(PRICE, {
+      maxCycles: 2, introPrice: 1_000_000n, introCycles: 1, transferable: true,
+    })], opts(keeper)));
+    const planId = (await manager.read.planCount()).toString();
+    await mined(await as(carol).write.subscribe([BigInt(planId), zeroHash], opts(carol)));
+    const subId = (await manager.read.subCount()).toString();
+    await keeperSvc.runCycle();
+    const plan = db.listPlans().find((p) => p.planId === planId)!;
+    assert.equal(plan.maxCycles, 2);
+    assert.equal(plan.introPrice, "1000000");
+    assert.equal(plan.transferable, 1);
+    assert.equal(db.getSubscription(subId)?.planCycles, 1);
+    assert.equal(db.getSubscription(subId)?.introCyclesLeft, 0); // used at subscribe
+
+    // Carol moves it to bob, who accepts.
+    await mined(await as(carol).write.proposeTransfer([BigInt(subId), bob.address], opts(carol)));
+    await keeperSvc.runCycle();
+    assert.equal(db.getSubscription(subId)?.pendingTransfer?.toLowerCase(), bob.address.toLowerCase());
+    await mined(await as(bob).write.acceptTransfer([BigInt(subId), BigInt(planId)], opts(bob)));
+    await keeperSvc.runCycle();
+    assert.equal(db.getSubscription(subId)?.subscriber.toLowerCase(), bob.address.toLowerCase());
+    assert.equal(db.getSubscription(subId)?.pendingTransfer, null);
+    const moved = payloads("subscription.transferred");
+    assert.equal(moved.length, 1);
+    assert.equal(moved[0].from.toLowerCase(), carol.address.toLowerCase());
+    assert.equal(moved[0].to.toLowerCase(), bob.address.toLowerCase());
+
+    // Bob offers it on to carol; completion ends the offer, since accepting would revert.
+    await mined(await as(bob).write.proposeTransfer([BigInt(subId), carol.address], opts(bob)));
+    await keeperSvc.runCycle();
+    assert.equal(db.getSubscription(subId)?.pendingTransfer?.toLowerCase(), carol.address.toLowerCase());
+
+    // The second payment, from bob at the full price, completes it; the keeper stops there.
+    await increaseTime(CYCLE + 60);
+    const report = await keeperSvc.runCycle();
+    assert.ok(report.charged.some((c) => c.subId === subId), "the last payment is charged");
+    const charges = db.listCharges({ subId });
+    assert.deepEqual(charges.map((c) => c.amount), [PRICE.toString(), "1000000"]); // newest first
+    assert.equal(charges[0].subscriber.toLowerCase(), bob.address.toLowerCase());
+    assert.equal(db.getSubscription(subId)?.status, 5); // COMPLETED
+    assert.equal(db.getSubscription(subId)?.pendingTransfer, null);
+    assert.equal(payloads("subscription.completed").filter((p) => p.subId === subId).length, 1);
+    await increaseTime(CYCLE + 60);
+    assert.ok(!(await keeperSvc.runCycle()).charged.some((c) => c.subId === subId), "nothing after completion");
+
+    // The account fixes a payout, then hands control to alice.
+    await mined(await manager.write.setPayout([keeper.address, carol.address], opts(keeper)));
+    await mined(await manager.write.transferOwnership([keeper.address, alice.address], opts(keeper)));
+    await keeperSvc.runCycle();
+    assert.equal(db.getAccount(keeper.address)?.pendingOwner?.toLowerCase(), alice.address.toLowerCase());
+    assert.equal(db.pendingOwnerships(alice.address).length, 1);
+    await mined(await as(alice).write.acceptOwnership([keeper.address], opts(alice)));
+    await keeperSvc.runCycle();
+    const account = db.getAccount(keeper.address)!;
+    assert.equal(account.owner.toLowerCase(), alice.address.toLowerCase());
+    assert.equal(account.payout?.toLowerCase(), carol.address.toLowerCase());
+    assert.equal(account.pendingOwner, null);
+    assert.deepEqual(db.accountsOwnedBy(alice.address).map((a) => a.toLowerCase()), [alice.address.toLowerCase(), keeper.address.toLowerCase()]);
+    assert.deepEqual(db.accountsOwnedBy(keeper.address), []);
+    const updates = payloads("merchant.updated");
+    assert.equal(updates.length, 3); // payout, proposal, handover
+    assert.equal(updates[2].owner.toLowerCase(), alice.address.toLowerCase());
+    assert.equal(updates[2].payout.toLowerCase(), carol.address.toLowerCase());
+    assert.equal(updates[2].subId, undefined);
   });
 });

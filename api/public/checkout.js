@@ -66,34 +66,52 @@ async function init() {
   cfg = config;
   plan = plans.find((p) => p.planId === planId);
   if (!plan) { planMsg(`Plan #${planId} was not found.`); return; }
+  if (plan.retired) { planMsg(`Plan #${planId} is closed to new subscribers. Ask the merchant for a current checkout link.`); return; }
   if (!cfg.managerAddress || !cfg.usdcAddress) { planMsg("Checkout is not configured on this server yet."); return; }
 
+  const once = plan.maxCycles === 1;
   const card = $("plan");
   card.replaceChildren();
   const h = document.createElement("div"); h.className = "muted"; h.textContent = `Plan #${plan.planId}`;
-  const p = document.createElement("div"); p.className = "price"; p.textContent = usdc(plan.price) + " ";
-  const s = document.createElement("small"); s.textContent = `USDC every ${every(plan.cycleSeconds)}`; p.append(s);
+  // A single payment is the first one, at the intro price if the plan has one.
+  const p = document.createElement("div"); p.className = "price"; p.textContent = usdc(once ? LevyWallet.firstPrice(plan) : plan.price) + " ";
+  const s = document.createElement("small"); s.textContent = once ? "USDC, one payment" : `USDC every ${every(plan.cycleSeconds)}`; p.append(s);
   const dl = document.createElement("dl");
+  if (plan.introCycles > 0 && !once) {
+    row(dl, "Intro price", `${usdc(plan.introPrice)} USDC for the first ${plan.introCycles === 1 ? "payment" : `${plan.introCycles} payments`}`);
+  }
+  if (plan.maxCycles > 1) row(dl, "Payments", `${plan.maxCycles}, then the subscription ends`);
   const trialDays = plan.trialSeconds / 86400;
-  row(dl, "First charge", plan.trialSeconds > 0
+  row(dl, once ? "Payment" : "First charge", plan.trialSeconds > 0
     ? `after a ${+trialDays.toFixed(2)}-day free trial` : "today, when you subscribe");
   row(dl, "Merchant", plan.merchant, true);
   if (ref.label) row(dl, "Reference", ref.label, true);
   row(dl, "Levy contract", cfg.managerAddress, true);
   row(dl, "Network", LevyWallet.chainName(cfg.chainId));
   card.append(h, p, dl);
+  // A limited plan never needs more than its payments approved; offer all of them.
+  if (plan.maxCycles > 0) {
+    $("cycles").max = String(maxApprovable());
+    $("cycles").value = String(maxApprovable());
+    $("cyclesLabel").textContent = once ? "Approve USDC for the payment" : "Approve USDC for this many of the plan's payments";
+  }
   $("pay").hidden = false;
   showBudget();
 }
 
-/** The cycles field as a whole number from 1 to 120, or null when it is not one. */
+/** At most 120 cycles, and no more than a limited plan's payments. */
+const maxApprovable = () => (plan.maxCycles > 0 ? Math.min(plan.maxCycles, 120) : 120);
+
+/** The cycles field as a whole number from 1 to maxApprovable(), or null when it is not one. */
 function cycles() {
   const v = $("cycles").value.trim();
-  return /^\d+$/.test(v) && +v >= 1 && +v <= 120 ? +v : null;
+  return /^\d+$/.test(v) && +v >= 1 && +v <= maxApprovable() ? +v : null;
 }
 function showBudget() {
   const n = cycles();
-  $("budget").textContent = n === null ? "Enter a whole number from 1 to 120." : `= ${usdc(BigInt(plan.price) * BigInt(n))} USDC`;
+  $("budget").textContent = n === null
+    ? `Enter a whole number from 1 to ${maxApprovable()}.`
+    : `= ${usdc(LevyWallet.paymentsTotal(plan, n))} USDC`;
   $("budget").className = n === null ? "invalid" : "muted";
 }
 $("cycles").oninput = showBudget;
@@ -127,8 +145,8 @@ $("connect").onclick = async () => {
     const { bal } = await refreshWallet();
     $("connect").hidden = true;
     $("go").hidden = false;
-    if (plan.trialSeconds === 0 && bal < BigInt(plan.price)) {
-      status(`Your USDC balance does not cover the first charge (${usdc(plan.price)}), which is due today.`, "warn");
+    if (plan.trialSeconds === 0 && bal < LevyWallet.firstPrice(plan)) {
+      status(`Your USDC balance does not cover the first charge (${usdc(LevyWallet.firstPrice(plan))}), which is due today.`, "warn");
       const faucet = LevyWallet.faucet(cfg.chainId);
       if (faucet) {
         const a = document.createElement("a");
@@ -146,7 +164,7 @@ $("connect").onclick = async () => {
 };
 
 $("go").onclick = async () => {
-  if (!approved && cycles() === null) { status("Enter a whole number of billing cycles from 1 to 120.", "bad"); return; }
+  if (!approved && cycles() === null) { status(`Enter a whole number of billing cycles from 1 to ${maxApprovable()}.`, "bad"); return; }
   $("go").disabled = true;
   try {
     let p = loadPending();
@@ -154,7 +172,7 @@ $("go").onclick = async () => {
       // The total is fixed when the approval is sent; approve() sets the
       // allowance to it, so sending the same approval again changes nothing.
       const { allow } = await refreshWallet();
-      const total = allow + BigInt(plan.price) * BigInt(cycles());
+      const total = allow + LevyWallet.paymentsTotal(plan, cycles());
       status("Step 1 of 2: approve the USDC allowance in your wallet...", "busy");
       await LevyWallet.approve(account, cfg.usdcAddress, cfg.managerAddress, total, (hash) => {
         p = { ...p, approveTarget: total.toString(), approveHash: hash };
@@ -262,13 +280,19 @@ function showReceipt({ subId, nextChargeAt, txHash }, allow) {
   // Subscribed carries the first charge time; if its log was not found, estimate it.
   const next = nextChargeAt ?? Math.floor(Date.now() / 1000) + (plan.trialSeconds || plan.cycleSeconds);
   const dl = document.createElement("dl");
+  const once = plan.maxCycles === 1;
+  const first = LevyWallet.firstPrice(plan);
   row(dl, "Subscription", subId ? `#${subId}` : "created (see the transaction)");
-  row(dl, "Plan", `#${plan.planId}, ${usdc(plan.price)} USDC every ${every(plan.cycleSeconds)}`);
+  row(dl, "Plan", once
+    ? `#${plan.planId}, a single payment of ${usdc(first)} USDC`
+    : `#${plan.planId}, ${usdc(plan.price)} USDC every ${every(plan.cycleSeconds)}` +
+      (plan.introCycles > 0 ? `, the first ${plan.introCycles === 1 ? "payment" : `${plan.introCycles} payments`} at ${usdc(plan.introPrice)}` : "") +
+      (plan.maxCycles > 1 ? `, ${plan.maxCycles} payments in all` : ""));
   if (plan.trialSeconds > 0) {
-    row(dl, "First charge", `${usdc(plan.price)} USDC on ${date(next)}, when the free trial ends`);
+    row(dl, once ? "Payment" : "First charge", `${usdc(first)} USDC on ${date(next)}, when the free trial ends`);
   } else {
-    row(dl, "Paid today", `${usdc(plan.price)} USDC`);
-    row(dl, "Next charge", date(next));
+    row(dl, "Paid today", `${usdc(first)} USDC`);
+    row(dl, once ? "Paid through" : "Next charge", date(next));
   }
   row(dl, "Merchant", plan.merchant, true);
   if (ref.label) row(dl, "Reference", ref.label, true);

@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import { readFile } from "node:fs/promises";
 import { dirname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getAddress } from "viem";
 import { LevyDb, Status } from "../../keeper/src/db.js";
 import { checkWebhookUrl } from "../../keeper/src/webhook-url.js";
 import {
@@ -99,6 +100,7 @@ const STATUS_NAMES: Record<number, string> = {
   [Status.PAST_DUE]: "past_due",
   [Status.PAUSED]: "paused",
   [Status.CANCELLED]: "cancelled",
+  [Status.COMPLETED]: "completed",
 };
 
 /** 6-decimal USDC units -> "123.456789". */
@@ -152,8 +154,29 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
 
   // Every endpoint below except health, plans and the webhook public key
   // needs a session, and only returns the signed-in address's own data: as
-  // merchant (dashboard) or as subscriber (portal).
+  // owner of a merchant account (dashboard) or as subscriber (portal).
   const requireSession = registerAuthRoutes(app, db, { origin: opts.origin, chainId: opts.chainId });
+
+  /**
+   * The merchant account a request acts for: `merchant` from the query or
+   * body, or else the signed-in address's own account. The signed-in address
+   * must own it now, by the keeper's mirror of SubscriptionManager.ownerOf, so
+   * a previous owner loses access once the handover is indexed. 400 when
+   * malformed, 403 when someone else owns it.
+   */
+  function merchantAccount(v: unknown, me: string): string {
+    if (v !== undefined && !isAddress(v)) bad(400, "invalid merchant address");
+    const account = v === undefined ? me : getAddress(v as string);
+    if (!sameAddress(db.ownerOf(account), me)) bad(403, "the signed-in address does not own that merchant account");
+    return account;
+  }
+
+  /** A merchant account as the dashboard shows it; `payout` is null while the share follows the owner. */
+  function accountView(account: string) {
+    const a = db.getAccount(account);
+    const owner = a?.owner ?? account;
+    return { account, owner, payout: a?.payout ?? null, paidTo: a?.payout ?? owner, pendingOwner: a?.pendingOwner ?? null };
+  }
 
   // ---- health ----
 
@@ -174,22 +197,42 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
       ...p,
       priceUsdc: formatUsdc(p.price),
       cycleDays: p.cycleSeconds / 86_400,
+      retired: p.retired === 1,
+      transferable: p.transferable === 1,
+      maxCycles: p.maxCycles ?? 0,
+      introPrice: p.introPrice ?? "0",
+      introPriceUsdc: formatUsdc(p.introPrice ?? "0"),
+      introCycles: p.introCycles ?? 0,
     }));
+  });
+
+  // ---- merchant accounts ----
+
+  // The accounts the signed-in address acts for (its own unless it handed it
+  // on, plus any handed to it), and those offered to it awaiting acceptOwnership.
+  app.get("/api/accounts", async (req) => {
+    const me = requireSession(req);
+    return {
+      owned: db.accountsOwnedBy(me).map(accountView),
+      offered: db.pendingOwnerships(me).map((a) => accountView(a.account)),
+    };
   });
 
   // ---- subscriptions ----
 
   app.get("/api/subscriptions", async (req) => {
     const me = requireSession(req);
-    const q = req.query as { merchant?: string; subscriber?: string; status?: string };
-    checkOwnAddress(q.merchant, me, "merchant");
+    const q = req.query as { merchant?: string; subscriber?: string; pendingTransfer?: string; status?: string };
     checkOwnAddress(q.subscriber, me, "subscriber");
-    if (q.merchant === undefined && q.subscriber === undefined) {
-      return bad(400, "pass merchant or subscriber");
+    checkOwnAddress(q.pendingTransfer, me, "pendingTransfer");
+    if (q.merchant === undefined && q.subscriber === undefined && q.pendingTransfer === undefined) {
+      return bad(400, "pass merchant, subscriber or pendingTransfer");
     }
-    const filter: { merchant?: string; subscriber?: string } = {};
-    if (q.merchant !== undefined) filter.merchant = me;
+    const filter: { merchant?: string; subscriber?: string; pendingTransfer?: string } = {};
+    if (q.merchant !== undefined) filter.merchant = merchantAccount(q.merchant, me);
     if (q.subscriber !== undefined) filter.subscriber = me;
+    // Subscriptions offered to this wallet, awaiting its acceptTransfer.
+    if (q.pendingTransfer !== undefined) filter.pendingTransfer = me;
     let subs = db.listSubscriptions(filter);
     if (q.status !== undefined) {
       const n = Number(q.status);
@@ -226,7 +269,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
     const { id } = req.params as { id: string };
     const sub = db.getSubscription(id);
     // Someone else's subscription looks the same as a missing one.
-    if (!sub || !(sameAddress(sub.subscriber, me) || sameAddress(sub.merchant, me))) {
+    if (!sub || !(sameAddress(sub.subscriber, me) || sameAddress(db.ownerOf(sub.merchant), me))) {
       return bad(404, "subscription not found");
     }
     return {
@@ -248,8 +291,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   app.get("/api/metrics", async (req) => {
     const me = requireSession(req);
     const q = req.query as { merchant?: string };
-    checkOwnAddress(q.merchant, me, "merchant");
-    const merchant = me;
+    const merchant = merchantAccount(q.merchant, me);
 
     const subs = db.listSubscriptions({ merchant });
     const mrrSubs = subs.filter((s) => s.status === Status.TRIAL || s.status === Status.ACTIVE);
@@ -278,6 +320,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
       pastDueSubs: count(Status.PAST_DUE),
       pausedSubs: count(Status.PAUSED),
       cancelledSubs: count(Status.CANCELLED),
+      completedSubs: count(Status.COMPLETED),
       totalCharged,
       totalChargedUsdc: formatUsdc(totalCharged),
       totalFees,
@@ -294,8 +337,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   app.get("/api/dunning", async (req) => {
     const me = requireSession(req);
     const q = req.query as { merchant?: string };
-    checkOwnAddress(q.merchant, me, "merchant");
-    return db.listDunning(me).map((r) => ({
+    return db.listDunning(merchantAccount(q.merchant, me)).map((r) => ({
       ...r,
       priceUsdc: formatUsdc(r.price),
       nextRetryAtIso: new Date(r.nextRetryAt * 1000).toISOString(),
@@ -307,8 +349,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   async function chargesHandler(req: any, reply: any) {
     const me = requireSession(req);
     const q = req.query as { subscription?: string; merchant?: string; format?: string };
-    checkOwnAddress(q.merchant, me, "merchant");
-    const filter: { subId?: string; merchant?: string } = { merchant: me };
+    const filter: { subId?: string; merchant?: string } = { merchant: merchantAccount(q.merchant, me) };
     if (q.subscription) filter.subId = q.subscription;
     const rows = db.listCharges(filter);
     if (q.format === "csv") {
@@ -332,15 +373,14 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   app.get("/api/webhooks", async (req) => {
     const me = requireSession(req);
     const q = req.query as { merchant?: string };
-    checkOwnAddress(q.merchant, me, "merchant");
-    return db.listWebhooks(me).map((w) => ({ ...w, events: JSON.parse(w.events) }));
+    return db.listWebhooks(merchantAccount(q.merchant, me)).map((w) => ({ ...w, events: JSON.parse(w.events) }));
   });
 
   app.post("/api/webhooks", async (req) => {
     const me = requireSession(req);
     const body = req.body as { merchant?: string; url?: string; events?: string[] };
-    checkOwnAddress(body?.merchant, me, "merchant");
-    const full = () => db.listWebhooks(me).length >= MAX_WEBHOOKS_PER_MERCHANT;
+    const account = merchantAccount(body?.merchant, me);
+    const full = () => db.listWebhooks(account).length >= MAX_WEBHOOKS_PER_MERCHANT;
     const limitReached = () => bad(400, `webhook limit reached (${MAX_WEBHOOKS_PER_MERCHANT} per merchant)`);
     if (full()) return limitReached();
     if (typeof body?.url === "string" && body.url.length > MAX_WEBHOOK_URL_LENGTH) {
@@ -357,7 +397,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
     // Count again after the DNS lookup and insert with no await in between:
     // parallel requests all passed the first check while their lookups ran.
     if (full()) return limitReached();
-    const id = db.registerWebhook(me, url.url, [...new Set(body.events)], Math.floor(Date.now() / 1000));
+    const id = db.registerWebhook(account, url.url, [...new Set(body.events)], Math.floor(Date.now() / 1000));
     return { id };
   });
 
@@ -395,8 +435,10 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
 
   app.get("/api/deliveries", async (req) => {
     const me = requireSession(req);
-    const q = req.query as { webhookId?: string; status?: string; limit?: string };
-    const filter: { webhookId?: number; status?: string; limit?: number; merchant: string } = { merchant: me };
+    const q = req.query as { merchant?: string; webhookId?: string; status?: string; limit?: string };
+    const filter: { webhookId?: number; status?: string; limit?: number; merchant: string } = {
+      merchant: merchantAccount(q.merchant, me),
+    };
     if (q.webhookId !== undefined) {
       const n = Number(q.webhookId);
       if (!Number.isInteger(n)) return bad(400, "invalid webhookId");
@@ -413,7 +455,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   /** Someone else's webhook looks the same as a missing one. */
   function ownWebhook(id: number, me: string): boolean {
     const hook = db.getWebhook(id);
-    return hook !== undefined && sameAddress(hook.merchant, me);
+    return hook !== undefined && sameAddress(db.ownerOf(hook.merchant), me);
   }
 
   // ---- static frontend ----

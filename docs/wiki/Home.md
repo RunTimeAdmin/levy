@@ -2,16 +2,16 @@
 
 Levy is pull-based USDC subscription billing on Arc. A merchant creates a plan, a subscriber approves a USDC allowance once, and a keeper triggers each cycle's payment. The protocol keeps 1% of every collected payment and sends the rest to the merchant.
 
-> **Status.** Levy runs on Arc testnet only. Nothing is on mainnet and nothing is audited. The first testnet soak ran from 2026-10-07 to 2026-10-24; the second runs against the contracts deployed on 2026-10-24 with the fixes from that day's review. Current contracts: SubscriptionManager `0xea24ac9c1217a671139d93225fdcf19ea3c4df4e` and FeeRouter `0x9e62309243da8be600a718a323fbbdfce00f3ce8`. See [Deployment](Deployment.md) and [Security](Security.md).
+> **Status.** Levy runs on Arc testnet only. Nothing is on mainnet and nothing is audited. The first testnet soak ran from 2026-10-07 to 2026-10-24; the second runs against the contracts deployed on 2026-10-24 with the fixes from that day's review. Current contracts: SubscriptionManager `0xea24ac9c1217a671139d93225fdcf19ea3c4df4e` and FeeRouter `0x9e62309243da8be600a718a323fbbdfce00f3ce8`. See [Deployment](Deployment.md) and [Security](Security.md). The wiki describes manager v2 ([design](https://github.com/RunTimeAdmin/levy/blob/main/docs/manager-v2-design.md)): merchant accounts, retired plans, cycle limits, intro prices and subscription transfers. It is built and tested but not deployed; the contracts above predate it.
 
 ## How it works
 
-1. A merchant creates a plan on-chain: price per cycle, cycle length, optional trial, and how many failed payments to tolerate. Plans are immutable.
+1. A merchant creates a plan on-chain: price per cycle, cycle length, optional trial, how many failed payments to tolerate, and optionally a number of payments, an intro price and whether subscriptions may move to another wallet. Plan terms are immutable; a plan can be retired to stop new sign-ups. The merchant account's owner and payout address can change.
 2. A subscriber approves a USDC allowance and subscribes, from the hosted checkout page or directly through the contract. Without a trial, the first cycle is charged at once.
 3. When a cycle is due, anyone can call `charge()`. The keeper is the always-on caller. The contract can only move the subscriber's pre-approved USDC to that plan's merchant.
 4. If a pull fails, the contract records it and the keeper retries on a 1, 3, then 7 day schedule that the contract itself enforces. After twice the plan's tolerance, the subscription pauses automatically.
 5. The keeper delivers signed webhooks to the merchant for every step, and the merchant notifies its own customers.
-6. Subscribers pause, resume, cancel and change plans from the customer portal, signing with their own wallet.
+6. Subscribers pause, resume, cancel, change plans and, where the plan allows it, move a subscription to another wallet from the customer portal, signing with their own wallet.
 
 ## Pages
 
@@ -28,7 +28,7 @@ Levy is pull-based USDC subscription billing on Arc. A merchant creates a plan, 
 | Page | What it covers |
 |---|---|
 | [Smart Contracts](Smart-Contracts.md) | The two contracts, their functions, events and invariants |
-| [Plans and Subscriptions](Plans-and-Subscriptions.md) | Creating plans, subscribing, and the subscription lifecycle |
+| [Plans and Subscriptions](Plans-and-Subscriptions.md) | Merchant accounts, creating and retiring plans, subscribing, the subscription lifecycle and wallet transfers |
 | [Charging and Fees](Charging-and-Fees.md) | How a charge works, fee math and the FeeRouter |
 | [Dunning and Failures](Dunning-and-Failures.md) | Failed payments, retries, past due and auto-pause |
 | [Plan Changes and Proration](Plan-Changes-and-Proration.md) | Upgrades, downgrades and credit |

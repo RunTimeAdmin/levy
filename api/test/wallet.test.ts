@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { toEventSelector, toFunctionSelector, type AbiEvent, type AbiFunction } from "viem";
+import { encodeFunctionData, toEventSelector, toFunctionSelector, type AbiEvent, type AbiFunction } from "viem";
 
 // public/wallet.js encodes calls by hand (no third-party code on the checkout
 // page). Hold every hard-coded selector to the ABIs the keeper uses.
@@ -31,6 +31,13 @@ describe("wallet.js encodings match the contracts", () => {
     ["createPlan", "createPlan", "SubscriptionManager"],
     ["changePlan", "changePlan", "SubscriptionManager"],
     ["subscriptions", "subscriptions", "SubscriptionManager"],
+    ["billedPrice", "billedPrice", "SubscriptionManager"],
+    ["setPlanRetired", "setPlanRetired", "SubscriptionManager"],
+    ["setPayout", "setPayout", "SubscriptionManager"],
+    ["transferOwnership", "transferOwnership", "SubscriptionManager"],
+    ["acceptOwnership", "acceptOwnership", "SubscriptionManager"],
+    ["proposeTransfer", "proposeTransfer", "SubscriptionManager"],
+    ["acceptTransfer", "acceptTransfer", "SubscriptionManager"],
   ] as const) {
     it(`${key} selector`, () => {
       const m = src.match(new RegExp(`${key}: "(0x[0-9a-f]{8})"`));
@@ -67,9 +74,11 @@ describe("wallet.js encodings match the contracts", () => {
       ["subscriber", "planId", "start", "nextChargeAt", "failedAttempts", "credit", "chargeCount", "status"]);
   });
 
-  it("createPlan takes price, cycle, trial, grace, maxFailed in that order", () => {
-    assert.deepEqual(fn("createPlan", "SubscriptionManager").inputs.map((i) => i.name),
-      ["price", "cycleSeconds", "trialSeconds", "graceSeconds", "maxFailed"]);
+  it("createPlan takes the account, then PlanTerms in the order createPlan() encodes them", () => {
+    const f = fn("createPlan", "SubscriptionManager");
+    assert.deepEqual(f.inputs.map((i) => i.name), ["account", "terms"]);
+    assert.deepEqual((f.inputs[1] as { components: Array<{ name: string }> }).components.map((c) => c.name),
+      ["price", "cycleSeconds", "trialSeconds", "maxFailed", "maxCycles", "introPrice", "introCycles", "transferable"]);
   });
 });
 
@@ -91,23 +100,38 @@ describe("wallet.js chain names and explorer links", () => {
     const month = { price: "30000000", cycleSeconds: 2_592_000 };
     const pro = { price: "60000000", cycleSeconds: 2_592_000 };
     // Paid cycle with half of it left: 15 USDC credit, so 45 USDC due on the 60 USDC plan.
-    const half = { credit: 0n, chargeCount: 1n, nextChargeAt: now + 1_296_000 };
+    const half = { credit: 0n, chargeCount: 1n, nextChargeAt: now + 1_296_000, billedPrice: 30_000_000n };
     // Spread: the result comes from the vm sandbox's realm, with a different Object prototype.
     assert.deepEqual({ ...wallet.changePlanQuote(half, month, pro, now) },
       { credit: 15_000_000n, due: 45_000_000n, creditLeft: 0n, nextChargeAt: now + 2_592_000 });
     // Downgrade with most of the cycle left: credit covers the cheaper plan and the rest carries.
     const cheap = { price: "10000000", cycleSeconds: 604_800 };
-    const most = { credit: 0n, chargeCount: 1n, nextChargeAt: now + 2_160_000 };
+    const most = { credit: 0n, chargeCount: 1n, nextChargeAt: now + 2_160_000, billedPrice: 30_000_000n };
     const q = wallet.changePlanQuote(most, month, cheap, now);
     assert.equal(q.credit, 25_000_000n);
     assert.equal(q.due, 0n);
     assert.equal(q.creditLeft, 15_000_000n);
     // An unpaid trial earns no credit: the full price is due.
-    const trial = { credit: 0n, chargeCount: 0n, nextChargeAt: now + 600_000 };
+    const trial = { credit: 0n, chargeCount: 0n, nextChargeAt: now + 600_000, billedPrice: 0n };
     assert.equal(wallet.changePlanQuote(trial, month, pro, now).due, 60_000_000n);
     // Stored credit is spent first, and remaining time is capped at one cycle.
-    const stored = { credit: 5_000_000n, chargeCount: 2n, nextChargeAt: now + 9_999_999 };
+    const stored = { credit: 5_000_000n, chargeCount: 2n, nextChargeAt: now + 9_999_999, billedPrice: 30_000_000n };
     assert.equal(wallet.changePlanQuote(stored, month, pro, now).credit, 35_000_000n);
+    // An intro cycle billed at $1 earns $1 of credit for its unused time, not the plan's $30.
+    const intro = { credit: 0n, chargeCount: 1n, nextChargeAt: now + 2_592_000, billedPrice: 1_000_000n };
+    assert.equal(wallet.changePlanQuote(intro, month, pro, now).credit, 1_000_000n);
+  });
+
+  it("prices a plan's first payments: intro cycles at the intro price, none past a cycle limit", () => {
+    const plain = { price: "10000000" };
+    assert.equal(wallet.firstPrice(plain), 10_000_000n);
+    assert.equal(wallet.paymentsTotal(plain, 12), 120_000_000n);
+    const promo = { price: "10000000", introPrice: "1000000", introCycles: 2, maxCycles: 0 };
+    assert.equal(wallet.firstPrice(promo), 1_000_000n);
+    assert.equal(wallet.paymentsTotal(promo, 1), 1_000_000n);
+    assert.equal(wallet.paymentsTotal(promo, 12), 2_000_000n + 100_000_000n);
+    const limited = { price: "10000000", introPrice: "1000000", introCycles: 1, maxCycles: 3 };
+    assert.equal(wallet.paymentsTotal(limited, 12), 21_000_000n);
   });
 
   it("turns wallet errors into plain messages", () => {
@@ -188,6 +212,40 @@ describe("wallet.js chain names and explorer links", () => {
     });
     await assert.rejects(wallet.approve("0xaa", "0xbb", "0xcc", 5n),
       (e: { failed?: boolean; hash?: string }) => e.failed === true && e.hash === hash);
+  });
+
+  it("encodes every v2 transaction exactly as the ABI does", async () => {
+    const sent: string[] = [];
+    fakeWallet({ id: ARC_TESTNET }, (method, params) => {
+      if (method === "eth_sendTransaction") { sent.push((params[0] as { data: string }).data); return hash; }
+      if (method === "eth_getTransactionReceipt") return { status: "0x1", transactionHash: hash, logs: [] };
+      throw new Error(method);
+    });
+    const manager = "0x00000000000000000000000000000000000000cc";
+    const A = "0x00000000000000000000000000000000000000aa";
+    const B = "0x00000000000000000000000000000000000000bb";
+    const terms = {
+      price: 10_000_000n, cycleSeconds: 2_592_000n, trialSeconds: 604_800n, maxFailed: 3,
+      maxCycles: 12, introPrice: 1_000_000n, introCycles: 2, transferable: true,
+    };
+    await wallet.createPlan(A, manager, B, terms);
+    await wallet.setPlanRetired(A, manager, 7n, true);
+    await wallet.setPayout(A, manager, B, "0x0000000000000000000000000000000000000000");
+    await wallet.transferOwnership(A, manager, A, B);
+    await wallet.acceptOwnership(B, manager, A);
+    await wallet.proposeTransfer(A, manager, 9n, B);
+    await wallet.acceptTransfer(B, manager, 9n, 7n);
+    const m = abi("SubscriptionManager") as never;
+    const enc = (functionName: string, args: unknown[]) => encodeFunctionData({ abi: m, functionName, args } as never);
+    assert.deepEqual(sent, [
+      enc("createPlan", [B, terms]),
+      enc("setPlanRetired", [7n, true]),
+      enc("setPayout", [B, "0x0000000000000000000000000000000000000000"]),
+      enc("transferOwnership", [A, B]),
+      enc("acceptOwnership", [A]),
+      enc("proposeTransfer", [9n, B]),
+      enc("acceptTransfer", [9n, 7n]),
+    ]);
   });
 
   it("points to the faucet on Arc testnet only", () => {

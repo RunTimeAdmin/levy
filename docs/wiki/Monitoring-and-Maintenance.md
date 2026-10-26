@@ -27,7 +27,7 @@ sqlite3 "$(docker volume inspect levy-data -f '{{ .Mountpoint }}')/levy.db" "<qu
 sqlite3 /var/lib/levy/levy.db "<query>"
 ```
 
-`subscriptions.status`: 0 trial, 1 active, 2 past_due, 3 paused, 4 cancelled.
+`subscriptions.status`: 0 trial, 1 active, 2 past_due, 3 paused, 4 cancelled, and with manager v2, 5 completed.
 
 ## The seven alerts
 
@@ -127,9 +127,9 @@ The receiver runs as `levy-soak-hooks` from `ops/soak/docker-compose.yml` on loo
 
 `levy.db` holds the sync cursor, charge history, dunning schedules, webhook registrations and delivery log, API sessions and allowance runway. Plans and subscriptions also live on-chain. The webhook signing key sits beside it as `webhook-signing-key.pem`.
 
-**Backup (a recommendation; there is no repository tool).** Take a consistent copy on the host with `sqlite3 levy.db ".backup /safe/place/levy.db"`, copy the signing key with it, keep copies off the host, and test a restore. Back up before every upgrade: the schema is created at startup with `CREATE TABLE IF NOT EXISTS` plus one `ALTER` for the `ref` column, and there is no migration tool. Keep the key because, if the file is missing, the keeper generates a new one at start (and the API does on its next public-key request), and merchants who cached the old public key then fail verification.
+**Backup (a recommendation; there is no repository tool).** Take a consistent copy on the host with `sqlite3 levy.db ".backup /safe/place/levy.db"`, copy the signing key with it, keep copies off the host, and test a restore. Back up before every upgrade: the schema is created at startup with `CREATE TABLE IF NOT EXISTS` plus an `ALTER TABLE ... ADD COLUMN` for each column added later (`ref`, `pausedByMerchant` and the manager v2 columns on `subscriptions` and `plans`), and there is no migration tool. Keep the key because, if the file is missing, the keeper generates a new one at start (and the API does on its next public-key request), and merchants who cached the old public key then fail verification.
 
-**Loss.** With no database, the keeper rebuilds plans and subscriptions from the chain at start (`backfillAll`). It loses webhook registrations (merchants register again), the delivery log, sessions (users sign in again), charge history older than `LEVY_LOOKBACK_BLOCKS` (raise it to reach the deploy block to re-index charges), and dunning schedules.
+**Loss.** With no database, the keeper rebuilds plans, their merchant accounts and subscriptions from the chain at start (`backfillAll`). It loses webhook registrations (merchants register again), the delivery log, sessions (users sign in again), charge history older than `LEVY_LOOKBACK_BLOCKS` (raise it to reach the deploy block to re-index charges), and dunning schedules.
 
 The dunning loss is a known open item (`SECURITY_REVIEW.md` section 9; finding 10 of `docs/REVIEW_2026-10-02.md`). The ordinary due query selects only TRIAL and ACTIVE subscriptions, and retries come only from `dunning` rows, so a PAST_DUE subscription with no row is never retried although the contract would still charge it. The review's proposed fix, rebuilding the schedule from on-chain failure counts after a rescan from the deploy block, is not built. A suggested check (not in `monitoring.md`) lists the orphans after any restore:
 

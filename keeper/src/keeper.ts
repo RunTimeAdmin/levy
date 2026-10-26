@@ -111,8 +111,7 @@ export class Keeper {
       } catch {
         continue; // RPC trouble: the subscriber stays a candidate for the next cycle
       }
-      const perCycle = subs.reduce((acc, s) => acc + BigInt(s.price), 0n);
-      const { cyclesCovered, low } = fundsStatus(allowance, perCycle);
+      const { perCycle, cyclesCovered, low } = fundsStatus(allowance, subs);
       const covered = Number(cyclesCovered > 1_000_000n ? 1_000_000n : cyclesCovered); // unlimited approvals
       const wasLow = this.db.getFunds(subscriber)?.low === 1;
       this.db.upsertFunds({

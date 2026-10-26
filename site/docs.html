@@ -29,7 +29,7 @@
   "@type": "TechArticle",
   "headline": "Levy Docs: accept recurring USDC on Arc",
   "description": "How to bill subscriptions in USDC on Arc with Levy: quickstart, plans, checkout links, webhooks and signature verification, invoices, dunning and the API.",
-  "dateModified": "2026-10-03",
+  "dateModified": "2026-10-25",
   "author": { "@type": "Organization", "name": "Levy", "url": "https://getlevy.xyz" },
   "publisher": { "@type": "Organization", "name": "Levy", "url": "https://getlevy.xyz" },
   "mainEntityOfPage": { "@type": "WebPage", "@id": "https://getlevy.xyz/docs.html" }
@@ -58,7 +58,7 @@
   <p class="lede">Everything a merchant needs to bill subscriptions with Levy: plans, checkout links, webhooks and how to verify them, invoices, and what happens when a payment fails.</p>
 
   <div class="status">
-    <p><strong>Status.</strong> Levy runs on Arc testnet. Payments use test USDC and no real money moves. The contracts are not audited and not on mainnet yet; addresses below are the testnet ones.</p>
+    <p><strong>Status.</strong> Levy runs on Arc testnet. Payments use test USDC and no real money moves. The contracts are not audited and not on mainnet yet; addresses below are the testnet ones. This page describes the next SubscriptionManager (v2), which adds merchant accounts, retiring plans, cycle limits, intro prices and subscription transfers. It is not deployed yet, so the testnet contracts below still work as before v2 (<a href="#network">&sect;2</a>).</p>
   </div>
 
   <nav class="toc" aria-label="Contents">
@@ -83,8 +83,8 @@
   <ol>
     <li><strong>A wallet.</strong> Use a browser wallet such as MetaMask. The app asks it to add Arc Testnet the first time it sends a transaction.</li>
     <li><strong>Test USDC.</strong> Get some at <a href="https://faucet.circle.com" target="_blank" rel="noopener">faucet.circle.com</a> (choose Arc Testnet). On Arc, USDC also pays the network fee, so you need no other token.</li>
-    <li><strong>Sign in.</strong> Open <a href="https://app.getlevy.xyz/">app.getlevy.xyz</a> and sign in with that wallet. Signing is free and sends no transaction. This wallet is the one your payments go to.</li>
-    <li><strong>Create a plan.</strong> Under Plans, choose New plan: a price, a billing cycle, an optional free trial and how many failed payments to allow before the subscription is past due. Creating it is one transaction from your wallet.</li>
+    <li><strong>Sign in.</strong> Open <a href="https://app.getlevy.xyz/">app.getlevy.xyz</a> and sign in with that wallet. Signing is free and sends no transaction. This wallet owns your merchant account, and your payments go to it unless you set a payout address (<a href="#plans">&sect;3</a>).</li>
+    <li><strong>Create a plan.</strong> Under Plans, choose New plan: a price, a billing cycle, an optional free trial and how many failed payments to allow before the subscription is past due. Optionally, a number of payments, an intro price for the first payments, and whether customers may move the subscription to another wallet. Creating it is one transaction from your wallet.</li>
     <li><strong>Share the checkout link.</strong> Copy the link next to your plan and send it to customers. Add <code>&amp;ref=</code> and your own customer id to tie each subscription to a customer (<a href="#checkout">&sect;4</a>).</li>
     <li><strong>Get notified.</strong> Under Webhooks, add your endpoint and choose events, then check every delivery's signature as in <a href="#verify">&sect;6</a>.</li>
     <li><strong>Watch it run.</strong> Subscriptions, invoices and the dunning queue appear in the dashboard. Your customers manage their subscriptions at <a href="https://app.getlevy.xyz/portal.html">app.getlevy.xyz/portal.html</a>.</li>
@@ -105,35 +105,49 @@
     </tbody>
   </table></div>
   <p>All USDC amounts in the contract and the API are in 6-decimal units: 1 USDC = 1,000,000.</p>
+  <p>These contracts were deployed on 2026-10-24 and predate v2. On them, <code>createPlan</code> takes <code>(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed)</code>, and merchant accounts, retiring, cycle limits, intro prices and subscription transfers do not exist. v2 replaces them at its deployment, under new addresses.</p>
 
   <h2 id="plans">3. Plans</h2>
-  <p>A plan is a price and a billing cycle, stored on-chain under your address. The simplest way to create one is New plan in the dashboard, which checks the limits below and shows what customers will pay. Underneath, it calls:</p>
+  <p>A plan is a price, a billing cycle and a few terms, stored on-chain under your merchant account. The simplest way to create one is New plan in the dashboard, which checks the limits below and shows what customers will pay. Underneath, it calls:</p>
 <pre><code>createPlan(
-  price,         // uint256, per-cycle price in 6-decimal USDC units
-  cycleSeconds,  // uint256, billing cycle length in seconds
-  trialSeconds,  // uint256, trial length in seconds (0 for none)
-  graceSeconds,  // uint256, informational only; the dashboard sends 0 (retry gaps of 1, 3 and 7 days are enforced on-chain)
-  maxFailed      // uint8, failed payments before the subscription goes PAST_DUE
+  account,         // address, the merchant account the plan belongs to: your own address to start
+  (
+    price,         // uint256, per-cycle price in 6-decimal USDC units
+    cycleSeconds,  // uint256, billing cycle length in seconds
+    trialSeconds,  // uint256, trial length in seconds (0 for none)
+    maxFailed,     // uint8, failed payments before the subscription goes PAST_DUE
+    maxCycles,     // uint32, payments before the subscription completes (0 for no limit)
+    introPrice,    // uint256, price of each intro payment (0 when introCycles is 0)
+    introCycles,   // uint32, how many payments cost introPrice (0 for none)
+    transferable   // bool, whether customers may move a subscription to another wallet
+  )
 )</code></pre>
-  <p>The contract requires a price above 0, a cycle from 1 day (86400) to 10 years, a trial shorter than the cycle, and <code>maxFailed</code> from 1 to 255. Common cycles: weekly 604800, monthly 2592000 (30 days), quarterly 7776000 (90 days), yearly 31536000 (365 days). The call emits <code>PlanCreated</code> with your <code>planId</code>; <code>GET /api/plans</code> lists every plan.</p>
+  <p>The contract requires that you own <code>account</code>, a price above 0, a cycle from 1 day (86400) to 10 years, a trial shorter than the cycle, and <code>maxFailed</code> from 1 to 255. An intro price must be above 0 and below the price, and on a limited plan <code>introCycles</code> may not exceed <code>maxCycles</code>. Common cycles: weekly 604800, monthly 2592000 (30 days), quarterly 7776000 (90 days), yearly 31536000 (365 days). The call emits <code>PlanCreated</code> with your <code>planId</code>; <code>GET /api/plans</code> lists every plan.</p>
   <ul>
-    <li><strong>price</strong> is what the customer pays each cycle. It is fixed: to change a price, create a new plan and send new customers to it.</li>
+    <li><strong>price</strong> is what the customer pays each cycle once any intro payments are used up. It is fixed: to change a price, create a new plan, send new customers to it and retire the old one.</li>
     <li><strong>cycleSeconds</strong> is how often a payment is collected. "Monthly" is a fixed 30 days, so billing dates drift against calendar months.</li>
     <li><strong>trialSeconds</strong> delays the first charge. With 0, the first cycle is charged the moment the customer subscribes.</li>
     <li><strong>maxFailed</strong> is how many failed payments a subscription tolerates before it is past due. At twice this number it pauses itself. 2 or 3 fits most businesses.</li>
+    <li><strong>maxCycles</strong> is how many payments a subscription makes. The last one completes it: the status becomes <code>COMPLETED</code>, which is final, and the subscription is paid through the end of that cycle. 0 means no limit, 12 sells 12 installments or a fixed term, and 1 with no trial is a one-time payment, collected and completed when the customer subscribes. Customers can still cancel early.</li>
+    <li><strong>introPrice</strong> and <strong>introCycles</strong> price a subscription's first payments lower. A trial comes first and does not count, and after a plan change the new plan bills its full price. The intro price is per subscription, so a customer who cancels and subscribes again gets it again: check eligibility by <code>ref</code> and your own records, as for trials.</li>
+    <li><strong>transferable</strong> lets customers move a subscription on this plan to another wallet (<a href="#faq">&sect;11</a>).</li>
   </ul>
+  <h3>Retiring a plan</h3>
+  <p><code>setPlanRetired(planId, true)</code>, or Retire in the dashboard, closes a plan to new customers: subscribing and plan changes into it revert <code>RetiredPlan</code>, and its checkout link says the plan is closed. Its subscribers keep paying as before and can still change out of it. Reopen it with <code>setPlanRetired(planId, false)</code>. A launch promotion is an intro plan you retire when the promotion ends.</p>
+  <h3>Your merchant account</h3>
+  <p>The address that creates a plan for itself is a merchant account, and that address stays its permanent id in webhooks and the API. Its <strong>owner</strong> acts for it: creates plans, pauses, resumes, cancels and retires, and signs in to its dashboard. The owner starts as the account address itself. Its <strong>payout</strong> is where the 99% goes, which follows the owner unless the owner fixes it elsewhere, such as at a Safe, with <code>setPayout(account, payout)</code>; <code>setPayout(account, 0x0)</code> follows the owner again, from the next payment either way. To hand the account to another wallet, the owner calls <code>transferOwnership(account, newOwner)</code> and the new owner calls <code>acceptOwnership(account)</code>, so a mistyped address never takes control. A fixed payout stays; one that follows the owner moves with it. The previous owner then loses the account's dashboard and webhooks. The dashboard's Merchant account panel does all of this, and every change sends <code>merchant.updated</code>. If USDC blocklists your payout address, your charges revert until you set a new one. Then one charge collects one cycle, and any further cycles missed meanwhile are never collected.</p>
 
   <h2 id="checkout">4. Checkout links and references</h2>
   <p>Send customers your plan's checkout link:</p>
 <pre><code>https://app.getlevy.xyz/checkout.html?plan=&lt;planId&gt;&amp;ref=&lt;reference&gt;</code></pre>
-  <p>It shows the plan, connects the customer's wallet, explains the allowance and takes two wallet confirmations: an approval for the number of cycles they choose (12 by default, added to any Levy allowance they already have), then the subscription. Without a trial, the first cycle is charged right away. The page ends on a receipt.</p>
+  <p>It shows the plan with its intro price and number of payments, connects the customer's wallet, explains the allowance and takes two wallet confirmations: an approval for the number of cycles they choose (12 by default, added to any Levy allowance they already have), then the subscription. The approval prices intro payments at the intro price, and for a limited plan it covers at most the plan's payments, all of them by default. Without a trial, the first cycle is charged right away. The page ends on a receipt. A retired plan's link says the plan is closed.</p>
   <p><code>ref</code> is how you match a subscription to your own customer. It is stored with the subscription on-chain and sent on every webhook (<code>null</code> when none was given). It can be <code>0x</code> plus 64 hex digits, or up to 31 printable ASCII characters, which are left-aligned and zero-padded. The webhook payload always carries it as <code>0x</code> plus 64 lowercase hex digits, so <code>cust42</code> arrives as <code>0x637573743432</code> followed by zeros; decode it up to the first zero byte. Two rules:</p>
   <ul>
     <li><strong>It is public.</strong> Anyone can read it on-chain, so never use an email, a name or anything personal. Use an opaque id.</li>
     <li><strong>Whoever subscribes chooses it.</strong> Someone could subscribe with another customer's reference and then cancel, making that customer look cancelled. Issue an unguessable reference per checkout (for example 32 random bytes you store against the customer), and once <code>subscription.created</code> links a reference to a customer, track that subscription by its <code>subId</code>.</li>
   </ul>
   <h3>Building your own flow</h3>
-  <p><strong>Direct approval, two transactions.</strong> The customer calls <code>approve</code> on USDC for the SubscriptionManager, for at least one cycle's price, then <code>subscribe(planId, ref)</code> on the SubscriptionManager. Without a trial this charges the first cycle at once, and fails if it cannot.</p>
+  <p><strong>Direct approval, two transactions.</strong> The customer calls <code>approve</code> on USDC for the SubscriptionManager, for at least the first payment (the intro price, if the plan has one), then <code>subscribe(planId, ref)</code> on the SubscriptionManager. Without a trial this charges the first cycle at once, and fails if it cannot.</p>
   <p><strong>Permit2, one transaction after a one-time setup.</strong> The customer has approved Permit2 for USDC once (shared with every app that uses Permit2), signs an EIP-712 Permit2 message that lets the SubscriptionManager pull USDC, and submits <code>subscribeWithPermit2(planId, ref, permitSingle, signature)</code> from the same wallet. Only the signer can submit it.</p>
 
   <h2 id="webhooks">5. Webhooks</h2>
@@ -146,8 +160,8 @@ Content-Type: application/json
   "url": "https://your-domain.com/hooks/levy",
   "events": ["charge.succeeded", "charge.failed", "dunning.started", "subscription.cancelled"]
 }</code></pre>
-  <p>The endpoint must be https on port 443 at a public address. Levy refuses private, loopback and cloud-metadata addresses and does not follow redirects, so register the final URL. Up to 5 endpoints per merchant. Answer within 5 seconds and do slow work after acknowledging.</p>
-  <p>Every payload carries <code>subId</code>, <code>merchant</code> and <code>ref</code>, plus:</p>
+  <p>The endpoint must be https on port 443 at a public address. Levy refuses private, loopback and cloud-metadata addresses and does not follow redirects, so register the final URL. Up to 5 endpoints per merchant account; add <code>"merchant"</code> to the body to register for an account you own other than your own address. Answer within 5 seconds and do slow work after acknowledging.</p>
+  <p>Every payload except <code>merchant.updated</code> carries <code>subId</code>, <code>merchant</code> (your merchant account) and <code>ref</code>, plus:</p>
   <div class="table-wrap"><table>
     <thead><tr><th>Event</th><th>Extra payload fields</th></tr></thead>
     <tbody>
@@ -160,10 +174,13 @@ Content-Type: application/json
       <tr><td><code>subscription.paused</code></td><td><code>auto</code>: true when the contract paused it after repeated failures, false when you or the customer paused it</td></tr>
       <tr><td><code>subscription.resumed</code></td><td>none</td></tr>
       <tr><td><code>subscription.cancelled</code></td><td>none</td></tr>
+      <tr><td><code>subscription.completed</code></td><td>the last payment of a limited plan was collected: <code>txHash</code>, <code>blockNumber</code>. The payment is the <code>charge.succeeded</code> from the same transaction</td></tr>
+      <tr><td><code>subscription.transferred</code></td><td>the subscription moved to another wallet, which pays from now on: <code>from</code>, <code>to</code>, <code>txHash</code>, <code>blockNumber</code></td></tr>
       <tr><td><code>allowance.low</code></td><td><code>subscriber</code>, <code>allowance</code>, <code>balance</code>, <code>cyclesCovered</code>, <code>nextChargeAt</code></td></tr>
+      <tr><td><code>merchant.updated</code></td><td>your account's owner, pending owner or payout changed. No <code>subId</code> or <code>ref</code>: <code>merchant</code>, <code>owner</code>, <code>payout</code> (<code>null</code> while payments follow the owner), <code>pendingOwner</code> (<code>null</code> when none), <code>txHash</code>, <code>blockNumber</code></td></tr>
     </tbody>
   </table></div>
-  <p><code>subscription.resumed</code> and <code>subscription.cancelled</code> have the same body: use the signed <code>X-Levy-Event</code> header to tell them apart. <code>allowance.low</code> is your cue to email the customer before payments start failing. The allowance is one pool shared by all of a customer's Levy subscriptions; the warning is sent once per subscription, and again only after a top-up runs low again. Allowances granted through Permit2 are not counted yet, so a Permit2 subscriber is flagged low from the start.</p>
+  <p><code>subscription.resumed</code> and <code>subscription.cancelled</code> have the same body: use the signed <code>X-Levy-Event</code> header to tell them apart. <code>allowance.low</code> is your cue to email the customer before payments start failing. The allowance is one pool shared by all of a customer's Levy subscriptions; the warning is sent once per subscription, and again only after a top-up runs low again. Intro payments count at the intro price, and a limited plan whose remaining payments are covered is never low. Allowances granted through Permit2 are not counted yet, so a Permit2 subscriber is flagged low from the start.</p>
   <p>Failed deliveries are retried after 1 minute, 5 minutes, 15 minutes and 1 hour, then every 6 hours. A delivery whose next retry would pass 24 hours of age is dropped instead, so the last attempt comes about 19 hours 21 minutes after the first. The dashboard shows each endpoint's delivery log. Disabling an endpoint drops what is queued for it, and nothing is queued while it is off.</p>
 
   <h2 id="verify">6. Verify webhook signatures</h2>
@@ -176,14 +193,14 @@ Content-Type: application/json
     <li><code>X-Levy-Event</code>: the event type, for example <code>charge.succeeded</code></li>
     <li><code>X-Levy-Key-Id</code>: which signing key was used</li>
   </ul>
-  <p>One key signs for every merchant, so a valid signature proves Levy sent a delivery, not that it was sent to you. Checking it against your own webhook id and address stops someone forwarding you a delivery made for their endpoint. The public key, its <code>keyId</code> and the event list are at <code>GET https://app.getlevy.xyz/api/webhooks/public-key</code>. For every delivery:</p>
+  <p>One key signs for every merchant, so a valid signature proves Levy sent a delivery, not that it was sent to you. Checking it against your own webhook id and merchant account stops someone forwarding you a delivery made for their endpoint. The public key, its <code>keyId</code> and the event list are at <code>GET https://app.getlevy.xyz/api/webhooks/public-key</code>. For every delivery:</p>
   <ol>
     <li>Read the raw body exactly as received, before parsing it.</li>
     <li>Reject it if <code>X-Levy-Timestamp</code> is more than 5 minutes from your clock, so a captured delivery cannot be replayed.</li>
-    <li>Reject it if <code>X-Levy-Event</code> is not one of the ten event types, or <code>X-Levy-Delivery</code> is not 16 hex digits, a dash and a number. Event names contain dots, and these checks stop the signed text being split at a different dot.</li>
+    <li>Reject it if <code>X-Levy-Event</code> is not one of the thirteen event types, or <code>X-Levy-Delivery</code> is not 16 hex digits, a dash and a number. Event names contain dots, and these checks stop the signed text being split at a different dot.</li>
     <li>Verify <code>X-Levy-Signature</code> over <code>{X-Levy-Timestamp}.{X-Levy-Delivery}.{your webhook id}.{X-Levy-Event}.{raw body}</code> with the public key, using the id you stored for this endpoint, not the header.</li>
     <li>Ignore it if you already processed that <code>X-Levy-Delivery</code> id. The id is signed, so this is safe.</li>
-    <li>After parsing, reject the event if <code>merchant</code> is not your address, and act only on subscriptions to your own plans.</li>
+    <li>After parsing, reject the event if <code>merchant</code> is not your merchant account, and act only on subscriptions to your own plans.</li>
   </ol>
   <p>In Node.js, with no dependencies:</p>
 <pre><code>import { createPublicKey, verify } from "node:crypto";
@@ -194,7 +211,8 @@ const { publicKey } = await fetch(API + "/api/webhooks/public-key").then((r) =&g
 const key = createPublicKey(publicKey);
 const EVENTS = new Set(["subscription.created", "subscription.updated", "charge.succeeded",
   "charge.failed", "dunning.started", "subscription.paused", "subscription.resumed",
-  "subscription.cancelled", "invoice.ready", "allowance.low"]);
+  "subscription.cancelled", "invoice.ready", "allowance.low", "subscription.completed",
+  "subscription.transferred", "merchant.updated"]);
 
 // rawBody: the request body as a string, before JSON parsing.
 function isValid(rawBody, headers) {
@@ -226,7 +244,7 @@ GET /api/invoices?format=csv</code></pre>
   <p>You get <code>charge.failed</code> on every failure, <code>dunning.started</code> on the first and <code>subscription.paused</code> if the contract pauses it. Levy sends no emails to your customers; use these events to send your own. A customer fixes a failing subscription by adding USDC or topping up the allowance in the portal, and the next retry collects.</p>
 
   <h2 id="backend">9. Sign in from your backend</h2>
-  <p>The dashboard signs you in with your wallet. A backend does the same with Sign-In with Ethereum, using the wallet that owns your plans (an ordinary wallet; contract wallets are not supported yet):</p>
+  <p>The dashboard signs you in with your wallet. A backend does the same with Sign-In with Ethereum, using the wallet that owns your merchant account (an ordinary wallet; contract wallets are not supported yet):</p>
 <pre><code>POST /api/auth/challenge   {"address": "0xYourWallet"}
   -&gt; {"nonce": "...", "message": "..."}
 
@@ -236,7 +254,7 @@ POST /api/auth/verify      {"nonce": "...", "signature": "0x..."}
   -&gt; {"token": "...", "address": "0x...", "expiresAt": 1790000000}
 
 then send on every call:   Authorization: Bearer &lt;token&gt;</code></pre>
-  <p>A challenge expires after 5 minutes and works once. A token lasts 24 hours; <code>POST /api/auth/logout</code> revokes it. Every endpoint returns only your own data.</p>
+  <p>A challenge expires after 5 minutes and works once. A token lasts 24 hours; <code>POST /api/auth/logout</code> revokes it. Every endpoint returns only your own data. The merchant endpoints act for your own address's account unless you pass <code>merchant</code> (in the query, or in the body of <code>POST /api/webhooks</code>) naming another account, and the signed-in wallet must own that account now, or the answer is 403.</p>
 
   <h2 id="api">10. API reference</h2>
   <p>Base URL <code>https://app.getlevy.xyz</code>. Public endpoints need no sign-in; the rest need the token from &sect;9.</p>
@@ -244,27 +262,29 @@ then send on every call:   Authorization: Bearer &lt;token&gt;</code></pre>
     <thead><tr><th>Method and path</th><th>Access</th><th>Returns</th></tr></thead>
     <tbody>
       <tr><td><code>GET /api/config</code></td><td>public</td><td>chain id and contract addresses</td></tr>
-      <tr><td><code>GET /api/plans</code></td><td>public</td><td>every plan</td></tr>
+      <tr><td><code>GET /api/plans</code></td><td>public</td><td>every plan, with its terms (<code>maxCycles</code>, <code>introPrice</code>, <code>introCycles</code>, <code>transferable</code>) and <code>retired</code></td></tr>
       <tr><td><code>GET /api/webhooks/public-key</code></td><td>public</td><td>the Ed25519 public key, its <code>keyId</code> and the event list</td></tr>
       <tr><td><code>POST /api/auth/challenge</code>, <code>/api/auth/verify</code></td><td>public</td><td>sign-in (&sect;9)</td></tr>
-      <tr><td><code>GET /api/subscriptions?merchant=&lt;you&gt;</code></td><td>signed in</td><td>your subscriptions, with <code>ref</code>, <code>pausedByMerchant</code> (1 when you paused it) and allowance runway; <code>&amp;status=</code> filters (0 trial, 1 active, 2 past due, 3 paused, 4 cancelled)</td></tr>
+      <tr><td><code>GET /api/accounts</code></td><td>signed in</td><td>the merchant accounts you own (<code>owned</code>) and those offered to you (<code>offered</code>), each with its owner, payout and pending owner</td></tr>
+      <tr><td><code>GET /api/subscriptions?merchant=&lt;account&gt;</code></td><td>signed in</td><td>your account's subscriptions, with <code>ref</code>, <code>pausedByMerchant</code> (1 when you paused it), <code>pendingTransfer</code> and allowance runway; <code>&amp;status=</code> filters (0 trial, 1 active, 2 past due, 3 paused, 4 cancelled, 5 completed)</td></tr>
       <tr><td><code>GET /api/subscriptions/:id</code></td><td>signed in</td><td>one subscription with its charges and dunning state</td></tr>
       <tr><td><code>GET /api/metrics</code></td><td>signed in</td><td>MRR (normalised to 30 days), counts per status, totals, charge success rate, dunning depth</td></tr>
       <tr><td><code>GET /api/dunning</code></td><td>signed in</td><td>the retry queue</td></tr>
       <tr><td><code>GET /api/invoices</code></td><td>signed in</td><td>charge records; <code>?format=csv</code> for CSV</td></tr>
       <tr><td><code>GET</code>, <code>POST /api/webhooks</code></td><td>signed in</td><td>list or register endpoints</td></tr>
       <tr><td><code>PATCH</code>, <code>DELETE /api/webhooks/:id</code></td><td>signed in</td><td>turn an endpoint on or off (<code>{"active": false}</code>), or remove it</td></tr>
-      <tr><td><code>GET /api/deliveries?webhookId=</code></td><td>signed in</td><td>the delivery log (<code>&amp;status=</code> pending, sent, failed or dead, <code>&amp;limit=</code> up to 500)</td></tr>
+      <tr><td><code>GET /api/deliveries?merchant=&amp;webhookId=</code></td><td>signed in</td><td>the delivery log (<code>&amp;status=</code> pending, sent, failed or dead, <code>&amp;limit=</code> up to 500)</td></tr>
     </tbody>
   </table></div>
 
   <h2 id="faq">11. FAQ</h2>
-  <p><strong>How do I change a price?</strong> Create a new plan and send new customers to it. Plans cannot be edited, so existing subscriptions keep their price until the customer changes plan in the portal.</p>
-  <p><strong>How do refunds work?</strong> They are your policy and happen off-chain: send USDC back from your own wallet. The contract has no refund function, and a cancelled subscription stays cancelled.</p>
-  <p><strong>How do I cancel or pause a customer?</strong> Use Pause, Resume or Cancel on the subscription in your dashboard; each is a transaction from your wallet. You can resume only a pause you made; a customer's own pause, or one after failed payments, is theirs to resume. Customers can pause, resume and cancel in the portal, and move to another of your plans with Change plan. Nothing is charged while a subscription is paused, and cancelling is final.</p>
-  <p><strong>What does the 1% fee apply to?</strong> Each collected payment: the contract sends 99% to you and 1% to the protocol in the same transaction. Failed payments cost nothing, and nothing is owed when nothing is collected.</p>
+  <p><strong>How do I change a price?</strong> Create a new plan, send new customers to it and retire the old one. Plan terms cannot be edited, so existing subscriptions keep their price until the customer changes plan in the portal.</p>
+  <p><strong>How do refunds work?</strong> They are your policy and happen off-chain: send USDC back from your own wallet. The contract has no refund function, and a cancelled or completed subscription stays that way.</p>
+  <p><strong>How do I cancel or pause a customer?</strong> Use Pause, Resume or Cancel on the subscription in your dashboard; each is a transaction from the wallet that owns your account. You can resume only a pause you made; a customer's own pause, or one after failed payments, is theirs to resume. Customers can pause, resume and cancel in the portal, and move to another of your plans that is not retired with Change plan. Nothing is charged while a subscription is paused, and cancelling is final.</p>
+  <p><strong>Can a customer move a subscription to a new wallet?</strong> Only on a plan created as transferable. The customer offers it with <code>proposeTransfer(subId, newWallet)</code> and the new wallet accepts with <code>acceptTransfer(subId, planId)</code>, both from the portal. It keeps its id, plan, reference, paid time and credit, and later payments come from the new wallet. Only the customer can offer it and only that wallet can accept, so nobody can make a wallet pay without its consent. You receive <code>subscription.transferred</code>; keep tracking it by <code>subId</code>.</p>
+  <p><strong>What does the 1% fee apply to?</strong> Each collected payment: the contract sends 99% to your payout address and 1% to the protocol in the same transaction. Failed payments cost nothing, and nothing is owed when nothing is collected.</p>
   <p><strong>Who pays gas for charges?</strong> Levy's keeper pays for the charges it submits. Anyone may call <code>charge</code> once a payment is due, but you never need to.</p>
-  <p><strong>Can Levy take more than the plan price?</strong> No. Each billing date, the contract can collect the plan's price once, only for that plan's merchant, and never before the date. It can never take more than the allowance the customer approved.</p>
+  <p><strong>Can Levy take more than the plan price?</strong> No. Each billing date, the contract can collect the plan's price (or its intro price) once, only for that plan's merchant account, and never before the date, and a limited plan stops after its last payment. It can never take more than the allowance the customer approved.</p>
 
   <p class="disclaimer">Levy runs on Arc testnet and is not audited. Questions or problems: <a href="mailto:hello@getlevy.xyz">hello@getlevy.xyz</a>. Security reports: see the <a href="security.html">security policy</a>.</p>
 </main>

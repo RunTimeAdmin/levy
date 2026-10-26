@@ -212,6 +212,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .pill.active, .pill.trial, .pill.sent { background: rgba(76, 195, 138, 0.15); color: var(--accent); }
 .pill.past_due, .pill.failed, .pill.pending { background: rgba(229, 165, 75, 0.15); color: var(--warn); }
 .pill.paused, .pill.cancelled, .pill.dead { background: rgba(229, 96, 79, 0.15); color: var(--bad); }
+.pill.completed, .pill.retired { background: rgba(139, 148, 158, 0.15); color: var(--muted); }
 
 /* Text */
 

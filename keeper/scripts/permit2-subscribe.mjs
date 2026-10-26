@@ -8,8 +8,10 @@
 //
 // It asks for the SUBSCRIBER's private key without echoing it, shows what it
 // is about to do, and sends nothing until you type "yes". Then:
-//   1. if the wallet's USDC allowance to Permit2 is below price x cycles, it
-//      approves Permit2 for exactly that (one transaction);
+//   1. if the wallet's USDC allowance to Permit2 is below what that many
+//      payments cost (intro payments at the intro price, and no more than a
+//      limited plan's payments), it approves Permit2 for exactly that (one
+//      transaction);
 //   2. it signs a Permit2 PermitSingle naming the Levy manager as spender
 //      (off-chain, no gas);
 //   3. it submits subscribeWithPermit2 (one transaction), which also charges
@@ -99,14 +101,23 @@ const usd = (units) => `${formatUnits(units, 6)} USDC`;
 const chainId = await pub.getChainId();
 if (chainId !== DEFAULTS.chainId) fail(`the RPC is on chain ${chainId}, not Arc testnet (${DEFAULTS.chainId})`);
 
-const [, price, cycleSeconds, trialSeconds, , , exists] = await pub.readContract({
+// Plan: [merchant, price, cycleSeconds, trialSeconds, maxFailed, exists,
+//        retired, transferable, maxCycles, introPrice, introCycles]
+const [, price, cycleSeconds, trialSeconds, , exists, retired, , maxCycles, introPrice, introCycles] = await pub.readContract({
   address: manager, abi: managerAbi, functionName: "plans", args: [BigInt(opts.plan)],
 });
 if (!exists) fail(`plan ${opts.plan} does not exist on ${manager}`);
-const amount = price * BigInt(opts.cycles);
+if (retired) fail(`plan ${opts.plan} is retired: it takes no new subscribers`);
+// The plan's first payments: intro cycles at the intro price, none past a cycle limit.
+const cycles = maxCycles > 0 ? Math.min(+opts.cycles, maxCycles) : +opts.cycles;
+const introCount = Math.min(cycles, introCycles);
+const amount = introPrice * BigInt(introCount) + price * BigInt(cycles - introCount);
+const firstPrice = introCycles > 0 ? introPrice : price;
 
 console.log(`Levy Permit2 subscribe (Arc testnet)`);
 console.log(`Plan ${opts.plan}: ${usd(price)} every ${Number(cycleSeconds) / 86400} day(s)` +
+  (introCycles > 0 ? `, the first ${introCycles} at ${usd(introPrice)}` : "") +
+  (maxCycles > 0 ? `, ${maxCycles} payment(s) in all` : "") +
   (trialSeconds > 0n ? `, ${Number(trialSeconds) / 86400}-day trial` : ", first cycle charged now"));
 console.log("");
 console.log("Paste the SUBSCRIBER wallet's private key (the 'Private key: 0x...' line). Nothing shows while you paste.");
@@ -132,13 +143,13 @@ const [balance, erc20ToPermit2, p2] = await Promise.all([
   pub.readContract({ address: DEFAULTS.permit2, abi: permit2Abi, functionName: "allowance", args: [account.address, DEFAULTS.usdc, manager] }),
 ]);
 const [, , nonce] = p2;
-if (trialSeconds === 0n && balance < price) fail(`${account.address} holds ${usd(balance)}; the first cycle (${usd(price)}) is charged now`);
+if (trialSeconds === 0n && balance < firstPrice) fail(`${account.address} holds ${usd(balance)}; the first cycle (${usd(firstPrice)}) is charged now`);
 
 const needApprove = erc20ToPermit2 < amount;
 const ref = opts.ref ? stringToHex(opts.ref, { size: 32 }) : `0x${"0".repeat(64)}`;
 console.log("");
 console.log(`Subscriber:          ${account.address} (${usd(balance)})`);
-console.log(`Allowance to grant:  ${usd(amount)} (${opts.cycles} cycles), through Permit2`);
+console.log(`Allowance to grant:  ${usd(amount)} (${cycles} cycles), through Permit2`);
 console.log(`Reference:           ${opts.ref ?? "(none)"}`);
 console.log(`Transactions:        ${needApprove ? `1) approve Permit2 for ${usd(amount)}, then ` : ""}${needApprove ? "2" : "1"}) subscribeWithPermit2`);
 if (await ask('Type "yes" to send: ') !== "yes") fail("not confirmed");

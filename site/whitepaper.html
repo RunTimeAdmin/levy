@@ -90,14 +90,14 @@
   <p class="lede">How Levy collects recurring payments from a one-time USDC allowance, what the contract guarantees to customers and merchants, and what it does not.</p>
 
   <div class="status">
-    <p><strong>Status.</strong> Everything described here is built and tested, and the contracts have been on Arc testnet since 26 September 2026. The current deployment, from 24 October 2026, is the one the second week-long soak runs on (Appendix D). Nothing is on mainnet and nothing is audited yet. The paper describes the contracts as of commit <code>54724d0</code>, which is the code deployed, and the services as of the same commit. Figures from our own measurements say how they were taken.</p>
+    <p><strong>Status.</strong> Everything described here is built and tested, and the contracts have been on Arc testnet since 26 September 2026. The current deployment, from 24 October 2026, is the one the second week-long soak runs on (Appendix D). Nothing is on mainnet and nothing is audited yet. This version describes manager v2, the next SubscriptionManager, and the services built for it: merchant accounts with a changeable owner and payout address, retired plans, cycle limits, intro prices and moving a subscription to a new wallet. v2 is built and tested but not deployed; the testnet contracts in Appendix D are from commit <code>54724d0</code> and predate it. Figures from our own measurements say how and on which code they were taken.</p>
   </div>
 
   <p class="pdf-link"><a href="levy-whitepaper.pdf">Download this paper as a PDF</a></p>
 
   <section class="abstract">
     <h2>Abstract</h2>
-    <p>Software is sold by subscription, yet stablecoin payments still work like invoices: the customer has to act every time a payment is due. Levy is a protocol for subscription billing in USDC on Arc. A customer approves a USDC allowance once, sized in billing cycles they choose. From then on a smart contract lets anyone trigger each payment when it falls due, and it can only collect the plan's price, once per billing date, for the plan's merchant. A failed payment is recorded on-chain instead of reverting. That lets an off-chain keeper run retries while the contract itself decides when a subscription is past due and when it pauses. The merchant receives 99% of each payment in the transaction that collects it; 1% goes to the protocol. Around the contract, Levy provides the services merchants expect from card billing: signed webhooks, invoice records, a dashboard, a customer portal and a hosted checkout. This paper describes the design, its accounting and security properties, its economics and its known limitations.</p>
+    <p>Software is sold by subscription, yet stablecoin payments still work like invoices: the customer has to act every time a payment is due. Levy is a protocol for subscription billing in USDC on Arc. A customer approves a USDC allowance once, sized in billing cycles they choose. From then on a smart contract lets anyone trigger each payment when it falls due, and it can only collect the plan's price, once per billing date, for the plan's merchant. A failed payment is recorded on-chain instead of reverting. That lets an off-chain keeper run retries while the contract itself decides when a subscription is past due and when it pauses. The merchant receives 99% of each payment in the transaction that collects it; 1% goes to the protocol. A plan can cap the number of payments, which covers installments, fixed terms and one-time payments, and can price its first cycles lower. Around the contract, Levy provides the services merchants expect from card billing: signed webhooks, invoice records, a dashboard, a customer portal and a hosted checkout. This paper describes the design, its accounting and security properties, its economics and its known limitations.</p>
   </section>
 
   <nav class="toc" aria-label="Contents">
@@ -147,7 +147,7 @@
     <li><strong>Bounded exposure.</strong> A customer can work out the most the contract will ever take from them: never more than their allowance, and never more than one plan price per billing date (&sect;6.2).</li>
     <li><strong>No custody.</strong> Levy never holds funds at rest. Each payment is split between the merchant and the fee router in the transaction that collects it.</li>
     <li><strong>Permissionless execution.</strong> The payment trigger is open to anyone. Levy's keeper is needed for timeliness, not for correctness: if it stops, charges wait, and nothing is lost or double-charged.</li>
-    <li><strong>Merchant-grade operations.</strong> Trials, dunning, prorated plan changes, invoice records, signed webhooks and customer references are part of the system, not left to each merchant.</li>
+    <li><strong>Merchant-grade operations.</strong> Trials, intro prices, fixed terms, retiring old plans, dunning, prorated plan changes, invoice records, signed webhooks, customer references and a payout address that can move to a Safe are part of the system, not left to each merchant.</li>
     <li><strong>Exact accounting.</strong> Integer USDC units, rounding in a documented direction, and invariants checked by fuzzing.</li>
   </ol>
   <p>Out of scope: converting USDC to fiat, tax calculation, on-chain refunds, usage-based billing and currencies other than USDC.</p>
@@ -173,7 +173,7 @@
 
       <rect class="box" x="550" y="40" width="150" height="50" rx="8"/>
       <text class="lbl" x="625" y="62" text-anchor="middle">Merchant</text>
-      <text class="sub" x="625" y="79" text-anchor="middle">wallet</text>
+      <text class="sub" x="625" y="79" text-anchor="middle">payout address</text>
 
       <rect class="box" x="550" y="110" width="150" height="46" rx="8"/>
       <text class="lbl" x="625" y="130" text-anchor="middle">FeeRouter</text>
@@ -221,8 +221,8 @@
 
   <p>There are four actors:</p>
   <ul>
-    <li><strong>Merchant:</strong> creates plans from its wallet and receives 99% of each payment.</li>
-    <li><strong>Subscriber:</strong> approves a USDC allowance, subscribes, and can pause, resume or cancel.</li>
+    <li><strong>Merchant:</strong> a merchant account, the address its plans were created for. The account's owner, at first that address itself, creates and retires plans and can hand the account to another wallet. Its payout address, the owner unless set elsewhere, receives 99% of each payment.</li>
+    <li><strong>Subscriber:</strong> approves a USDC allowance, subscribes, and can pause, resume or cancel, and move the subscription to a new wallet where the plan allows it.</li>
     <li><strong>Keeper:</strong> an off-chain service that calls <code>charge</code> when payments fall due. Levy runs one; anyone can.</li>
     <li><strong>Treasury:</strong> receives the protocol fee from the fee router. On mainnet it is a Safe multisig.</li>
   </ul>
@@ -249,21 +249,24 @@
   <p>All amounts are 6-decimal USDC units through the ERC-20 interface: 1 USDC is 1,000,000 units. Arc's native gas balance uses 18 decimals, and those values never enter payment logic. Times are chain timestamps in seconds.</p>
 
   <h3>4.2 Plans</h3>
-  <p>A merchant creates a plan with <code>createPlan(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed)</code> and becomes that plan's merchant.</p>
+  <p>A merchant creates a plan with <code>createPlan(account, terms)</code> for a merchant account it owns (&sect;4.11); an address owns its own account until it hands it on, so <code>createPlan(msg.sender, terms)</code> needs no setup. The terms are:</p>
   <div class="table-wrap"><table>
     <thead><tr><th>Parameter</th><th>Meaning</th><th>Rule</th></tr></thead>
     <tbody>
       <tr><td><code>price</code></td><td>Price per cycle, in units</td><td>Above 0</td></tr>
       <tr><td><code>cycleSeconds</code></td><td>Length of a billing cycle</td><td>1 day to 10 years</td></tr>
       <tr><td><code>trialSeconds</code></td><td>Free trial before the first charge</td><td>Shorter than the cycle; 0 for none</td></tr>
-      <tr><td><code>graceSeconds</code></td><td>Informational</td><td>Not enforced; retries are scheduled off-chain</td></tr>
       <tr><td><code>maxFailed</code></td><td>Failed charges before the subscription is past due</td><td>1 to 255</td></tr>
+      <tr><td><code>maxCycles</code></td><td>Cycles billed before the subscription completes</td><td>0 for no limit</td></tr>
+      <tr><td><code>introPrice</code>, <code>introCycles</code></td><td>Price of a subscription's first <code>introCycles</code> billed cycles</td><td>Above 0 and below <code>price</code>; at most <code>maxCycles</code> intro cycles on a limited plan; both 0 for none</td></tr>
+      <tr><td><code>transferable</code></td><td>Whether a subscription may move to a new wallet (&sect;4.12)</td><td>Yes or no</td></tr>
     </tbody>
   </table></div>
-  <p>Plans are immutable; there is no function to edit one. A merchant who wants a new price creates a new plan, and existing subscribers keep the old price unless they choose to switch (&sect;4.8). The one-day minimum cycle allows each subscription at most one billing date per day, which limits how quickly a mistaken approval could be spent (&sect;6.8). Cycles are fixed lengths in seconds, so a 30-day "month" drifts against calendar months.</p>
+  <p>Plan terms are immutable; there is no function to edit them. A merchant who wants a new price creates a new plan, and existing subscribers keep the old price unless they choose to switch (&sect;4.8). The one field that changes is <code>retired</code>: <code>setPlanRetired</code> closes a plan to new subscriptions and to plan changes into it, or opens it again, and leaves its existing subscriptions untouched. The one-day minimum cycle allows each subscription at most one billing date per day, which limits how quickly a mistaken approval could be spent (&sect;6.8). Cycles are fixed lengths in seconds, so a 30-day "month" drifts against calendar months.</p>
+  <p>A cycle limit makes installments, fixed terms and one-time payments possible: the cycle that reaches <code>maxCycles</code> completes the subscription, and a plan with <code>maxCycles</code> of 1 and no trial collects one payment at subscribe and completes at once. The limit is a cap, not a commitment, since the customer can still cancel. An intro price is a discount only, because a higher first price would turn into proration credit at the next plan change. A trial comes first and does not count as an intro cycle, and intro prices stay with the plan a subscription started on: a plan change bills the new plan's full price. Each subscription gets its own intro cycles, so whether a customer may have them again is the merchant's call, made off-chain, as for trials.</p>
 
   <h3>4.3 Subscriptions</h3>
-  <p>A subscription records its <code>subscriber</code>, <code>planId</code>, <code>start</code>, <code>nextChargeAt</code> (the next billing date), <code>failedAttempts</code>, proration <code>credit</code>, <code>chargeCount</code> and <code>status</code>. The status is one of TRIAL, ACTIVE, PAST_DUE, PAUSED or CANCELLED (Figure 2). A separate mapping, <code>subscriptionRef</code>, holds the merchant's 32-byte reference for the customer (&sect;4.10).</p>
+  <p>A subscription records its <code>subscriber</code>, <code>planId</code>, <code>start</code>, <code>nextChargeAt</code> (the next billing date), <code>failedAttempts</code>, proration <code>credit</code>, <code>chargeCount</code> and <code>status</code>. The status is one of TRIAL, ACTIVE, PAST_DUE, PAUSED, CANCELLED or COMPLETED (Figure 2). A separate mapping, <code>subscriptionRef</code>, holds the merchant's 32-byte reference for the customer (&sect;4.10). Further mappings hold the price billed for the cycle in progress (<code>billedPrice</code>), the cycles billed on the current plan (<code>planCycles</code>), the intro cycles left and a pending wallet transfer.</p>
 
   <figure class="fig">
     <svg viewBox="0 0 720 340" role="img" aria-labelledby="fig2t">
@@ -285,6 +288,8 @@
       <text class="lbl" x="330" y="218" text-anchor="middle">PAUSED</text>
       <rect class="box" x="520" y="282" width="130" height="46" rx="8"/>
       <text class="lbl" x="585" y="310" text-anchor="middle">CANCELLED</text>
+      <rect class="box" x="30" y="282" width="130" height="46" rx="8"/>
+      <text class="lbl" x="95" y="310" text-anchor="middle">COMPLETED</text>
 
       <line class="ln-acc" x1="140" y1="83" x2="273" y2="83" marker-end="url(#ah-acc)"/>
       <text class="sub" x="206" y="75" text-anchor="middle">first charge paid</text>
@@ -300,16 +305,19 @@
       <text class="sub" x="478" y="170">auto-pause at</text>
       <text class="sub" x="478" y="184">2 &times; maxFailed</text>
       <line class="ln" x1="585" y1="256" x2="585" y2="280" marker-end="url(#ah)"/>
-      <text class="sub" x="577" y="273" text-anchor="end">cancel, from any state (terminal)</text>
+      <text class="sub" x="577" y="273" text-anchor="end">cancel, from any state but COMPLETED (terminal)</text>
+      <line class="ln-acc" x1="280" y1="106" x2="120" y2="280" marker-end="url(#ah-acc)"/>
+      <text class="sub" x="174" y="196" text-anchor="end">last limited</text>
+      <text class="sub" x="174" y="210" text-anchor="end">cycle paid</text>
     </svg>
-    <figcaption>Figure 2. Subscription states. Pause is also available from TRIAL and PAST_DUE, and a trial whose first charge keeps failing reaches PAST_DUE the same way an active subscription does. Only CANCELLED is final.</figcaption>
+    <figcaption>Figure 2. Subscription states. Pause is also available from TRIAL and PAST_DUE, and a trial whose first charge keeps failing reaches PAST_DUE the same way an active subscription does. The last cycle of a limited plan completes the subscription from TRIAL, ACTIVE or PAST_DUE, and a one-time payment completes it at subscribe. CANCELLED and COMPLETED are final.</figcaption>
   </figure>
 
   <h3>4.4 Subscribing</h3>
-  <p>The subscriber calls <code>subscribe(planId, ref)</code>. The subscriber is always the caller, so nobody can subscribe someone else. If the plan has a trial, the subscription starts in TRIAL and its first billing date is the end of the trial. Otherwise billing is in advance: the first cycle is collected in the same transaction, the next billing date is one cycle later, and if the payment fails the whole subscribe reverts. A customer either pays for the cycle they are entering or does not subscribe.</p>
+  <p>The subscriber calls <code>subscribe(planId, ref)</code>. The subscriber is always the caller, so nobody can subscribe someone else, and a retired plan refuses new subscribers. If the plan has a trial, the subscription starts in TRIAL and its first billing date is the end of the trial. Otherwise billing is in advance: the first cycle is collected in the same transaction, the next billing date is one cycle later, and if the payment fails the whole subscribe reverts. A customer either pays for the cycle they are entering or does not subscribe.</p>
   <p>There are two ways to authorise payments:</p>
   <ul>
-    <li><strong>Approve, then subscribe.</strong> An ERC-20 <code>approve</code> to the SubscriptionManager, then <code>subscribe</code>: two transactions. The hosted checkout walks the customer through both and suggests 12 cycles' worth, added to any allowance they already gave Levy. Levy's own interfaces never ask for an unlimited allowance.</li>
+    <li><strong>Approve, then subscribe.</strong> An ERC-20 <code>approve</code> to the SubscriptionManager, then <code>subscribe</code>: two transactions. The hosted checkout walks the customer through both and suggests 12 cycles' worth, added to any allowance they already gave Levy; it prices intro cycles at the intro price and never asks for more than a limited plan's payments. Levy's own interfaces never ask for an unlimited allowance.</li>
     <li><strong>Permit2.</strong> <code>subscribeWithPermit2(planId, ref, permit, signature)</code> grants the allowance through Permit2 [6] with an EIP-712 signature [9] and subscribes in one transaction. The contract checks that the permit names itself as spender and USDC as the token. Only the signer can submit it: the permit does not name a plan, so a third party who could relay it could also choose the plan.</li>
   </ul>
 
@@ -333,20 +341,29 @@
       if s.failedAttempts &gt;= 2 * maxFailed: s.status = PAUSED   // emits AutoPaused
 
 collect(s, plan):                               // shared by subscribe, charge, changePlan
-  if s.credit &gt;= plan.price:
-      s.credit -= plan.price; due = 0; fee = 0 // cycle paid from credit
+  require not (plan.maxCycles &gt; 0 and planCycles[s] &gt;= plan.maxCycles)  // else revert
+  intro = introCyclesLeft[s] &gt; 0 and plan.introCycles &gt; 0
+  price = intro ? plan.introPrice : plan.price
+  if s.credit &gt;= price:
+      s.credit -= price; due = 0; fee = 0      // cycle paid from credit
   else:
-      due = plan.price - s.credit
+      due = price - s.credit
       if not pull(s.subscriber, due): return false   // nothing changed
       s.credit = 0
       fee = floor(due / 100)
-      transfer(merchant, due - fee)
+      transfer(payoutOf(plan.merchant), due - fee)
       transfer(feeRouter, fee)
+  billedPrice[s] = price                       // also when credit paid the cycle
+  if intro: introCyclesLeft[s] -= 1
+  planCycles[s] += 1
   s.chargeCount += 1                           // emits Charged
+  if plan.maxCycles &gt; 0 and planCycles[s] &gt;= plan.maxCycles:
+      s.status = COMPLETED                     // emits Completed
   return true</code></pre>
   <p>Some consequences of this design:</p>
   <ul>
-    <li><strong>No funds at rest.</strong> The pull goes into the contract and straight back out to the merchant and the fee router in the same transaction.</li>
+    <li><strong>No funds at rest.</strong> The pull goes into the contract and straight back out to the merchant's payout address and the fee router in the same transaction.</li>
+    <li><strong>One place bills a cycle.</strong> <code>collect</code> is the only writer of the billed price, the cycle count, the intro cycles left and COMPLETED. The billed price is written even when credit paid the cycle; written only when USDC moved, a downgrade paid from credit would keep the old, higher price, and every round trip between two plans would add credit nobody paid for. The check at the top must revert rather than return false, which <code>charge</code> would record as a failed payment. Status checks stop a completed subscription before it, so it is a backstop.</li>
     <li><strong>The schedule does not drift.</strong> A successful charge normally moves the billing date forward by one cycle from its previous value, so a late call does not shift later dates. After failed attempts, or when a whole cycle went by with no charge (a keeper outage), it starts a fresh cycle at the payment instead, and the overdue time is not billed. A successful charge therefore never leaves the next one already due, and missed billing dates are never collected back to back.</li>
     <li><strong>Failures are recorded, not reverted, on the dunning schedule.</strong> A pull fails when the subscriber lacks the balance or the allowance. The call still succeeds, the failure count goes up and <code>ChargeFailed</code> is emitted, so the failure is on the record and the keeper's transaction is not wasted on a revert. Because anyone can call <code>charge</code>, the contract enforces the schedule's gaps: the next failure can be recorded 1 day after the first, 3 days after the second and 7 days after each later one. A failing call sooner reverts with <code>RetryTooSoon</code> and changes nothing, so nobody can rush a subscription through dunning. Successful charges are never held back.</li>
     <li><strong>Two allowance sources.</strong> The pull tries the direct ERC-20 allowance first, then a Permit2 allowance, and stops at the first that succeeds.</li>
@@ -354,7 +371,7 @@ collect(s, plan):                               // shared by subscribe, charge, 
   </ul>
 
   <h3>4.6 Dunning</h3>
-  <p>Dunning, the process of recovering failed payments, is split between the chain and the keeper. The contract holds the thresholds: at <code>maxFailed</code> failures a subscription becomes PAST_DUE and can still be charged; at twice that, <code>charge</code> itself pauses it. No off-chain service decides to stop billing a customer, and because the contract enforces the schedule's gaps, nobody can make that happen faster than the schedule allows: a plan with <code>maxFailed</code> of 2 cannot pause itself sooner than 11 days after the first failure. The keeper retries on that schedule, 1 day after the first failure, 3 days after the second and 7 days after each later one; a deployment can lengthen the gaps but not shorten them. A success at any point resets the failure count, returns the subscription to ACTIVE and starts a fresh cycle at the payment: the next billing date is one cycle after the recovery, and the late days are not billed.</p>
+  <p>Dunning, the process of recovering failed payments, is split between the chain and the keeper. The contract holds the thresholds: at <code>maxFailed</code> failures a subscription becomes PAST_DUE and can still be charged; at twice that, <code>charge</code> itself pauses it. No off-chain service decides to stop billing a customer, and because the contract enforces the schedule's gaps, nobody can make that happen faster than the schedule allows: a plan with <code>maxFailed</code> of 2 cannot pause itself sooner than 11 days after the first failure. The keeper retries on that schedule, 1 day after the first failure, 3 days after the second and 7 days after each later one; a deployment can lengthen the gaps but not shorten them. A success at any point resets the failure count, returns the subscription to ACTIVE (or completes it, if it paid a limited plan's last cycle) and starts a fresh cycle at the payment: the next billing date is one cycle after the recovery, and the late days are not billed.</p>
 
   <figure class="fig">
     <svg viewBox="0 0 720 140" role="img" aria-labelledby="fig3t">
@@ -378,27 +395,36 @@ collect(s, plan):                               // shared by subscribe, charge, 
   <p>Merchants receive <code>charge.failed</code>, <code>dunning.started</code> and <code>subscription.paused</code> webhooks and contact the customer themselves. Levy sends no email to subscribers.</p>
 
   <h3>4.7 Pause, resume and cancel</h3>
-  <p>Both the subscriber and the merchant can pause and cancel a subscription. The subscriber can resume any pause; the merchant can resume only a pause it made itself. Nothing is charged while it is paused, and days already paid for keep running. Resuming is a fresh start: if the billing date passed during the pause, it moves to the moment of resuming, so paused cycles are never billed and an overdue cycle is forgiven, and the failure count and the one-day failure timer reset. Cancelling is final: a cancelled subscription can never be charged or resumed.</p>
+  <p>Both the subscriber and the merchant, through its account's current owner, can pause and cancel a subscription. The subscriber can resume any pause; the merchant can resume only a pause it made itself. Nothing is charged while it is paused, and days already paid for keep running. Resuming is a fresh start: if the billing date passed during the pause, it moves to the moment of resuming, so paused cycles are never billed and an overdue cycle is forgiven, and the failure count and the one-day failure timer reset. Cancelling is final: a cancelled subscription can never be charged or resumed. A completed subscription is final in the same way, and can no longer be paused or cancelled either.</p>
   <div class="note"><p>A pause made by the customer, or by dunning, can only be lifted by the customer, so it is a lock the merchant cannot undo. The contract records who paused (<code>pausedByMerchant</code>), and a merchant that tries to resume any other pause is refused. Beyond pausing, a customer's hard stops are cancelling and reducing or revoking the allowance. Refunds are the merchant's policy, paid from the merchant's wallet; the contract has no refund function.</p></div>
 
   <h3>4.8 Plan changes and proration</h3>
-  <p>A subscriber can move to another plan from the same merchant with <code>changePlan(subId, newPlanId)</code>. Only the subscriber can call it, and a plan from a different merchant is refused. The new plan starts and is billed at once, less credit for unused paid time on the old plan:</p>
+  <p>A subscriber can move to another plan from the same merchant account with <code>changePlan(subId, newPlanId)</code>. Only the subscriber can call it, and a plan from a different account, or a retired one, is refused. The new plan starts and is billed at once, at its full price, less credit for unused paid time on the old plan:</p>
   <div class="formula">r      = min(nextChargeAt - now, cycle_old)   if chargeCount &gt; 0 and nextChargeAt &gt; now
        = 0                                    otherwise
-credit = credit + floor(price_old * r / cycle_old)</div>
-  <p>The contract then collects the new plan's first cycle, spending credit before pulling anything, sets the next billing date one new cycle ahead, resets the failure count and marks the subscription ACTIVE. If the pull fails, the whole change reverts.</p>
-  <p>These rules keep credit honest. It is earned only for time that was paid for, so trial time earns none. One change adds at most one old-plan price. It is added to existing credit rather than replacing it. It is only ever spent with the merchant who received the USDC behind it. The invariant suite checks that a subscription's credit never exceeds what it has paid (&sect;5.2).</p>
+credit = credit + floor(billedPrice * r / cycle_old)</div>
+  <p><code>billedPrice</code> is what the old cycle was billed at: the old plan's price, or its intro price during an intro cycle. The contract then clears the cycle count and the intro cycles left, collects the new plan's first cycle, spending credit before pulling anything, sets the next billing date one new cycle ahead, resets the failure count and marks the subscription ACTIVE, unless that charge was the last cycle of a one-cycle plan and completed it. If the pull fails, the whole change reverts.</p>
+  <p>These rules keep credit honest. It is earned only for time that was paid for, at the price that was paid, so trial time earns none and an intro cycle earns credit at the intro price. One change adds at most the price billed for the old cycle. It is added to existing credit rather than replacing it. It is only ever spent with the merchant who received the USDC behind it. Because the intro cycles left are cleared first, switching between plans cannot keep a subscriber on intro prices. The invariant suite checks that a subscription's credit never exceeds what it has paid (&sect;5.2).</p>
   <ul>
     <li><strong>Upgrade.</strong> Ten days into a $30, 30-day plan, the customer moves to a $60, 30-day plan. The 20 unused days become $20 of credit, the contract pulls $40, and the next billing date is 30 days away.</li>
     <li><strong>Downgrade.</strong> Ten days into a $60, 30-day plan, the customer moves to a $10, 30-day plan. The 20 unused days become $40 of credit. The first $10 cycle is paid from it, and the remaining $30 covers the next three cycles, each recorded as a $0 charge.</li>
     <li><strong>Overdue.</strong> A change made after the billing date has passed earns no credit and forgives the overdue cycle, as cancelling and resubscribing would.</li>
+    <li><strong>From an intro cycle.</strong> Twelve days into a first cycle billed at $1, on a 30-day plan that then costs $30, the customer moves to the $60 plan. The 18 unused days earn $0.60 of credit, not the $18 the full price would give, and the contract pulls $59.40.</li>
   </ul>
+  <p>Credit left when a subscription completes is forfeited, as it is at cancellation, so a customer who downgrades into a short limited plan can lose most of it. The portal's quote shows the credit before the change.</p>
 
   <h3>4.9 Fees</h3>
   <p>The protocol fee is <code>floor(due / 100)</code>: 1% rounded down, with any fraction of a unit left to the merchant. A pull under 100 units ($0.0001) pays no fee, and a cycle paid entirely from credit pays none. The rate is a constant in the contract, not a plan parameter, so changing it takes a new deployment. Merchants can rely on it. Fees reach the <code>FeeRouter</code> in the charging transaction, and its permissionless <code>sweep()</code> forwards the balance to the treasury. Only the current treasury can name a new one.</p>
 
   <h3>4.10 Merchant references</h3>
   <p>A merchant's checkout link can carry a reference for its own customer record: 32 bytes, entered in the checkout as up to 31 ASCII characters or 64 hex digits. It is stored with the subscription and included in every webhook. The reference is public, and the subscriber supplies it when subscribing, so it is a claim rather than proof. Someone could copy a victim's reference into a subscription of their own and cancel it. Merchants should issue unguessable references per checkout and, once a subscription is created, track it by its <code>subId</code>.</p>
+
+  <h3>4.11 Merchant accounts</h3>
+  <p>A plan belongs to a merchant account: the address it was created for, which stays the plan's <code>merchant</code> and the permanent id that webhooks, the API and the same-merchant rule for plan changes use. The account has an owner, who acts for it, and a payout address, where its 99% goes. The owner starts as the account itself, and the payout follows the owner unless the owner fixes it elsewhere with <code>setPayout</code>, for example at a Safe while day-to-day work happens from a hot wallet. A payout change applies from the next collection, needs no acceptance, and refuses the manager's own address, where the share would be stuck. Handing the account to another wallet takes two steps, <code>transferOwnership</code> by the owner and <code>acceptOwnership</code> by the new owner, so a mistyped address never takes control. A fixed payout survives the handover; one that follows the owner moves with it. On the merchant's side, <code>createPlan</code>, retiring, pausing, resuming and cancelling all check the account's current owner and nothing else, so a key that handed the account on keeps none of those powers.</p>
+  <p>A changeable payout narrows the blocklist problem without holding funds for withdrawal. If USDC freezes the payout address, charges revert until the owner sets a new one; the first charge after that collects one cycle, and if a whole cycle went by it starts a fresh one, so further missed cycles are lost. A stolen owner key can still redirect future revenue and cancel subscriptions, as a stolen merchant key could before. With a separate payout address it reaches only future revenue, and every change emits an event and a <code>merchant.updated</code> webhook.</p>
+
+  <h3>4.12 Moving a subscription to a new wallet</h3>
+  <p>On a plan created as transferable, the subscriber can move a subscription to a new wallet in two steps: <code>proposeTransfer(subId, to)</code> by the subscriber, then <code>acceptTransfer(subId, planId)</code> by <code>to</code>, naming the subscription's current plan so the plan cannot be switched between the two. Only the subscriber changes. The id, plan, reference, paid time, credit, cycle counters, billed price and dunning state all carry over, and later charges pull from the new wallet's allowance. Three rules keep this safe. The new wallet must accept, because one allowance pays all of a wallet's Levy subscriptions: otherwise anyone could subscribe from an empty wallet and point the subscription at someone else's allowance. Only the subscriber can propose, so a stolen merchant key cannot hand customers' subscriptions to itself. And plans opt in, because transfers make subscriptions resellable, including those on a cheaper plan the merchant has retired. A cancelled or completed subscription cannot move.</p>
 
   <!-- 5 -->
   <h2 id="accounting">5. Accounting</h2>
@@ -409,13 +435,13 @@ credit = credit + floor(price_old * r / cycle_old)</div>
     <thead><tr><th>Operation</th><th>Formula</th><th>Remainder (under 1 unit) goes to</th></tr></thead>
     <tbody>
       <tr><td>Protocol fee</td><td><code>floor(due / 100)</code></td><td>Merchant</td></tr>
-      <tr><td>Proration credit</td><td><code>floor(price * r / cycle)</code></td><td>Merchant, who already collected the full price</td></tr>
+      <tr><td>Proration credit</td><td><code>floor(billedPrice * r / cycle)</code></td><td>Merchant, who already collected the billed price</td></tr>
     </tbody>
   </table></div>
   <p>Timestamps are 64-bit, far beyond any realistic date. A multiplication in the proration formula could only overflow for prices above about 3.7 &times; 10<sup>68</sup> units, and Solidity 0.8 reverts on overflow rather than wrapping.</p>
 
   <h3>5.2 Invariants</h3>
-  <p>Foundry's invariant fuzzer runs random sequences of plan creation, subscribing, approvals, charges across warped time, plan changes, pauses, resumes, cancellations and fee sweeps, with and without trials and across the full <code>maxFailed</code> range of 1 to 255, plus a griefer that calls <code>charge</code> several times at the same moment. After every step it checks nine properties:</p>
+  <p>Foundry's invariant fuzzer runs random sequences of plan creation, subscribing, approvals, charges across warped time, plan changes, pauses, resumes, cancellations, retiring and reopening plans, account handovers, payout changes, wallet transfers, unproposed takeover attempts and fee sweeps, with and without trials, intro prices and cycle limits of 1 to 4, and across the full <code>maxFailed</code> range of 1 to 255, plus a griefer that calls <code>charge</code> several times at the same moment. After every step it checks thirteen properties:</p>
   <ol>
     <li><strong>Conservation:</strong> every USDC unit minted in the test sits in exactly one tracked account.</li>
     <li><strong>No funds at rest:</strong> the SubscriptionManager's balance is always zero.</li>
@@ -426,8 +452,12 @@ credit = credit + floor(price_old * r / cycle_old)</div>
     <li><strong>Credit is backed:</strong> a subscription never holds more credit than the USDC it has paid.</li>
     <li><strong>Credit is bounded:</strong> credit never exceeds the largest plan price.</li>
     <li><strong>No back-to-back charges:</strong> a successful charge never leaves its subscription due again, so missed cycles are never pulled in a row.</li>
+    <li><strong>Completion is terminal:</strong> a completed subscription's status and charge count never change again.</li>
+    <li><strong>Cycle limits hold:</strong> no subscription is billed more than its plan's <code>maxCycles</code> times on that plan.</li>
+    <li><strong>Retired plans gain nothing:</strong> no subscription or plan change into a retired plan succeeds.</li>
+    <li><strong>Only acceptance moves a subscription:</strong> a subscription changes wallet only when its subscriber proposed that wallet and the wallet accepted.</li>
   </ol>
-  <p>Continuous integration runs 1,000 sequences of 40 calls on every push, alongside 68 unit tests. The keeper has 56 tests, including an end-to-end run against a local chain; the API has 55.</p>
+  <p>The conservation check counts a payout address outside the test actors too. Continuous integration runs 1,000 sequences of 40 calls on every push, alongside 104 unit tests. The keeper has 81 tests, including an end-to-end run against a local chain; the API has 73.</p>
 
   <!-- 6 -->
   <h2 id="security">6. Security model</h2>
@@ -436,12 +466,12 @@ credit = credit + floor(price_old * r / cycle_old)</div>
   <div class="table-wrap"><table>
     <thead><tr><th>Party</th><th>Can</th><th>Cannot</th></tr></thead>
     <tbody>
-      <tr><td>Merchant</td><td>Create plans; pause or cancel its own subscriptions, and resume a pause it made</td><td>Resume a pause made by the customer or by dunning, change a price, move a customer to another plan, charge a wallet that did not subscribe, charge before a billing date, or undo a cancellation</td></tr>
+      <tr><td>Merchant (its account's current owner)</td><td>Create and retire plans; set the payout address; hand the account to another wallet; pause or cancel its own subscriptions, and resume a pause it made</td><td>Resume a pause made by the customer or by dunning, change a price, move a customer to another plan or another wallet, charge a wallet that did not subscribe, charge before a billing date, or undo a cancellation or completion</td></tr>
       <tr><td>Levy's keeper</td><td>Choose when a due charge is submitted</td><td>Change amounts, recipients or dates; charge early; receive anything from a charge</td></tr>
       <tr><td>Anyone else</td><td>Call <code>charge</code> on a due subscription; call <code>sweep</code></td><td>Redirect or receive funds</td></tr>
       <tr><td>Treasury</td><td>Receive fees; propose a new treasury, which takes over once it accepts</td><td>Touch payments or subscriptions</td></tr>
       <tr><td>Levy's API and webhooks</td><td>Show data; send notifications</td><td>Move funds</td></tr>
-      <tr><td>USDC issuer</td><td>Freeze addresses. A frozen merchant or fee router makes charges on the affected plans revert, and the customer is not charged</td><td>Nothing specific to Levy</td></tr>
+      <tr><td>USDC issuer</td><td>Freeze addresses. A frozen payout address or fee router makes charges on the affected plans revert, and the customer is not charged. The account's owner can set a new payout address</td><td>Nothing specific to Levy</td></tr>
       <tr><td>Arc validators</td><td>Order and finalise transactions; a halt delays charges</td><td>Change the contract's rules</td></tr>
     </tbody>
   </table></div>
@@ -449,23 +479,23 @@ credit = credit + floor(price_old * r / cycle_old)</div>
   <h3 id="exposure">6.2 Customer exposure</h3>
   <p>The contract pulls from a customer in exactly three places. <code>subscribe</code> and <code>changePlan</code> can only be called by the customer. <code>charge</code> can be called by anyone, but each successful call needs a billing date that has passed, collects at most one plan price and moves the billing date at least one cycle later (exactly one, unless the charge follows failures or a whole skipped cycle, when the new date is one cycle after the payment). The only other writes to the billing date are resume, which can only move it later, and the customer's own plan change. It follows that for a subscription with price <var>p</var>, cycle <var>c</var> and first billing date <var>d</var><sub>1</sub>, the total that other parties can cause to be pulled by time <var>t</var> is</p>
   <div class="formula">pulled_by_others(t) &lt;= p * (1 + floor((t - d1) / c))      for t &gt;= d1, and 0 before d1</div>
-  <p>A plan change by the customer starts a new schedule under the same rule. Across all of a customer's Levy subscriptions, whichever merchants they belong to, the total can never exceed the allowances the customer granted to the SubscriptionManager, directly or through Permit2, because every pull spends them. This bound follows from the code. It is not one of the fuzzed invariants, and we would like the audit to check it.</p>
+  <p>Intro prices are below <var>p</var>, so they only lower the total, and on a limited plan the count of payments also stops at <code>maxCycles</code>. A plan change by the customer starts a new schedule under the same rule. A transfer moves an existing schedule to a new wallet, and only that wallet can accept it, so no wallet takes on a schedule it did not agree to. Across all of a customer's Levy subscriptions, whichever merchants they belong to, the total can never exceed the allowances the customer granted to the SubscriptionManager, directly or through Permit2, because every pull spends them. This bound follows from the code. It is not one of the fuzzed invariants, and we would like the audit to check it.</p>
 
   <h3>6.3 Why the charge function can be public</h3>
-  <p>Consider <code>charge</code> called by an attacker. The subscription and plan are read from storage, so the caller influences nothing. Tokens move from the subscriber to the contract, then to the plan's merchant and the fee router, both fixed. The caller receives nothing, and calling first, or front-running the keeper, changes nothing but who paid the gas. A caller can charge a due subscription at the earliest moment it is due, which is the intended behaviour, and can record a failure when a pull fails, but no more than one a day per subscription (&sect;4.5). Before that limit existed, a caller could record failures back to back and pause a subscription in one block; see &sect;6.8.</p>
+  <p>Consider <code>charge</code> called by an attacker. The subscription and plan are read from storage, so the caller influences nothing. Tokens move from the subscriber to the contract, then to the payout address of the plan's merchant account, which only that account's owner can change, and to the fixed fee router. The caller receives nothing, and calling first, or front-running the keeper, changes nothing but who paid the gas. A caller can charge a due subscription at the earliest moment it is due, which is the intended behaviour, and can record a failure when a pull fails, but no more than one a day per subscription (&sect;4.5). Before that limit existed, a caller could record failures back to back and pause a subscription in one block; see &sect;6.8.</p>
 
   <h3>6.4 Reentrancy</h3>
-  <p>Every SubscriptionManager function that moves tokens is guarded against reentrancy; the FeeRouter's <code>sweep</code> is not, and only forwards its balance. State is written after the transfers in the guarded functions, the reverse of the usual checks-effects-interactions order. That is safe with USDC, which makes no callbacks on transfer, but it would matter with a token that did, and pause, resume and cancel are not guarded. This is flagged for the audit.</p>
+  <p>Every SubscriptionManager function that moves tokens is guarded against reentrancy; the FeeRouter's <code>sweep</code> is not, and only forwards its balance. State is written after the transfers in the guarded functions, the reverse of the usual checks-effects-interactions order. That is safe with USDC, which makes no callbacks on transfer, but it would matter with a token that did, and pause, resume and cancel are not guarded, nor are the account, retirement and transfer functions, which also only write storage. This is flagged for the audit.</p>
 
   <h3>6.5 Denial of service and keeper cost</h3>
   <p>A customer who revokes their allowance cannot make the keeper's transaction revert; the failure is recorded and costs one transaction. Each subscription can fail at most twice <code>maxFailed</code> times before it pauses itself, no faster than the dunning schedule, and only a resume, which the attacker must pay for, buys another round.</p>
   <p>A cheaper attack is a self-funded subscription: create a plan priced at one unit and subscribe to it. The attacker pays themselves, so charges never fail and never pause, and the keeper pays gas for each one. The one-day minimum cycle limits every such subscription to one charge a day, but the number of subscriptions is unbounded. The mitigation is keeper policy, for example skipping subscriptions whose fee does not cover their gas (&sect;8.4), and the keeper's gas spend is on the monitoring list.</p>
 
   <h3>6.6 Permit2</h3>
-  <p>An earlier version let anyone relay a customer's Permit2 signature. Because a permit does not name a plan, a relayer, or anyone who read it from the mempool, could have subscribed the customer to a plan of their own. Only the signer can submit it now. Someone who sees the signed permit can still submit it to Permit2 directly and use up its nonce. That used to make the customer's subscribe fail. Since the 2026-10-24 review the contract catches the failed permit and subscribes anyway when the customer's Permit2 allowance already covers one cycle and has not expired, as it does once the copied permit has been applied; otherwise Permit2's own error is returned. No funds are at risk either way.</p>
+  <p>An earlier version let anyone relay a customer's Permit2 signature. Because a permit does not name a plan, a relayer, or anyone who read it from the mempool, could have subscribed the customer to a plan of their own. Only the signer can submit it now. Someone who sees the signed permit can still submit it to Permit2 directly and use up its nonce. That used to make the customer's subscribe fail. Since the 2026-10-24 review the contract catches the failed permit and subscribes anyway when the customer's Permit2 allowance already covers the first cycle (at the intro price, if the plan has one) and has not expired, as it does once the copied permit has been applied; otherwise Permit2's own error is returned. No funds are at risk either way.</p>
 
   <h3>6.7 Off-chain services</h3>
-  <p>The API authenticates with Sign-In with Ethereum [10]. Messages are bound to the deployment's origin, challenges are single-use, and sessions last 24 hours and are stored hashed. The dashboard and portal hold the session in a cookie that page scripts cannot read, and a write carried by that cookie must come from the app's own origin. Every endpoint that returns merchant or subscriber data is scoped to the signed-in address, and another merchant's records return not-found. Webhook URLs must use https on port 443 at a public address, checked at registration and again at connection time so a DNS change cannot redirect deliveries to an internal network, and redirects are never followed. Deliveries are signed with Ed25519 [11] over the timestamp, delivery id, event type and body, so a captured delivery cannot be replayed later or relabelled as a different event. Delivery runs in its own loop, so a slow merchant endpoint cannot delay charging. The dashboard, portal and checkout send a Content-Security-Policy that allows scripts only from the app's own origin, so an injected script cannot run.</p>
+  <p>The API authenticates with Sign-In with Ethereum [10]. Messages are bound to the deployment's origin, challenges are single-use, and sessions last 24 hours and are stored hashed. The dashboard and portal hold the session in a cookie that page scripts cannot read, and a write carried by that cookie must come from the app's own origin. Every endpoint that returns merchant or subscriber data is scoped to the signed-in address, merchant data to the merchant accounts it owns now, and another merchant's records return not-found. Webhook URLs must use https on port 443 at a public address, checked at registration and again at connection time so a DNS change cannot redirect deliveries to an internal network, and redirects are never followed. Deliveries are signed with Ed25519 [11] over the timestamp, delivery id, event type and body, so a captured delivery cannot be replayed later or relabelled as a different event. Delivery runs in its own loop, so a slow merchant endpoint cannot delay charging. The dashboard, portal and checkout send a Content-Security-Policy that allows scripts only from the app's own origin, so an injected script cannot run.</p>
 
   <h3>6.8 Findings so far</h3>
   <p>Code review, fuzzing and external engineering reviews found nine issues. All are fixed and have regression tests:</p>
@@ -485,7 +515,8 @@ credit = credit + floor(price_old * r / cycle_old)</div>
     <li>Self-funded spam subscriptions (&sect;6.5).</li>
     <li>The inverted update order (&sect;6.4).</li>
     <li>Plan changes, resumes and a charge after failures or a skipped cycle forgive the overdue time. This is intended, but merchants should know it.</li>
-    <li>A frozen merchant blocks charges on its plans.</li>
+    <li>A frozen payout address blocks charges on its account's plans until the owner sets a new one, and the cycles missed meanwhile, beyond the one the next charge collects, are lost.</li>
+    <li>Manager v2 itself (&sect;4.2, &sect;4.11, &sect;4.12). An independent review of its design found two ways to get the billing rules wrong, both fixed in the design before it was built: a billed price written only when USDC moved, and a plan change that undid a completion. The code still needs an external review, a testnet soak and the audit.</li>
     <li>The treasury can hand itself to a single-key address. Since 2026-10-24 that takes two steps, a proposal and an acceptance by the new address, so a mistyped address cannot take over.</li>
     <li>The off-chain gaps listed in &sect;9.</li>
   </ul>
@@ -504,17 +535,17 @@ credit = credit + floor(price_old * r / cycle_old)</div>
   </ol>
   <p>The delivery loop, every 5 seconds, sends webhooks. Charge and dunning schedules use the chain's timestamp, not the server clock; webhook retries and signatures use the server clock. Because a block is final, the keeper treats a mined transaction as settled.</p>
   <p>Indexing is deliberately narrow. On Arc, USDC is the gas token, so USDC logs are everywhere. We measured about 4,000 of them per 500 blocks on testnet and about 1,200 on mainnet on 25 September 2026, roughly 1.4 million and 430,000 a day. The keeper fetches only Levy's own events, USDC transfers into or out of the SubscriptionManager and approvals to it, in fixed-size block ranges. It sends those queries one at a time and backs off for up to 15 seconds when refused, because Arc's public testnet RPC rate-limits bursts of them.</p>
-  <p>The allowance check reads up to 50 subscribers per cycle, rechecking each after 6 hours, or sooner after a charge or a new approval. When a subscriber's allowance covers fewer than two more rounds of all their subscriptions, each affected merchant gets an <code>allowance.low</code> webhook. It is sent once, and again only if the allowance recovers and runs low again.</p>
+  <p>The allowance check reads up to 50 subscribers per cycle, rechecking each after 6 hours, or sooner after a charge, a new approval or a wallet transfer. It prices each subscription's next charges as they will be billed: intro cycles at the intro price, and none past a limited plan's last payment. When a subscriber's allowance does not cover the next two charges of all their subscriptions, each affected merchant gets an <code>allowance.low</code> webhook. It is sent once, and again only if the allowance recovers and runs low again.</p>
   <p>Only one keeper should run per deployment. Two keepers cannot double-charge, because a second successful call on the same billing date reverts, and they cannot speed up dunning, because a second recorded failure inside the schedule's gap reverts with <code>RetryTooSoon</code>. They only waste gas. A merchant who does not want to depend on Levy's keeper can run its own against its own plans, or simply call <code>charge</code>.</p>
 
   <h3>7.2 Webhooks</h3>
-  <p>Contract events become signed webhooks to the endpoints of the subscription's merchant. There are ten event types, listed in Appendix C, and every payload carries <code>subId</code>, <code>merchant</code> and the merchant's <code>ref</code>. Each delivery carries <code>X-Levy-Signature</code>, an Ed25519 signature over <code>{timestamp}.{deliveryId}.{webhookId}.{event}.{body}</code>, plus the timestamp, delivery id, key id and event type in headers. Receivers verify the signature against the public key the API publishes and their own webhook id, reject timestamps more than a few minutes old, drop delivery ids they have seen and check that the payload names them as merchant. One key signs for every merchant, so the webhook id is what keeps a delivery made for one endpoint from verifying at another. Up to 8 deliveries run in parallel with one in flight per endpoint, so a slow endpoint is never hit twice at once. Failures retry after 1, 5 and 15 minutes, 1 hour and then every 6 hours; a delivery whose next retry would pass 24 hours is dead-lettered, its last attempt at about 19 hours 21 minutes. A merchant can register up to 5 endpoints.</p>
+  <p>Contract events become signed webhooks to the endpoints of the subscription's merchant account. There are thirteen event types, listed in Appendix C. Every payload carries <code>subId</code>, <code>merchant</code> and the merchant's <code>ref</code>, except <code>merchant.updated</code>, which concerns the account and carries its owner, payout address and pending owner instead. Each delivery carries <code>X-Levy-Signature</code>, an Ed25519 signature over <code>{timestamp}.{deliveryId}.{webhookId}.{event}.{body}</code>, plus the timestamp, delivery id, key id and event type in headers. Receivers verify the signature against the public key the API publishes and their own webhook id, reject timestamps more than a few minutes old, drop delivery ids they have seen and check that the payload names them as merchant. One key signs for every merchant, so the webhook id is what keeps a delivery made for one endpoint from verifying at another. Up to 8 deliveries run in parallel with one in flight per endpoint, so a slow endpoint is never hit twice at once. Failures retry after 1, 5 and 15 minutes, 1 hour and then every 6 hours; a delivery whose next retry would pass 24 hours is dead-lettered, its last attempt at about 19 hours 21 minutes. A merchant can register up to 5 endpoints.</p>
 
   <h3>7.3 API and applications</h3>
   <ul>
-    <li><strong>Merchant dashboard.</strong> Monthly recurring revenue normalised to 30 days, active subscriptions, charge success rate, dunning queue, total collected, the merchant's plans with their checkout links and a form to create new ones, every subscription with the merchant's reference and allowance runway (each can be paused, resumed or cancelled), webhook management with a delivery log, and an invoice export in CSV.</li>
-    <li><strong>Customer portal.</strong> The customer's subscriptions and invoices; pause, resume, cancel and plan changes from their own wallet, with the plan change priced from the contract's state before signing; and their Levy allowance, with a top-up and a revoke.</li>
-    <li><strong>Hosted checkout.</strong> <code>/checkout.html?plan=&lt;id&gt;&amp;ref=&lt;ref&gt;</code> shows the plan, the merchant, the contract and the customer's balance, asks how many cycles to approve, and states what Levy can pull.</li>
+    <li><strong>Merchant dashboard.</strong> The merchant account, with its payout address and handover; monthly recurring revenue normalised to 30 days, active subscriptions, charge success rate, dunning queue, total collected, the merchant's plans with their terms, checkout links, a retire switch and a form to create new ones, every subscription with the merchant's reference and allowance runway (each can be paused, resumed or cancelled), webhook management with a delivery log, and an invoice export in CSV.</li>
+    <li><strong>Customer portal.</strong> The customer's subscriptions and invoices; pause, resume, cancel, plan changes and moving a subscription to a new wallet from their own wallet, with the plan change priced from the contract's state before signing; accepting a subscription offered to the wallet, with its plan, price and merchant shown first; and their Levy allowance, with a top-up and a revoke.</li>
+    <li><strong>Hosted checkout.</strong> <code>/checkout.html?plan=&lt;id&gt;&amp;ref=&lt;ref&gt;</code> shows the plan with its intro price and number of payments, the merchant, the contract and the customer's balance, asks how many cycles to approve, and states what Levy can pull. It refuses a retired plan.</li>
   </ul>
   <p>All three are static pages with no third-party scripts, served by the API.</p>
 
@@ -548,7 +579,7 @@ credit = credit + floor(price_old * r / cycle_old)</div>
       <tr><td><code>createPlan</code></td><td class="num">161,000</td><td class="num">about $0.004</td></tr>
       <tr><td>pause, resume, cancel</td><td class="num">49,000 to 57,000</td><td class="num">about $0.0015</td></tr>
     </tbody>
-    <caption>Twenty gwei is Arc's documented testnet minimum base fee, 2 &times; 10<sup>-8</sup> USDC per unit of gas, which matches its target of about $0.001 per ERC-20 transfer [2]. The documented ceiling is 1,000 times higher. Deploying both contracts on Arc testnet cost 0.11 USDC (3.79 million gas at 29.7 gwei).</caption>
+    <caption>These figures were measured on the contracts at commit <code>54724d0</code>, before manager v2. v2 writes more state on every billed cycle (the billed price and the cycle count) and reads the account's payout address, so its charges, subscriptions and plan changes cost more; it has not been measured for this table yet. Twenty gwei is Arc's documented testnet minimum base fee, 2 &times; 10<sup>-8</sup> USDC per unit of gas, which matches its target of about $0.001 per ERC-20 transfer [2]. The documented ceiling is 1,000 times higher. Deploying both contracts on Arc testnet cost 0.11 USDC (3.79 million gas at 29.7 gwei).</caption>
   </table></div>
 
   <h3>8.4 Keeper sustainability</h3>
@@ -568,8 +599,9 @@ credit = credit + floor(price_old * r / cycle_old)</div>
     <li><strong>Off-chain gaps.</strong>
       <ul>
         <li>Allowance warnings do not read Permit2 allowances, so Permit2 subscribers are flagged low from the start.</li>
-        <li>Merchants sign in with their payout wallet: there are no scoped API keys and no support for smart-contract wallets (ERC-1271).</li>
+        <li>Merchants sign in with the wallet that owns their merchant account: there are no scoped API keys and no support for smart-contract wallets (ERC-1271), so a Safe can receive payouts but cannot sign in as the owner.</li>
       </ul></li>
+    <li><strong>Limits and intro prices are not commitments.</strong> A customer can cancel a limited plan before its last payment, so installments carry the merchant's credit risk. Intro prices and trials are per subscription, and a customer can subscribe again, from the same wallet or a new one; eligibility is the merchant's to check off-chain.</li>
     <li><strong>Testnet only, and not audited.</strong> The contracts run on Arc testnet, nothing handles real money yet, and there has been no paid audit. Outside review so far was informal (&sect;6.8).</li>
   </ul>
 
@@ -578,7 +610,8 @@ credit = credit + floor(price_old * r / cycle_old)</div>
   <p>The contracts, keeper, API, dashboard, portal and checkout are built, and the contracts have been live on Arc testnet since 26 September 2026, the current ones since 24 October 2026. What remains before real money flows:</p>
   <ol>
     <li><strong>A soak of at least a week on the testnet deployment,</strong> running real billing cycles end to end: trials, failed payments through to auto-pause, pause and resume, cancellation, plan changes with credit, and the Permit2 path against Arc's own Permit2.</li>
-    <li><strong>An external audit</strong> of the contracts, with the open items in &sect;6.8 and the exposure bound in &sect;6.2 in scope.</li>
+    <li><strong>Manager v2 on testnet:</strong> an external review of its code, a deployment and a third soak.</li>
+    <li><strong>An external audit</strong> of the v2 contracts, with the open items in &sect;6.8 and the exposure bound in &sect;6.2 in scope.</li>
     <li><strong>Mainnet deployment</strong> with the treasury multisig in place, and the first real subscription billed.</li>
   </ol>
   <p>Planned after launch:</p>
@@ -600,11 +633,18 @@ credit = credit + floor(price_old * r / cycle_old)</div>
   <div class="table-wrap"><table>
     <thead><tr><th>Function</th><th>Who can call</th><th>Effect</th></tr></thead>
     <tbody>
-      <tr><td><code>createPlan(price, cycleSeconds, trialSeconds, graceSeconds, maxFailed)</code></td><td>Anyone (becomes the merchant)</td><td>Creates an immutable plan; emits <code>PlanCreated</code></td></tr>
-      <tr><td><code>subscribe(planId, ref)</code></td><td>The subscriber</td><td>Starts a subscription; charges the first cycle unless the plan has a trial</td></tr>
-      <tr><td><code>subscribeWithPermit2(planId, ref, permit, signature)</code></td><td>The permit's signer</td><td>Grants a Permit2 allowance and subscribes in one transaction; if the permit was already used, goes ahead on an existing allowance of at least one cycle</td></tr>
+      <tr><td><code>createPlan(account, terms)</code></td><td>The account's owner</td><td>Creates a plan with immutable terms for the account; emits <code>PlanCreated</code></td></tr>
+      <tr><td><code>setPlanRetired(planId, retired)</code></td><td>The account's owner</td><td>Closes the plan to new subscriptions and plan changes into it, or reopens it</td></tr>
+      <tr><td><code>setPayout(account, payout)</code></td><td>The account's owner</td><td>Fixes where the 99% goes; zero follows the owner</td></tr>
+      <tr><td><code>transferOwnership(account, newOwner)</code></td><td>The account's owner</td><td>Proposes the next owner; zero withdraws</td></tr>
+      <tr><td><code>acceptOwnership(account)</code></td><td>The proposed owner</td><td>Takes over the account</td></tr>
+      <tr><td><code>ownerOf(account)</code>, <code>payoutOf(account)</code></td><td>Anyone (view)</td><td>Who acts for the account, and where its payments go</td></tr>
+      <tr><td><code>subscribe(planId, ref)</code></td><td>The subscriber</td><td>Starts a subscription on a plan that is not retired; charges the first cycle unless the plan has a trial</td></tr>
+      <tr><td><code>subscribeWithPermit2(planId, ref, permit, signature)</code></td><td>The permit's signer</td><td>Grants a Permit2 allowance and subscribes in one transaction; if the permit was already used, goes ahead on an existing allowance that covers the first cycle</td></tr>
       <tr><td><code>charge(subId)</code></td><td>Anyone, once due</td><td>Collects one cycle, or records a failure (on the 1, 3, 7-day schedule; sooner reverts <code>RetryTooSoon</code>)</td></tr>
-      <tr><td><code>changePlan(subId, newPlanId)</code></td><td>The subscriber</td><td>Moves to a same-merchant plan, billed now, less credit</td></tr>
+      <tr><td><code>changePlan(subId, newPlanId)</code></td><td>The subscriber</td><td>Moves to a same-account plan that is not retired, billed now at its full price, less credit</td></tr>
+      <tr><td><code>proposeTransfer(subId, to)</code></td><td>The subscriber</td><td>Offers the subscription to a new wallet, on a transferable plan; zero withdraws</td></tr>
+      <tr><td><code>acceptTransfer(subId, planId)</code></td><td>The offered wallet</td><td>Takes the subscription over; the plan must be its current one</td></tr>
       <tr><td><code>pauseSubscription(subId)</code></td><td>Subscriber or merchant</td><td>Stops charges until resumed</td></tr>
       <tr><td><code>resumeSubscription(subId)</code></td><td>Subscriber; merchant only for its own pause</td><td>Fresh start; resets failures</td></tr>
       <tr><td><code>cancelSubscription(subId)</code></td><td>Subscriber or merchant</td><td>Final</td></tr>
@@ -615,7 +655,7 @@ credit = credit + floor(price_old * r / cycle_old)</div>
       <tr><td><code>FeeRouter.acceptTreasury()</code></td><td>The proposed treasury</td><td>Takes over as treasury</td></tr>
     </tbody>
   </table></div>
-  <p>Events: <code>PlanCreated(planId, merchant, price, cycleSeconds)</code>, <code>Subscribed(subId, subscriber, planId, nextChargeAt, ref)</code>, <code>Charged(subId, amount, fee, invoiceRef, chargeCount)</code>, <code>ChargeFailed(subId, failedAttempts)</code>, <code>AutoPaused(subId)</code>, <code>Paused(subId)</code>, <code>Resumed(subId)</code>, <code>Cancelled(subId)</code>, <code>PlanChanged(subId, oldPlanId, newPlanId, credit)</code>, and on the FeeRouter <code>Swept(amount, treasury)</code>, <code>TreasuryProposed(treasury, pendingTreasury)</code> and <code>TreasuryUpdated(old, new)</code>.</p>
+  <p>Events: <code>PlanCreated(planId, merchant, price, cycleSeconds)</code>, <code>Subscribed(subId, subscriber, planId, nextChargeAt, ref)</code>, <code>Charged(subId, amount, fee, invoiceRef, chargeCount)</code>, <code>ChargeFailed(subId, failedAttempts)</code>, <code>AutoPaused(subId)</code>, <code>Paused(subId)</code>, <code>Resumed(subId)</code>, <code>Cancelled(subId)</code>, <code>PlanChanged(subId, oldPlanId, newPlanId, credit)</code>, <code>PlanRetired(planId, retired)</code>, <code>Completed(subId)</code>, <code>TransferProposed(subId, from, to)</code>, <code>SubscriptionTransferred(subId, from, to)</code>, <code>PayoutChanged(account, payout)</code>, <code>OwnershipTransferStarted(account, pendingOwner)</code>, <code>OwnershipTransferred(account, previousOwner, newOwner)</code>, and on the FeeRouter <code>Swept(amount, treasury)</code>, <code>TreasuryProposed(treasury, pendingTreasury)</code> and <code>TreasuryUpdated(old, new)</code>.</p>
 
   <h2 id="parameters">Appendix B. Parameters</h2>
   <div class="table-wrap"><table>
@@ -624,14 +664,16 @@ credit = credit + floor(price_old * r / cycle_old)</div>
       <tr><td>Protocol fee</td><td>1% of each pull, rounded down</td><td>Contract constant</td></tr>
       <tr><td>Cycle length</td><td>86,400 s (1 day) to 315,360,000 s (10 years)</td><td>Contract constants</td></tr>
       <tr><td><code>maxFailed</code></td><td>1 to 255 per plan; auto-pause at twice the value</td><td>Plan</td></tr>
+      <tr><td><code>maxCycles</code></td><td>0 (no limit) or the number of cycles before the subscription completes</td><td>Plan</td></tr>
+      <tr><td>Intro price</td><td>Above 0 and below the price, for the first <code>introCycles</code> billed cycles</td><td>Plan</td></tr>
       <tr><td>Gap between recorded failures</td><td>At least 86,400 s (1 day) per subscription</td><td>Contract constant</td></tr>
       <tr><td>Charge loop / delivery loop</td><td>30 s / 5 s</td><td>Keeper configuration</td></tr>
       <tr><td>Dunning retries</td><td>1, 3, then every 7 days after each failure</td><td>Keeper configuration</td></tr>
       <tr><td>Revert backoff</td><td>1 min, 5 min, 15 min, 1 h, then every 6 h</td><td>Keeper</td></tr>
-      <tr><td>Allowance warning</td><td>Fewer than 2 rounds left; up to 50 subscribers per cycle; recheck after 6 h</td><td>Keeper</td></tr>
+      <tr><td>Allowance warning</td><td>The next 2 charges not covered; up to 50 subscribers per cycle; recheck after 6 h</td><td>Keeper</td></tr>
       <tr><td>Webhooks</td><td>5 endpoints per merchant; 5 s timeout; 8 in parallel; retries 1 min to 6 h; last attempt at about 19 h 21 min, then dead</td><td>Keeper and API</td></tr>
       <tr><td>Sessions</td><td>24 hours</td><td>API</td></tr>
-      <tr><td>Checkout default</td><td>12 cycles approved, added to any existing allowance</td><td>Checkout</td></tr>
+      <tr><td>Checkout default</td><td>12 cycles approved (a limited plan's payments, if fewer), added to any existing allowance</td><td>Checkout</td></tr>
     </tbody>
   </table></div>
 
@@ -648,7 +690,10 @@ credit = credit + floor(price_old * r / cycle_old)</div>
       <tr><td><code>subscription.paused</code></td><td>Paused by either party, or automatically (<code>auto: true</code>)</td></tr>
       <tr><td><code>subscription.resumed</code></td><td>Resumed</td></tr>
       <tr><td><code>subscription.cancelled</code></td><td>Cancelled</td></tr>
-      <tr><td><code>allowance.low</code></td><td>The customer's allowance covers fewer than 2 more rounds</td></tr>
+      <tr><td><code>subscription.completed</code></td><td>The last cycle of a limited plan is billed</td></tr>
+      <tr><td><code>subscription.transferred</code></td><td>The subscription moved to a new wallet</td></tr>
+      <tr><td><code>allowance.low</code></td><td>The customer's allowance does not cover the next 2 charges</td></tr>
+      <tr><td><code>merchant.updated</code></td><td>The merchant account's owner, pending owner or payout address changed</td></tr>
     </tbody>
   </table></div>
 
@@ -659,7 +704,7 @@ credit = credit + floor(price_old * r / cycle_old)</div>
       <tr><td>SubscriptionManager</td><td><a href="https://explorer.testnet.arc.io/address/0xea24ac9c1217a671139d93225fdcf19ea3c4df4e"><code>0xea24ac9c1217a671139d93225fdcf19ea3c4df4e</code></a></td></tr>
       <tr><td>FeeRouter</td><td><a href="https://explorer.testnet.arc.io/address/0x9e62309243da8be600a718a323fbbdfce00f3ce8"><code>0x9e62309243da8be600a718a323fbbdfce00f3ce8</code></a></td></tr>
     </tbody>
-    <caption>Arc testnet (chain 5042002), deployed on 24 October 2026 in blocks 68869601 and 68869602. The runtime bytecode of both contracts matches a build of the contract sources at commit <code>54724d0</code>, apart from the addresses set at construction. On testnet the fee treasury is the deploying wallet; on mainnet it will be a Safe multisig. The deployment of 3 October 2026 (block 65201372) ran the first testnet soak and predates the 24 October fixes in &sect;6.8; two earlier deployments on 26 September 2026, in blocks 64020204 and 64031023, predate the fixes before that. None of them is used.</caption>
+    <caption>Arc testnet (chain 5042002), deployed on 24 October 2026 in blocks 68869601 and 68869602. The runtime bytecode of both contracts matches a build of the contract sources at commit <code>54724d0</code>, apart from the addresses set at construction. On testnet the fee treasury is the deploying wallet; on mainnet it will be a Safe multisig. These contracts predate manager v2, which this paper describes, and v2 replaces them at its deployment. The deployment of 3 October 2026 (block 65201372) ran the first testnet soak and predates the 24 October fixes in &sect;6.8; two earlier deployments on 26 September 2026, in blocks 64020204 and 64031023, predate the fixes before that. None of them is used.</caption>
   </table></div>
 
   <h2 id="references">References</h2>

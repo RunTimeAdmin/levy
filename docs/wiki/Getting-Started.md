@@ -32,7 +32,7 @@ The repository is private, so cloning needs read access.
 
 ```bash
 forge build
-forge test                       # 77 tests: 68 unit, 9 invariants (256 runs x depth 15)
+forge test                       # 117 tests: 104 unit, 13 invariants (256 runs x depth 15)
 FOUNDRY_PROFILE=ci forge test    # what CI runs: invariants at 1000 runs x depth 40
 ```
 
@@ -46,9 +46,9 @@ forge inspect SubscriptionManager bytecode > keeper/abi/SubscriptionManager.bin
 ## Test the keeper and the API
 
 ```bash
-cd keeper && npm ci && npm test      # 56 tests; includes an integration test that spawns anvil
+cd keeper && npm ci && npm test      # 81 tests; includes an integration test that spawns anvil
 npx tsc --noEmit                     # typecheck, as CI does
-cd ../api && npm ci && npm test      # 55 tests; seeded temp database, ephemeral port
+cd ../api && npm ci && npm test      # 73 tests; seeded temp database, ephemeral port
 ```
 
 `npm ci` installs exactly the lockfile, as CI does; `npm install` also works. The keeper's integration test needs `anvil` on your PATH and uses its own anvil on port 8546. `npm run test:integration` runs it alone. See [Testing](Testing.md).
@@ -131,16 +131,16 @@ curl http://127.0.0.1:3001/api/health    # {"ok":true,"service":"levy-api","vers
    cast send 0x3600000000000000000000000000000000000000 "mint(address,uint256)" <account-2-address> 100000000 --rpc-url $RPC --private-key <account-0-key>
    ```
 3. **Dashboard.** Open exactly `http://localhost:3001` (not `127.0.0.1`: the origin must match `LEVY_PUBLIC_ORIGIN`). Sign in as account (0); the signature is free and sends no transaction.
-4. **New plan.** Under Plans choose New plan: price 10, billing cycle Daily (the shortest, so one warped day is enough later), trial 0, failed payments before past due 3, then confirm in the wallet. The plan appears once the keeper has indexed it, within about 30 seconds. Copy its checkout link, `http://localhost:3001/checkout.html?plan=1`; you can append `&ref=customer-42` (up to 31 ASCII characters) to tag the customer.
+4. **New plan.** Under Plans choose New plan: price 10, billing cycle Daily (the shortest, so one warped day is enough later), trial 0, failed payments before past due 3, the optional terms (number of payments, intro price, transfers) left empty, then confirm in the wallet. The plan appears once the keeper has indexed it, within about 30 seconds. Copy its checkout link, `http://localhost:3001/checkout.html?plan=1`; you can append `&ref=customer-42` (up to 31 ASCII characters) to tag the customer.
 5. **Checkout.** Switch the wallet to account (2), open the link, connect, pick how many cycles to approve (default 12) and choose Approve and subscribe: two wallet confirmations. With no trial, the first cycle is charged at once.
-6. **Portal.** `http://localhost:3001/portal.html` shows the subscription, its invoices and the allowance, and lets the subscriber pause, resume, cancel or change plan.
+6. **Portal.** `http://localhost:3001/portal.html` shows the subscription, its invoices and the allowance, and lets the subscriber pause, resume, cancel, change plan, or move the subscription to another wallet on a transferable plan.
 
 Read the account address in the page header before each action. The wallet only offers accounts the site is connected to, so the signed-in address may not be the account you expect.
 
-Without a browser wallet, the same flow runs from the command line (`$MGR` is the manager address, `$USDC` the USDC address). `createPlan` takes price, cycleSeconds, trialSeconds, graceSeconds (unused, send 0) and maxFailed.
+Without a browser wallet, the same flow runs from the command line (`$MGR` is the manager address, `$USDC` the USDC address). `createPlan` takes the merchant account, here the sender's own address, and a tuple of price, cycleSeconds, trialSeconds, maxFailed, maxCycles (0 for no limit), introPrice, introCycles and transferable. This is manager v2's signature; the Arc testnet contracts from 2026-10-24 take `createPlan(uint256,uint256,uint256,uint256,uint8)` instead.
 
 ```bash
-cast send $MGR "createPlan(uint256,uint256,uint256,uint256,uint8)" 10000000 86400 0 0 3 --rpc-url $RPC --private-key <account-0-key>
+cast send $MGR "createPlan(address,(uint256,uint256,uint256,uint8,uint32,uint256,uint32,bool))" <account-0-address> "(10000000,86400,0,3,0,0,0,false)" --rpc-url $RPC --private-key <account-0-key>
 cast send $USDC "approve(address,uint256)" $MGR 120000000 --rpc-url $RPC --private-key <account-2-key>
 cast send $MGR "subscribe(uint256,bytes32)" 1 0x0000000000000000000000000000000000000000000000000000000000000000 --rpc-url $RPC --private-key <account-2-key>
 ```

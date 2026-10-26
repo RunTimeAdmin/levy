@@ -92,11 +92,12 @@ flowchart TD
 
 ## Scoping by address
 
-The session carries one checksummed address and there are no roles. The same address acts as a merchant on routes about plans it created and as a subscriber on routes about subscriptions it holds.
+The session carries one checksummed address and there are no roles. The same address acts as a merchant on routes about the merchant accounts it owns and as a subscriber on routes about subscriptions it holds.
 
-- A `merchant` or `subscriber` parameter must equal the session address: 400 if malformed, 403 if someone else's.
-- `GET /api/subscriptions/:id` works for that subscription's subscriber or merchant only; `PATCH` and `DELETE /api/webhooks/:id` for the webhook's owner only. Anyone else gets 404, indistinguishable from a missing record.
-- Metrics, dunning, charges, invoices, webhooks and deliveries always cover the session address's merchant data; `GET /api/funds` its subscriber data.
+- A `subscriber` or `pendingTransfer` parameter must equal the session address: 400 if malformed, 403 if someone else's.
+- A `merchant` parameter names a merchant account and defaults to the session address's own. The session address must own that account now, by the keeper's mirror of the contract's `ownerOf`: 400 if malformed, 403 (`the signed-in address does not own that merchant account`) otherwise. An address that handed its own account on gets 403 even without the parameter, and a previous owner loses the account once the keeper has indexed the handover. `GET /api/accounts` lists the accounts an address owns and those offered to it.
+- `GET /api/subscriptions/:id` works for that subscription's subscriber or the current owner of its merchant account only; `PATCH` and `DELETE /api/webhooks/:id` for the current owner of the webhook's account only. Anyone else gets 404, indistinguishable from a missing record.
+- Metrics, dunning, charges, invoices, webhooks and deliveries always cover one merchant account's data; `GET /api/funds` the session address's subscriber data.
 
 Per-route detail is in [API-Reference.md](API-Reference.md).
 
@@ -111,7 +112,7 @@ The challenge route is the one unauthenticated endpoint that writes to the datab
 ## Limitations
 
 - **EOA only.** Signatures are checked by plain ECDSA recovery. Contract wallets and multisigs (ERC-1271) cannot sign in and receive 401 `signature does not match the address`.
-- **No scoped API keys.** A merchant backend signs in with the wallet that receives its payouts and holds a 24 hour bearer token.
+- **No scoped API keys.** A merchant backend signs in with the wallet that owns its merchant account and holds a 24 hour bearer token. The payout address can be a different wallet, but the owner key still signs in.
 - **No session listing or revoke-all.** Logout ends one session.
 
 ## Configuration
