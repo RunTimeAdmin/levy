@@ -6,6 +6,7 @@ import {SubscriptionManager} from "../src/SubscriptionManager.sol";
 import {FeeRouter} from "../src/FeeRouter.sol";
 import {MockUSDC} from "./mocks/MockUSDC.sol";
 import {MockPermit2} from "./mocks/MockPermit2.sol";
+import {basicTerms} from "./Terms.sol";
 
 /// @dev Calls charge() several times in one transaction, as a griefer would.
 contract ChargeLoop {
@@ -40,7 +41,7 @@ contract FailureCooldownTest is Test {
         usdc.mint(subscriber, PRICE * 10);
 
         vm.prank(merchant);
-        planId = manager.createPlan(PRICE, CYCLE, 0, 0, 2); // PAST_DUE at 2 failures, paused at 4
+        planId = manager.createPlan(merchant, basicTerms(PRICE, CYCLE, 0, 2)); // PAST_DUE at 2 failures, paused at 4
 
         // One cycle of allowance: subscribe spends it, so the next charge fails.
         vm.startPrank(subscriber);

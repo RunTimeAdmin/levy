@@ -15,6 +15,11 @@ import {IPermit2} from "./IPermit2.sol";
 ///         the dunning schedule (retryGap: 1, 3, then 7 days apart) so the
 ///         off-chain keeper can retry; the subscription goes PAST_DUE at
 ///         maxFailed failures and auto-pauses at twice that.
+///         A plan belongs to a merchant account, the address that created it,
+///         whose owner and payout address can change. Plans can be retired,
+///         limited to a number of cycles and discounted for their first
+///         cycles, and a subscription can move to a new wallet that accepts it
+///         (docs/manager-v2-design.md).
 /// @dev Money math: ALL amounts are 6-decimal USDC units via the ERC-20 interface.
 ///      Native 18-decimal values must never enter this contract. Integer arithmetic
 ///      only; division rounds down and dust stays with the merchant.
@@ -43,17 +48,34 @@ contract SubscriptionManager is ReentrancyGuard {
         ACTIVE,
         PAST_DUE,
         PAUSED,
-        CANCELLED
+        CANCELLED,
+        COMPLETED // every cycle of a limited plan billed; terminal, like CANCELLED
     }
 
     struct Plan {
-        address merchant;
+        address merchant; // the merchant account: the address that created it (see ownerOf, payoutOf)
         uint256 price; // 6-decimal USDC per cycle. Immutable: repricing = new plan.
         uint256 cycleSeconds;
         uint256 trialSeconds;
-        uint256 graceSeconds; // informational; dunning schedule lives off-chain
         uint8 maxFailed;
         bool exists;
+        bool retired; // no new subscriptions or plan changes into it; the one field that changes
+        bool transferable; // its subscriptions may move to a new wallet
+        uint32 maxCycles; // cycles billed before a subscription completes; 0 = no limit
+        uint256 introPrice; // below price; billed for a subscription's first introCycles cycles
+        uint32 introCycles;
+    }
+
+    /// @notice A plan's terms as createPlan takes them; see Plan for each field.
+    struct PlanTerms {
+        uint256 price;
+        uint256 cycleSeconds;
+        uint256 trialSeconds;
+        uint8 maxFailed;
+        uint32 maxCycles;
+        uint256 introPrice;
+        uint32 introCycles;
+        bool transferable;
     }
 
     struct Subscription {
@@ -93,6 +115,29 @@ contract SubscriptionManager is ReentrancyGuard {
     ///         the subscriber's allowance, so the merchant may resume only a
     ///         pause it made itself; the subscriber may resume any pause.
     mapping(uint256 => bool) public pausedByMerchant;
+    /// @notice The price billed for the subscription's cycle in progress, written
+    ///         on every billed cycle, including one paid entirely from credit.
+    ///         changePlan credits unused time at this price, never at the plan's
+    ///         full price, which an intro cycle did not pay.
+    mapping(uint256 => uint256) public billedPrice;
+    /// @notice Cycles billed on the subscription's current plan, counted against
+    ///         its maxCycles. A plan change restarts the count.
+    mapping(uint256 => uint256) public planCycles;
+    /// @notice Intro-priced cycles the subscription has left: set at subscribe
+    ///         from its plan and cleared by a plan change, so intro prices stay
+    ///         with the plan a subscription started on.
+    mapping(uint256 => uint256) public introCyclesLeft;
+    /// @notice The wallet a subscription is being moved to, until it accepts.
+    mapping(uint256 => address) public pendingTransfer;
+
+    /// @notice Who acts for a merchant account when that is not the account
+    ///         itself (zero). Read through ownerOf.
+    mapping(address => address) internal accountOwner;
+    /// @notice The owner a merchant account is being handed to, until it accepts.
+    mapping(address => address) public pendingOwner;
+    /// @notice Where a merchant account's share goes when fixed; zero follows
+    ///         the owner. Read through payoutOf.
+    mapping(address => address) internal accountPayout;
 
     event PlanCreated(uint256 indexed planId, address indexed merchant, uint256 price, uint256 cycleSeconds);
     event Subscribed(
@@ -115,6 +160,13 @@ contract SubscriptionManager is ReentrancyGuard {
     event Resumed(uint256 indexed subId);
     event Cancelled(uint256 indexed subId);
     event PlanChanged(uint256 indexed subId, uint256 indexed oldPlanId, uint256 indexed newPlanId, uint256 credit);
+    event PlanRetired(uint256 indexed planId, bool retired);
+    event Completed(uint256 indexed subId);
+    event TransferProposed(uint256 indexed subId, address indexed from, address indexed to);
+    event SubscriptionTransferred(uint256 indexed subId, address indexed from, address indexed to);
+    event PayoutChanged(address indexed account, address indexed payout);
+    event OwnershipTransferStarted(address indexed account, address indexed pendingOwner);
+    event OwnershipTransferred(address indexed account, address indexed previousOwner, address indexed newOwner);
 
     error UnknownPlan();
     error UnknownSubscription();
@@ -129,6 +181,14 @@ contract SubscriptionManager is ReentrancyGuard {
     error PaymentFailed();
     error DifferentMerchant();
     error RetryTooSoon();
+    error NotOwner();
+    error NotPendingOwner();
+    error BadPayout();
+    error RetiredPlan();
+    error NotTransferable();
+    error NotPendingSubscriber();
+    error PlanMismatch();
+    error CycleLimitReached();
 
     constructor(address _usdc, address _feeRouter, address _permit2) {
         if (_usdc == address(0) || _feeRouter == address(0) || _permit2 == address(0)) {
@@ -139,30 +199,98 @@ contract SubscriptionManager is ReentrancyGuard {
         permit2 = IPermit2(_permit2);
     }
 
-    /// @notice Merchant creates a billing plan. Price is immutable afterwards.
-    function createPlan(
-        uint256 price,
-        uint256 cycleSeconds,
-        uint256 trialSeconds,
-        uint256 graceSeconds,
-        uint8 maxFailed
-    ) external returns (uint256 planId) {
-        if (price == 0 || cycleSeconds < MIN_CYCLE || cycleSeconds > MAX_CYCLE || maxFailed == 0) {
+    /// @notice Create a billing plan for merchant account `account`, which the
+    ///         caller must own (an address owns itself until it hands ownership
+    ///         on, so createPlan(msg.sender, ...) needs no setup). Terms are
+    ///         immutable afterwards; only retirement changes.
+    function createPlan(address account, PlanTerms calldata terms) external returns (uint256 planId) {
+        if (msg.sender != ownerOf(account)) revert NotOwner();
+        if (
+            terms.price == 0 ||
+            terms.cycleSeconds < MIN_CYCLE ||
+            terms.cycleSeconds > MAX_CYCLE ||
+            terms.maxFailed == 0
+        ) revert BadPlanParams();
+        if (terms.trialSeconds >= terms.cycleSeconds) revert BadPlanParams();
+        // Intro pricing is a discount only: a higher first price would become
+        // proration credit at the next plan change.
+        if (terms.introCycles > 0) {
+            if (terms.introPrice == 0 || terms.introPrice >= terms.price) revert BadPlanParams();
+            if (terms.maxCycles > 0 && terms.introCycles > terms.maxCycles) revert BadPlanParams();
+        } else if (terms.introPrice != 0) {
             revert BadPlanParams();
         }
-        if (trialSeconds >= cycleSeconds) revert BadPlanParams();
 
         planId = ++planCount;
         plans[planId] = Plan({
-            merchant: msg.sender,
-            price: price,
-            cycleSeconds: cycleSeconds,
-            trialSeconds: trialSeconds,
-            graceSeconds: graceSeconds,
-            maxFailed: maxFailed,
-            exists: true
+            merchant: account,
+            price: terms.price,
+            cycleSeconds: terms.cycleSeconds,
+            trialSeconds: terms.trialSeconds,
+            maxFailed: terms.maxFailed,
+            exists: true,
+            retired: false,
+            transferable: terms.transferable,
+            maxCycles: terms.maxCycles,
+            introPrice: terms.introPrice,
+            introCycles: terms.introCycles
         });
-        emit PlanCreated(planId, msg.sender, price, cycleSeconds);
+        emit PlanCreated(planId, account, terms.price, terms.cycleSeconds);
+    }
+
+    /// @notice Stop new subscriptions and plan changes into the plan, or allow
+    ///         them again. Existing subscriptions are untouched.
+    function setPlanRetired(uint256 planId, bool retired) external {
+        Plan storage plan = plans[planId];
+        if (!plan.exists) revert UnknownPlan();
+        if (msg.sender != ownerOf(plan.merchant)) revert NotOwner();
+        plan.retired = retired;
+        emit PlanRetired(planId, retired);
+    }
+
+    /// @notice Who acts for merchant account `account`: the account itself until
+    ///         it hands ownership on.
+    function ownerOf(address account) public view returns (address) {
+        address owner = accountOwner[account];
+        return owner == address(0) ? account : owner;
+    }
+
+    /// @notice Where `account`'s 99% goes: its fixed payout address if it set
+    ///         one, otherwise its current owner.
+    function payoutOf(address account) public view returns (address) {
+        address payout = accountPayout[account];
+        return payout == address(0) ? ownerOf(account) : payout;
+    }
+
+    /// @notice Fix where the account's share goes, from the next collection;
+    ///         zero follows the owner again. One step: a payout address need not
+    ///         be able to call back, and the owner can correct a mistake at once.
+    ///         A blocklisted payout makes the account's charges revert until a
+    ///         new one is set (SECURITY_REVIEW.md section 9, open item 5).
+    function setPayout(address account, address payout) external {
+        if (msg.sender != ownerOf(account)) revert NotOwner();
+        if (payout == address(this)) revert BadPayout(); // the share would be stuck here
+        accountPayout[account] = payout;
+        emit PayoutChanged(account, payout);
+    }
+
+    /// @notice Step one of handing the account to a new owner, who takes over
+    ///         only once it calls acceptOwnership, so a mistyped address never
+    ///         takes control. Proposing again replaces the proposal; zero
+    ///         withdraws it.
+    function transferOwnership(address account, address newOwner) external {
+        if (msg.sender != ownerOf(account)) revert NotOwner();
+        pendingOwner[account] = newOwner;
+        emit OwnershipTransferStarted(account, newOwner);
+    }
+
+    /// @notice Step two: the proposed owner takes over. A fixed payout stays;
+    ///         one that follows the owner now follows the new owner.
+    function acceptOwnership(address account) external {
+        if (msg.sender != pendingOwner[account]) revert NotPendingOwner();
+        emit OwnershipTransferred(account, ownerOf(account), msg.sender);
+        accountOwner[account] = msg.sender;
+        delete pendingOwner[account];
     }
 
     /// @notice Subscriber starts a subscription. Requires a prior approve() or
@@ -188,8 +316,9 @@ contract SubscriptionManager is ReentrancyGuard {
     ///      fail (and dunning handles it) once it runs out.
     ///      Anyone who sees the signed permit can submit it to Permit2 first
     ///      and use up its nonce. So a failed permit is not fatal while the
-    ///      subscriber's Permit2 allowance already covers one cycle and has
-    ///      not expired; otherwise Permit2's own error is re-thrown.
+    ///      subscriber's Permit2 allowance already covers the first cycle (at
+    ///      the intro price, if the plan has one) and has not expired;
+    ///      otherwise Permit2's own error is re-thrown.
     function subscribeWithPermit2(
         uint256 planId,
         bytes32 ref,
@@ -200,7 +329,9 @@ contract SubscriptionManager is ReentrancyGuard {
         if (permitSingle.details.token != address(usdc)) revert BadPermitToken();
         try permit2.permit(msg.sender, permitSingle, signature) {} catch (bytes memory reason) {
             (uint160 amount, uint48 expiration, ) = permit2.allowance(msg.sender, address(usdc), address(this));
-            if (amount < plans[planId].price || expiration < block.timestamp) {
+            Plan memory plan = plans[planId];
+            uint256 firstPrice = plan.introCycles > 0 ? plan.introPrice : plan.price;
+            if (amount < firstPrice || expiration < block.timestamp) {
                 assembly ("memory-safe") {
                     revert(add(reason, 32), mload(reason))
                 }
@@ -212,6 +343,7 @@ contract SubscriptionManager is ReentrancyGuard {
     function _subscribe(uint256 planId, address subscriber, bytes32 ref) internal returns (uint256 subId) {
         Plan memory plan = plans[planId];
         if (!plan.exists) revert UnknownPlan();
+        if (plan.retired) revert RetiredPlan();
 
         subId = ++subCount;
         uint64 start = uint64(block.timestamp);
@@ -230,6 +362,7 @@ contract SubscriptionManager is ReentrancyGuard {
             status: plan.trialSeconds > 0 ? Status.TRIAL : Status.ACTIVE
         });
         if (ref != bytes32(0)) subscriptionRef[subId] = ref;
+        if (plan.introCycles > 0) introCyclesLeft[subId] = plan.introCycles;
         emit Subscribed(subId, subscriber, planId, firstCharge, ref);
 
         // Advance billing: without a trial the first cycle is paid up front.
@@ -278,25 +411,46 @@ contract SubscriptionManager is ReentrancyGuard {
     }
 
     /// @notice Bill one cycle of `plan`: proration credit first (excess carries
-    ///         forward), then pull the rest and split it 99/1. Returns false,
-    ///         with nothing changed, if the pull fails.
+    ///         forward), then pull the rest and split it 99/1, the merchant's
+    ///         share to the account's payout address. The cycle costs the plan's
+    ///         introPrice while the subscription has intro cycles left. The
+    ///         cycle that reaches a limited plan's maxCycles completes the
+    ///         subscription. Returns false, with nothing changed, if the pull
+    ///         fails.
+    /// @dev The one place a cycle is billed, so the only writer of billedPrice,
+    ///      planCycles, introCyclesLeft and COMPLETED. billedPrice is written
+    ///      on both branches: written only after a pull, a downgrade paid from
+    ///      credit would keep the old, higher price, and every round trip
+    ///      between two plans would add credit nobody paid for.
     function _collect(uint256 subId, Subscription storage sub, Plan memory plan) internal returns (bool) {
+        // Backstop: status checks stop a completed subscription before this.
+        if (plan.maxCycles > 0 && planCycles[subId] >= plan.maxCycles) revert CycleLimitReached();
+        bool intro = introCyclesLeft[subId] > 0 && plan.introCycles > 0;
+        uint256 price = intro ? plan.introPrice : plan.price;
+
         uint256 due;
         uint256 fee;
-        if (sub.credit >= plan.price) {
+        if (sub.credit >= price) {
             // Fully covered by credit: the cycle is paid, no movement.
-            sub.credit -= plan.price;
+            sub.credit -= price;
         } else {
-            due = plan.price - sub.credit;
+            due = price - sub.credit;
             if (!_tryPull(sub.subscriber, due)) return false;
             sub.credit = 0;
             fee = due / FEE_BPS; // rounds down; sub-cent dust stays with merchant
-            usdc.safeTransfer(plan.merchant, due - fee);
+            usdc.safeTransfer(payoutOf(plan.merchant), due - fee);
             usdc.safeTransfer(feeRouter, fee);
         }
 
+        billedPrice[subId] = price;
+        if (intro) introCyclesLeft[subId] -= 1;
+        uint256 cycles = ++planCycles[subId];
         sub.chargeCount += 1;
         emit Charged(subId, due, fee, keccak256(abi.encode(subId, sub.chargeCount)), sub.chargeCount);
+        if (plan.maxCycles > 0 && cycles >= plan.maxCycles) {
+            sub.status = Status.COMPLETED;
+            emit Completed(subId);
+        }
         return true;
     }
 
@@ -346,7 +500,9 @@ contract SubscriptionManager is ReentrancyGuard {
     function pauseSubscription(uint256 subId) external {
         Subscription storage sub = subscriptions[subId];
         _onlySubscriberOrMerchant(sub);
-        if (sub.status == Status.PAUSED || sub.status == Status.CANCELLED) revert NotChargeable();
+        if (sub.status == Status.PAUSED || sub.status == Status.CANCELLED || sub.status == Status.COMPLETED) {
+            revert NotChargeable();
+        }
         sub.status = Status.PAUSED;
         pausedByMerchant[subId] = msg.sender != sub.subscriber;
         emit Paused(subId);
@@ -374,16 +530,19 @@ contract SubscriptionManager is ReentrancyGuard {
     function cancelSubscription(uint256 subId) external {
         Subscription storage sub = subscriptions[subId];
         _onlySubscriberOrMerchant(sub);
-        if (sub.status == Status.CANCELLED) revert NotChargeable();
+        if (sub.status == Status.CANCELLED || sub.status == Status.COMPLETED) revert NotChargeable();
         sub.status = Status.CANCELLED;
         emit Cancelled(subId);
     }
 
     /// @notice Switch to another plan from the same merchant. The new plan's
-    ///         first cycle starts and is billed now. Unused paid time on the old
-    ///         plan becomes credit against it; leftover credit carries forward.
-    /// @dev Credit only ever comes from a cycle that was paid, and only moves
-    ///      between plans of the merchant who was paid, so it is always backed.
+    ///         first cycle starts and is billed now, at its full price: intro
+    ///         prices stay with the plan a subscription started on. Unused paid
+    ///         time on the old plan becomes credit against it; leftover credit
+    ///         carries forward.
+    /// @dev Credit only ever comes from a cycle that was paid, at the price it
+    ///      was billed at, and only moves between plans of the merchant who was
+    ///      paid, so it is always backed.
     function changePlan(uint256 subId, uint256 newPlanId) external nonReentrant {
         Subscription storage sub = subscriptions[subId];
         if (sub.subscriber == address(0)) revert UnknownSubscription();
@@ -391,6 +550,7 @@ contract SubscriptionManager is ReentrancyGuard {
         if (newPlanId == sub.planId) revert SamePlan();
         Plan memory newPlan = plans[newPlanId];
         if (!newPlan.exists) revert UnknownPlan();
+        if (newPlan.retired) revert RetiredPlan();
         if (
             sub.status != Status.TRIAL &&
             sub.status != Status.ACTIVE &&
@@ -406,18 +566,64 @@ contract SubscriptionManager is ReentrancyGuard {
         if (sub.chargeCount > 0 && sub.nextChargeAt > block.timestamp) {
             uint256 remaining = sub.nextChargeAt - block.timestamp;
             if (remaining > oldPlan.cycleSeconds) remaining = oldPlan.cycleSeconds;
-            credit += (oldPlan.price * remaining) / oldPlan.cycleSeconds; // rounds down
+            // At the price this cycle was billed at, not the plan's full price,
+            // which an intro cycle did not pay.
+            credit += (billedPrice[subId] * remaining) / oldPlan.cycleSeconds; // rounds down
         }
 
         uint256 oldPlanId = sub.planId;
         sub.planId = newPlanId;
         sub.credit = credit;
+        // Before billing: the new plan starts its own cycle count, and no intro
+        // cycle carries over, so hopping between intro plans cannot keep one.
+        delete planCycles[subId];
+        delete introCyclesLeft[subId];
         emit PlanChanged(subId, oldPlanId, newPlanId, credit);
 
         if (!_collect(subId, sub, newPlan)) revert PaymentFailed();
         sub.nextChargeAt = uint64(block.timestamp) + uint64(newPlan.cycleSeconds);
         sub.failedAttempts = 0;
-        sub.status = Status.ACTIVE; // a paid plan change ends a trial and clears past-due
+        // A paid plan change ends a trial and clears past-due, but a completion
+        // reached by its own charge (a one-cycle plan) stands.
+        if (sub.status != Status.COMPLETED) sub.status = Status.ACTIVE;
+    }
+
+    /// @notice Step one of moving a subscription to a new wallet, by its
+    ///         subscriber only: a merchant path would let a stolen owner key hand
+    ///         customers' subscriptions to itself. The plan must allow transfers.
+    ///         Proposing again replaces the proposal; zero withdraws it.
+    function proposeTransfer(uint256 subId, address to) external {
+        Subscription storage sub = subscriptions[subId];
+        if (sub.subscriber == address(0)) revert UnknownSubscription();
+        if (msg.sender != sub.subscriber) revert NotSubscriber();
+        _checkTransferable(sub);
+        pendingTransfer[subId] = to;
+        emit TransferProposed(subId, msg.sender, to);
+    }
+
+    /// @notice Step two: the proposed wallet takes the subscription over, with
+    ///         its id, ref, paid time, credit, counters and dunning state, and
+    ///         later charges pull from its allowance. Only that wallet can
+    ///         accept: one allowance pays all of a wallet's Levy subscriptions,
+    ///         so nobody else may decide it pays for this one. `planId` must be
+    ///         the current plan, so the plan cannot be switched between the
+    ///         proposal and the acceptance.
+    function acceptTransfer(uint256 subId, uint256 planId) external {
+        Subscription storage sub = subscriptions[subId];
+        if (sub.subscriber == address(0)) revert UnknownSubscription();
+        if (msg.sender != pendingTransfer[subId]) revert NotPendingSubscriber();
+        if (planId != sub.planId) revert PlanMismatch();
+        // Again: since proposing, the subscriber may have moved to a plan that
+        // does not allow transfers, or the subscription may have ended.
+        _checkTransferable(sub);
+        delete pendingTransfer[subId];
+        emit SubscriptionTransferred(subId, sub.subscriber, msg.sender);
+        sub.subscriber = msg.sender;
+    }
+
+    function _checkTransferable(Subscription memory sub) internal view {
+        if (!plans[sub.planId].transferable) revert NotTransferable();
+        if (sub.status == Status.CANCELLED || sub.status == Status.COMPLETED) revert NotChargeable();
     }
 
     function isChargeable(uint256 subId) external view returns (bool) {
@@ -433,7 +639,7 @@ contract SubscriptionManager is ReentrancyGuard {
     function _onlySubscriberOrMerchant(Subscription memory sub) internal view {
         if (sub.subscriber == address(0)) revert UnknownSubscription();
         Plan memory plan = plans[sub.planId];
-        if (msg.sender != sub.subscriber && msg.sender != plan.merchant) {
+        if (msg.sender != sub.subscriber && msg.sender != ownerOf(plan.merchant)) {
             revert NotSubscriberOrMerchant();
         }
     }

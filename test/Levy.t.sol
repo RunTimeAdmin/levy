@@ -7,6 +7,7 @@ import {FeeRouter} from "../src/FeeRouter.sol";
 import {MockUSDC} from "./mocks/MockUSDC.sol";
 import {MockPermit2} from "./mocks/MockPermit2.sol";
 import {IPermit2} from "../src/IPermit2.sol";
+import {basicTerms} from "./Terms.sol";
 
 contract LevyTest is Test {
     MockUSDC usdc;
@@ -31,7 +32,7 @@ contract LevyTest is Test {
         manager = new SubscriptionManager(address(usdc), address(router), address(permit2));
 
         vm.prank(merchant);
-        planId = manager.createPlan(PRICE, CYCLE, 0, 3 days, 2);
+        planId = manager.createPlan(merchant, basicTerms(PRICE, CYCLE, 0, 2));
 
         usdc.mint(alice, 1_000_000_000); // $1,000
     }
@@ -44,9 +45,12 @@ contract LevyTest is Test {
             uint256 price,
             uint256 cycle,
             uint256 trial,
-            ,
             uint8 maxFailed,
-            bool exists
+            bool exists,
+            ,
+            ,
+            ,
+            ,
         ) = manager.plans(planId);
         assertEq(m, merchant);
         assertEq(price, PRICE);
@@ -59,7 +63,7 @@ contract LevyTest is Test {
     function testCreatePlanRevertsOnZeroPrice() public {
         vm.prank(merchant);
         vm.expectRevert(SubscriptionManager.BadPlanParams.selector);
-        manager.createPlan(0, CYCLE, 0, 3 days, 2);
+        manager.createPlan(merchant, basicTerms(0, CYCLE, 0, 2));
     }
 
     function testCreatePlanRequiresOneDayCycle() public {
@@ -67,16 +71,16 @@ contract LevyTest is Test {
         // gas every few seconds, and a mistaken approval drain that fast.
         vm.prank(merchant);
         vm.expectRevert(SubscriptionManager.BadPlanParams.selector);
-        manager.createPlan(PRICE, 1 days - 1, 0, 0, 2);
+        manager.createPlan(merchant, basicTerms(PRICE, 1 days - 1, 0, 2));
         vm.prank(merchant);
-        manager.createPlan(PRICE, 1 days, 0, 0, 2);
+        manager.createPlan(merchant, basicTerms(PRICE, 1 days, 0, 2));
         assertEq(manager.MIN_CYCLE(), 1 days);
     }
 
     function testCreatePlanRevertsOnTrialLongerThanCycle() public {
         vm.prank(merchant);
         vm.expectRevert(SubscriptionManager.BadPlanParams.selector);
-        manager.createPlan(PRICE, CYCLE, CYCLE, 3 days, 2);
+        manager.createPlan(merchant, basicTerms(PRICE, CYCLE, CYCLE, 2));
     }
 
     // ---- subscribe ----
@@ -129,7 +133,7 @@ contract LevyTest is Test {
 
     function testSubscribeWithTrial() public {
         vm.prank(merchant);
-        uint256 trialPlan = manager.createPlan(PRICE, CYCLE, 7 days, 3 days, 2);
+        uint256 trialPlan = manager.createPlan(merchant, basicTerms(PRICE, CYCLE, 7 days, 2));
         vm.prank(alice);
         uint256 subId = manager.subscribe(trialPlan, bytes32(0));
         (, , uint64 start, uint64 nextCharge, , , uint256 chargeCount, SubscriptionManager.Status status) =
@@ -254,7 +258,7 @@ contract LevyTest is Test {
         // maxFailed * 2 once overflowed uint8 for maxFailed >= 128, so a
         // failed pull reverted instead of being recorded (found 2026-09-25).
         vm.prank(merchant);
-        uint256 lenient = manager.createPlan(PRICE, CYCLE, 0, 3 days, 200);
+        uint256 lenient = manager.createPlan(merchant, basicTerms(PRICE, CYCLE, 0, 200));
         vm.prank(alice);
         usdc.approve(address(manager), PRICE); // one cycle, spent at subscribe
         vm.prank(alice);
@@ -323,7 +327,7 @@ contract LevyTest is Test {
         // left over. Her allowance then lapses; the $7 pull fails and the $1
         // credit must survive.
         vm.prank(merchant);
-        uint256 eightDollarPlan = manager.createPlan(8_000_000, CYCLE, 0, 3 days, 10);
+        uint256 eightDollarPlan = manager.createPlan(merchant, basicTerms(8_000_000, CYCLE, 0, 10));
         uint256 subId = _subscribeAndApprove();
 
         vm.warp(block.timestamp + 3 days);
@@ -351,7 +355,7 @@ contract LevyTest is Test {
         // A daily $5 plan fails for 24 days, then the subscriber tops up $200.
         // Once, not 24 times: the missed days are forgiven, as resume does.
         vm.prank(merchant);
-        uint256 daily = manager.createPlan(5_000_000, 1 days, 0, 0, 3);
+        uint256 daily = manager.createPlan(merchant, basicTerms(5_000_000, 1 days, 0, 3));
         vm.prank(alice);
         usdc.approve(address(manager), 5_000_000); // one cycle, spent at subscribe
         vm.prank(alice);
@@ -425,7 +429,7 @@ contract LevyTest is Test {
     function testChangePlanProrates() public {
         uint256 subId = _subscribeAndApprove(); // paid $10 for cycle 1
         vm.prank(merchant);
-        uint256 priceyPlan = manager.createPlan(PRICE * 2, CYCLE, 0, 3 days, 2);
+        uint256 priceyPlan = manager.createPlan(merchant, basicTerms(PRICE * 2, CYCLE, 0, 2));
 
         vm.warp(block.timestamp + 15 days); // exactly half the paid cycle used
         uint256 merchantBefore = usdc.balanceOf(merchant);
@@ -451,7 +455,7 @@ contract LevyTest is Test {
 
     function testDowngradeCreditCoversLaterCycles() public {
         vm.prank(merchant);
-        uint256 twoDollarPlan = manager.createPlan(2_000_000, CYCLE, 0, 3 days, 2);
+        uint256 twoDollarPlan = manager.createPlan(merchant, basicTerms(2_000_000, CYCLE, 0, 2));
         uint256 subId = _subscribeAndApprove(); // paid $10
 
         // Downgrade immediately: $10 unused credit, $2 pays the new cycle now.
@@ -474,7 +478,7 @@ contract LevyTest is Test {
 
     function testChangePlanDuringTrialGivesNoCredit() public {
         vm.prank(merchant);
-        uint256 trialPlan = manager.createPlan(PRICE, CYCLE, 7 days, 3 days, 2);
+        uint256 trialPlan = manager.createPlan(merchant, basicTerms(PRICE, CYCLE, 7 days, 2));
         vm.prank(alice);
         usdc.approve(address(manager), PRICE * 12);
         vm.prank(alice);
@@ -493,7 +497,7 @@ contract LevyTest is Test {
     function testChangePlanWithoutPaymentReverts() public {
         uint256 subId = _subscribeOneCycleOnly();
         vm.prank(merchant);
-        uint256 priceyPlan = manager.createPlan(PRICE * 2, CYCLE, 0, 3 days, 2);
+        uint256 priceyPlan = manager.createPlan(merchant, basicTerms(PRICE * 2, CYCLE, 0, 2));
         vm.warp(block.timestamp + 15 days);
         vm.prank(alice);
         vm.expectRevert(SubscriptionManager.PaymentFailed.selector);
@@ -510,7 +514,7 @@ contract LevyTest is Test {
     function testChangePlanToOtherMerchantReverts() public {
         uint256 subId = _subscribeAndApprove();
         vm.prank(bob);
-        uint256 bobPlan = manager.createPlan(PRICE, CYCLE, 0, 3 days, 2);
+        uint256 bobPlan = manager.createPlan(bob, basicTerms(PRICE, CYCLE, 0, 2));
         vm.prank(alice);
         vm.expectRevert(SubscriptionManager.DifferentMerchant.selector);
         manager.changePlan(subId, bobPlan);
@@ -523,12 +527,12 @@ contract LevyTest is Test {
         // real merchant's plan, ride the 1e30 credit forever.
         address attacker = makeAddr("attacker");
         vm.startPrank(attacker);
-        uint256 selfPlan = manager.createPlan(1e30, CYCLE, 0, 0, 1);
+        uint256 selfPlan = manager.createPlan(attacker, basicTerms(1e30, CYCLE, 0, 1));
         vm.expectRevert(SubscriptionManager.PaymentFailed.selector);
         manager.subscribe(selfPlan, bytes32(0)); // the 1e30 is now owed up front
 
         // Even a genuinely paid self-plan cannot move credit to another merchant.
-        uint256 cheapSelfPlan = manager.createPlan(PRICE, CYCLE, 0, 0, 1);
+        uint256 cheapSelfPlan = manager.createPlan(attacker, basicTerms(PRICE, CYCLE, 0, 1));
         usdc.mint(attacker, PRICE);
         usdc.approve(address(manager), PRICE);
         uint256 subId = manager.subscribe(cheapSelfPlan, bytes32(0));
@@ -541,7 +545,7 @@ contract LevyTest is Test {
         // Old exploit: hop plans a second before each charge so nextChargeAt
         // keeps moving and nothing is ever pulled.
         vm.prank(merchant);
-        uint256 otherPlan = manager.createPlan(PRICE, CYCLE, 0, 3 days, 2);
+        uint256 otherPlan = manager.createPlan(merchant, basicTerms(PRICE, CYCLE, 0, 2));
         uint256 subId = _subscribeAndApprove();
         for (uint256 i = 0; i < 6; i++) {
             (, uint256 cur, , uint64 next, , , , ) = manager.subscriptions(subId);
@@ -654,7 +658,7 @@ contract LevyTest is Test {
         // $1.50 pull -> fee $0.015 -> 1500 units exactly; $1.51 -> 1510.
         // Dust case: price 199 units -> fee 1 (199/100), merchant keeps 198.
         vm.prank(merchant);
-        uint256 dustPlan = manager.createPlan(199, CYCLE, 0, 3 days, 2);
+        uint256 dustPlan = manager.createPlan(merchant, basicTerms(199, CYCLE, 0, 2));
         vm.prank(alice);
         usdc.approve(address(manager), 199 * 12);
         vm.prank(alice);
@@ -850,6 +854,34 @@ contract LevyTest is Test {
         manager.subscribeWithPermit2(planId, bytes32(0), p, sig);
     }
 
+    function testSubscribeWithPermit2FallbackUsesTheIntroPrice() public {
+        // The front-run permit covers a $1 intro cycle but not the $10 full
+        // price; the first cycle is what it has to cover.
+        SubscriptionManager.PlanTerms memory t = basicTerms(PRICE, CYCLE, 0, 2);
+        t.introPrice = 1_000_000;
+        t.introCycles = 1;
+        vm.prank(merchant);
+        uint256 promo = manager.createPlan(merchant, t);
+
+        address s = _signer();
+        vm.prank(s);
+        usdc.approve(address(permit2), type(uint256).max);
+        (IPermit2.PermitSingle memory p, bytes memory sig) = _signPermit(
+            s,
+            address(usdc),
+            uint160(1_000_000),
+            address(manager),
+            block.timestamp + 1 hours
+        );
+        vm.prank(keeper);
+        permit2.permit(s, p, sig);
+
+        vm.prank(s);
+        uint256 subId = manager.subscribeWithPermit2(promo, bytes32(0), p, sig);
+        (, , , , , , uint256 chargeCount, ) = manager.subscriptions(subId);
+        assertEq(chargeCount, 1);
+    }
+
     function testSubscribeWithPermit2IgnoresExpiredAllowance() public {
         address s = _signer();
         vm.prank(s);
@@ -877,7 +909,7 @@ contract LevyTest is Test {
         vm.prank(s);
         usdc.approve(address(permit2), type(uint256).max);
         vm.prank(keeper);
-        uint256 keeperPlan = manager.createPlan(PRICE * 12, CYCLE, 0, 0, 1);
+        uint256 keeperPlan = manager.createPlan(keeper, basicTerms(PRICE * 12, CYCLE, 0, 1));
 
         (IPermit2.PermitSingle memory p, bytes memory sig) = _signPermit(
             s,

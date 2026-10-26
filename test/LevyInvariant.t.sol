@@ -28,6 +28,16 @@ contract LevyHandler is Test {
     bool public failuresTooClose; // two recorded failures of one subscription closer than retryGap allows
     bool public dueAfterCharge; // a successful charge() left its subscription chargeable
 
+    // v2 (docs/manager-v2-design.md)
+    address public payoutAddr = makeAddr("h-payout"); // a fixed payout outside the actors
+    mapping(uint256 => bool) public retired;
+    bool public joinedRetired; // a subscribe or plan change into a retired plan succeeded
+    mapping(uint256 => bool) public completed;
+    mapping(uint256 => uint256) public chargeCountAtComplete;
+    mapping(uint256 => address) public holder; // who should be the subscriber
+    mapping(uint256 => address) public proposedTo; // the subscriber's live transfer proposal
+    bool public transferWithoutProposal; // an acceptTransfer succeeded for a wallet nobody proposed
+
     constructor(MockUSDC _usdc, FeeRouter _router, SubscriptionManager _manager, address _treasury) {
         usdc = _usdc;
         router = _router;
@@ -63,22 +73,37 @@ contract LevyHandler is Test {
                 uint256 last = lastFailureSeen[id];
                 if (before > 0 && block.timestamp < last + manager.retryGap(before)) failuresTooClose = true;
                 lastFailureSeen[id] = block.timestamp;
+            } else if (logs[i].topics[0] == SubscriptionManager.Completed.selector) {
+                completed[id] = true;
+                (, , , , , , uint256 cc, ) = manager.subscriptions(id);
+                chargeCountAtComplete[id] = cc;
             }
         }
     }
 
-    function createPlan(uint256 price, uint256 cycleDays, uint8 maxFailed, bool withTrial) external {
-        price = bound(price, 1, 1_000_000_000_000);
-        cycleDays = bound(cycleDays, 1, 365);
-        maxFailed = uint8(bound(maxFailed, 1, 255)); // full range: maxFailed * 2 once overflowed at 128
-        uint256 trial = withTrial ? (cycleDays * 1 days) / 2 : 0;
-        address merchant = actors[0];
-        vm.prank(merchant);
-        try manager.createPlan(price, cycleDays * 1 days, trial, 3 days, maxFailed) returns (
-            uint256 planId
-        ) {
+    /// @dev The merchant account is actors[0]; whoever owns it now acts for it.
+    function _merchantOwner() internal view returns (address) {
+        return manager.ownerOf(actors[0]);
+    }
+
+    /// @dev `seed` picks the v2 terms: an intro price, a cycle limit of 1 to 4
+    ///      (so one-cycle plans come up), both or neither, and transferability.
+    function createPlan(uint256 price, uint256 cycleDays, uint8 maxFailed, bool withTrial, uint256 seed) external {
+        SubscriptionManager.PlanTerms memory t;
+        t.price = bound(price, 1, 1_000_000_000_000);
+        t.cycleSeconds = bound(cycleDays, 1, 365) * 1 days;
+        t.maxFailed = uint8(bound(maxFailed, 1, 255)); // full range: maxFailed * 2 once overflowed at 128
+        t.trialSeconds = withTrial ? t.cycleSeconds / 2 : 0;
+        t.transferable = seed & 1 == 1;
+        if (seed & 2 != 0) t.maxCycles = uint32(bound(seed >> 8, 1, 4));
+        if (seed & 4 != 0 && t.price > 1) {
+            t.introPrice = bound(seed >> 16, 1, t.price - 1);
+            t.introCycles = uint32(bound(seed >> 80, 1, t.maxCycles > 0 ? t.maxCycles : 3));
+        }
+        vm.prank(_merchantOwner());
+        try manager.createPlan(actors[0], t) returns (uint256 planId) {
             planIds.push(planId);
-            if (price > maxPriceSeen) maxPriceSeen = price;
+            if (t.price > maxPriceSeen) maxPriceSeen = t.price;
         } catch {}
     }
 
@@ -90,8 +115,66 @@ contract LevyHandler is Test {
         vm.prank(sub);
         try manager.subscribe(planId, bytes32(0)) returns (uint256 subId) {
             subIds.push(subId);
+            holder[subId] = sub;
+            if (retired[planId]) joinedRetired = true;
         } catch {}
         _recordPaid();
+    }
+
+    function retirePlan(uint256 planSeed, bool retire) external {
+        if (planIds.length == 0) return;
+        uint256 planId = planIds[planSeed % planIds.length];
+        vm.prank(_merchantOwner());
+        try manager.setPlanRetired(planId, retire) {
+            retired[planId] = retire;
+        } catch {}
+    }
+
+    /// @dev The merchant account changes hands; later merchant actions come from the new owner.
+    function handOver(uint256 actorSeed) external {
+        address to = _actor(actorSeed);
+        vm.prank(_merchantOwner());
+        try manager.transferOwnership(actors[0], to) {} catch {}
+        vm.prank(to);
+        try manager.acceptOwnership(actors[0]) {} catch {}
+    }
+
+    /// @dev A fixed payout at an actor or payoutAddr, or zero to follow the owner.
+    function setPayout(uint256 seed) external {
+        uint256 pick = seed % (actors.length + 2);
+        address payout = pick < actors.length ? actors[pick] : pick == actors.length ? payoutAddr : address(0);
+        vm.prank(_merchantOwner());
+        try manager.setPayout(actors[0], payout) {} catch {}
+    }
+
+    /// @dev The subscriber proposes a move to another actor, who accepts.
+    function transfer(uint256 subSeed, uint256 actorSeed) external {
+        if (subIds.length == 0) return;
+        uint256 subId = subIds[subSeed % subIds.length];
+        (address subscriber, uint256 planId, , , , , , ) = manager.subscriptions(subId);
+        address to = _actor(actorSeed);
+        vm.prank(subscriber);
+        try manager.proposeTransfer(subId, to) {
+            proposedTo[subId] = to;
+        } catch {}
+        _accept(subId, to, planId);
+    }
+
+    /// @dev Anyone tries to take a subscription over, proposed or not.
+    function grabSubscription(uint256 subSeed, uint256 actorSeed) external {
+        if (subIds.length == 0) return;
+        uint256 subId = subIds[subSeed % subIds.length];
+        (, uint256 planId, , , , , , ) = manager.subscriptions(subId);
+        _accept(subId, _actor(actorSeed), planId);
+    }
+
+    function _accept(uint256 subId, address by, uint256 planId) internal {
+        vm.prank(by);
+        try manager.acceptTransfer(subId, planId) {
+            if (proposedTo[subId] != by) transferWithoutProposal = true;
+            delete proposedTo[subId];
+            holder[subId] = by;
+        } catch {}
     }
 
     function approve(uint256 actorSeed, uint256 amount) external {
@@ -137,7 +220,9 @@ contract LevyHandler is Test {
         uint256 newPlan = planIds[planSeed % planIds.length];
         vm.recordLogs();
         vm.prank(subscriber);
-        try manager.changePlan(subId, newPlan) {} catch {}
+        try manager.changePlan(subId, newPlan) {
+            if (retired[newPlan]) joinedRetired = true;
+        } catch {}
         _recordPaid();
     }
 
@@ -196,7 +281,8 @@ contract LevyInvariantTest is Test {
     function invariant_conservation() public view {
         uint256 accounted = usdc.balanceOf(address(manager)) +
             usdc.balanceOf(address(router)) +
-            usdc.balanceOf(treasury);
+            usdc.balanceOf(treasury) +
+            usdc.balanceOf(handler.payoutAddr());
         for (uint256 i = 0; i < 4; i++) {
             accounted += usdc.balanceOf(handler.actors(i));
         }
@@ -208,7 +294,7 @@ contract LevyInvariantTest is Test {
         uint256 n = manager.subCount();
         for (uint256 id = 1; id <= n; id++) {
             (, uint256 planId, , , uint64 failed, , , ) = manager.subscriptions(id);
-            (, , , , , uint8 maxFailed, ) = manager.plans(planId);
+            (, , , , uint8 maxFailed, , , , , , ) = manager.plans(planId);
             assertLe(failed, uint256(maxFailed) * 2);
         }
     }
@@ -269,5 +355,43 @@ contract LevyInvariantTest is Test {
     /// @notice The manager never holds funds at rest: every pull is fully split.
     function invariant_managerHoldsNothing() public view {
         assertEq(usdc.balanceOf(address(manager)), 0);
+    }
+
+    /// @notice Completed is terminal: status and chargeCount never move after it.
+    function invariant_completedIsTerminal() public view {
+        uint256 n = manager.subCount();
+        for (uint256 id = 1; id <= n; id++) {
+            if (handler.completed(id)) {
+                (, , , , , , uint256 cc, SubscriptionManager.Status status) = manager.subscriptions(id);
+                assertEq(uint256(status), uint256(SubscriptionManager.Status.COMPLETED));
+                assertEq(cc, handler.chargeCountAtComplete(id));
+            }
+        }
+    }
+
+    /// @notice No subscription is billed more than its plan's maxCycles times on that plan.
+    function invariant_cycleLimitHolds() public view {
+        uint256 n = manager.subCount();
+        for (uint256 id = 1; id <= n; id++) {
+            (, uint256 planId, , , , , , ) = manager.subscriptions(id);
+            (, , , , , , , , uint32 maxCycles, , ) = manager.plans(planId);
+            if (maxCycles > 0) assertLe(manager.planCycles(id), maxCycles);
+        }
+    }
+
+    /// @notice A retired plan gains no subscriptions and no plan changes into it.
+    function invariant_retiredPlansGainNothing() public view {
+        assertFalse(handler.joinedRetired());
+    }
+
+    /// @notice A subscription changes wallet only when its subscriber proposed
+    ///         that wallet and the wallet accepted.
+    function invariant_subscriberChangesOnlyByAcceptance() public view {
+        assertFalse(handler.transferWithoutProposal());
+        uint256 n = manager.subCount();
+        for (uint256 id = 1; id <= n; id++) {
+            (address subscriber, , , , , , , ) = manager.subscriptions(id);
+            assertEq(subscriber, handler.holder(id));
+        }
     }
 }

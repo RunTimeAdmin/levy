@@ -55,7 +55,7 @@ Soak 2 ([ops/testnet-soak.md](../ops/testnet-soak.md)) runs on the contracts dep
 ## Constraints
 
 - **One redeploy.** Everything here ships together, then goes through a soak and the audit.
-- **Contract size.** SubscriptionManager's runtime code is 16,143 bytes, 8,433 under the 24,576-byte limit (`forge build --sizes`, 2026-10-25). If v2 does not fit, try the optimizer settings first (open issue 4).
+- **Contract size.** SubscriptionManager's runtime code is 16,143 bytes, 8,433 under the 24,576-byte limit (`forge build --sizes`, 2026-10-25). If v2 does not fit, try the optimizer settings first (open issue 1).
 - **Shared allowance.** One USDC allowance to the manager pays all of a subscriber's Levy subscriptions, across merchants. Any change to who pays must be made by the payer. Otherwise an attacker could point a subscription at someone else's allowance.
 - **Existing invariants keep passing** ([test/LevyInvariant.t.sol](../test/LevyInvariant.t.sol)): conservation, managerHoldsNothing, creditBacked, creditBounded, failuresSpaced, noBackToBackCharges, cancelIsTerminal, failedAttemptsBounded and nextChargeMonotonic.
 
@@ -222,14 +222,14 @@ New webhook types: `subscription.completed`, `subscription.transferred` and `mer
 
 | Component | Change |
 |---|---|
-| Keeper indexer | Handle the new events. `refreshSubscription` and `upsertPlan` read the structs by position and must follow the new field order. Track owners, payouts and pending transfers |
+| Keeper indexer | Handle the new events. `subscriptions()` keeps its layout, because the new per-subscription fields live in their own mappings keyed by subscription id, as `subscriptionRef` and `pausedByMerchant` do. `plans()` changes, so `upsertPlan`'s positional read must follow the new field order. Track owners, payouts and pending transfers |
 | Keeper allowance runway (`funds.ts`) | Use the next billed price (intro or full). For a limited plan, an allowance that covers every remaining cycle is not low |
 | Keeper webhooks | The three new event types |
 | API | Plans expose `retired`, `maxCycles` and the intro terms. Sign-in resolves which accounts an address owns, which can be several. After an ownership transfer, the previous owner's sessions lose access to the account and its webhooks. Subscriptions expose COMPLETED and pending transfers |
 | Dashboard | New plan form (cycle limit, intro price, transferable), Retire, and payout and owner settings |
 | Portal | Propose a transfer, with a warning that the subscription and its paid time leave the wallet. Accept one, showing plan, price and merchant first. "Paid through" for completed subscriptions. The change-plan quote uses the billed price |
 | Checkout | Refuse retired plans. Show intro and limited terms. Size the approval to the plan: exactly `maxCycles` for a limited plan, with the intro cycles at `introPrice` |
-| `wallet.js`, `wallet.test.ts` | New selectors and struct layout |
+| `wallet.js`, `wallet.test.ts` | New selectors and the new `plans()` layout |
 | Scripts | `Deploy.s.sol` and `permit2-subscribe.mjs` for the new ABI |
 | Docs | Merchant guide, `site/docs.html`, the wiki (Smart-Contracts, Plans-and-Subscriptions, Plan-Changes-and-Proration, Webhooks, Glossary), SPEC.md and the whitepaper |
 
@@ -276,24 +276,25 @@ New invariants and tests:
 5. Deploy to Arc testnet and run soak 3.
 6. Deploy to mainnet.
 
+## Resolved issues
+
+David took the recommendation on each of these on 2026-10-25.
+
+### Include ownership transfer in v2
+- **Decision:** yes. Payout alone covers the Safe and blocklist cases but not a planned key change.
+- **Discussion:** it costs an `account` argument on `createPlan`, an owner lookup on every merchant check and multi-account sign-in in the API. Without it, handing control to a new key means new plans, and every subscriber has to cancel and subscribe again, because `changePlan` only moves between plans of one merchant.
+
+### Credit left at completion
+- **Decision:** forfeited, as at cancellation, and the portal's quote shows it before the subscriber changes plan.
+- **Discussion:** a subscriber who downgrades from a large plan into a short limited one can lose most of their credit. The alternative was to refuse plan changes into a limited plan when the credit is larger than its remaining cycles cost.
+
+### Soak plan
+- **Decision:** soak 2 runs to its planned end while v2 is built. It still proves the keeper, API and webhooks. How long soak 3 runs is decided later.
+- **Discussion:** soak 2 tests contracts that v2 replaces. The alternative was to stop it when v2 is ready to deploy.
+
 ## Open issues
 
-### 1. Include ownership transfer in v2?
-- **Problem:** it costs an `account` argument on `createPlan`, an owner lookup on every merchant check and multi-account sign-in in the API. Without it, handing control to a new key means new plans, and every subscriber has to cancel and subscribe again, because `changePlan` only moves between plans of one merchant.
-- **Recommendation:** include it. Payout alone covers the Safe and blocklist cases but not a planned key change.
-- **Next step:** David decides.
-
-### 2. Credit left at completion is forfeited
-- **Problem:** as at cancellation, unspent credit is lost when a limited plan completes. A subscriber who downgrades from a large plan into a short limited one can lose most of it.
-- **Options:** accept it and show it in the portal's quote (recommended); refuse plan changes into a limited plan when the credit is larger than its remaining cycles cost.
-- **Next step:** David decides.
-
-### 3. Soak plan
-- **Problem:** soak 2 tests contracts that v2 replaces.
-- **Options:** run soak 2 to its planned end while v2 is built (recommended, since it still proves the keeper, API and webhooks), or stop it when v2 is ready to deploy. How long soak 3 runs is a separate decision.
-- **Next step:** David decides.
-
-### 4. Contract size
+### 1. Contract size
 - **Problem:** v2 may not fit in the 8,433 bytes left.
 - **Options:** tune the optimizer settings first. Only if that is not enough, move part 1 into a separate MerchantRegistry contract. That adds an external call to every collection and merchant check, so it should be immutable, with no admin.
 - **Next step:** measure once the contract is implemented.
