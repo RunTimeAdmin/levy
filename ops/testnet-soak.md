@@ -67,9 +67,9 @@ subscription starts from a zero allowance. One new wallet is needed on day 7.
 
 The fresh database has no webhook registrations and no sessions.
 
-- [ ] At https://app.getlevy.xyz, sign in with the merchant wallet
-- [ ] Under Webhooks, add `https://app.getlevy.xyz/soak-hooks` with all ten events ticked
-- [ ] The Webhooks table shows it with ID **1**. The receiver verifies every signature against that id, so if it shows another number, tell Claude before going on
+- [x] At https://app.getlevy.xyz, sign in with the merchant wallet
+- [x] Under Webhooks, add `https://app.getlevy.xyz/soak-hooks` with all ten events ticked
+- [x] The Webhooks table shows it with ID **1**. The receiver verifies every signature against that id, so if it shows another number, tell Claude before going on
 
 ### 3. Plans (you, from the merchant wallet)
 
@@ -100,8 +100,8 @@ Arguments are `price` (1 USDC = 1000000), `cycleSeconds`, `trialSeconds`,
 | 2 | 2 USDC | 1 day | none | 2 failures | 4 failures | S4 (after the upgrade) |
 | 3 | 1 USDC | 2 days | 1 day | 2 failures | 4 failures | S2 |
 
-- [ ] `& $cast call $mgr "planCount()(uint256)" --rpc-url $rpc` prints `3`
-- [ ] https://app.getlevy.xyz/api/plans lists all three with the merchant's address
+- [x] `& $cast call $mgr "planCount()(uint256)" --rpc-url $rpc` prints `3`
+- [x] https://app.getlevy.xyz/api/plans lists all three with the merchant's address
 
 ### 4. Subscriptions (you, in the browser wallet)
 
@@ -118,7 +118,7 @@ set the number of cycles, then "Approve and subscribe" (two confirmations).
 The references are readable on purpose for the soak. Real merchants should use
 unguessable ones (docs/merchant-guide.md).
 
-- [ ] (you) S5 subscribes to plan 1 with Permit2, from the repo on your PC. This exercises the new `subscribeWithPermit2`:
+- [x] (you) S5 subscribes to plan 1 with Permit2, from the repo on your PC. This exercises the new `subscribeWithPermit2`:
 
   ```powershell
   cd D:\REPO\levy
@@ -126,16 +126,16 @@ unguessable ones (docs/merchant-guide.md).
   ```
 
   It asks for **S5's** private key (hidden), shows the plan, the wallet and the transactions, and sends nothing until you type `yes`. Expect ACTIVE, charged 1 USDC, and an `allowance.low` straight away (the keeper still does not read Permit2 allowances, a known gap).
-- [ ] The dashboard shows five subscriptions with references soak2-s1 to soak2-s5
-- [ ] Record the subscription IDs:
+- [x] The dashboard shows five subscriptions with references soak2-s1 to soak2-s5
+- [x] Record the subscription IDs:
 
 | Wallet | Subscription ID | Subscribed at (UTC) |
 |---|---|---|
-| S1 | | |
-| S2 | | |
-| S3 | | |
-| S4 | | |
-| S5 | | |
+| S1 | 1 (subscriber is the Merchant wallet, kept as the control, see the log) | 2026-10-26 17:43:53 |
+| S2 | 2 | 2026-10-26 17:45:05 |
+| S3 | 3 | 2026-10-26 17:46:14 |
+| S4 | 4 | 2026-10-26 17:47:49 |
+| S5 | 5 | 2026-10-26 17:49:23 |
 
 ## Scheduled actions
 
@@ -247,3 +247,5 @@ When every box is ticked, the soak item under "Before mainnet" in the README is 
 |---|---|---|
 | 2026-10-24 | Claude | Host repointed at 13:57 UTC. Keeper and API rebuilt from `d2b5455` on the new SubscriptionManager `0xea24...df4e` with a fresh database (soak 1's kept in `/root/levy-db-pre-d2b5455`, its source tree in `/root/levy-src-08991fa`) and the unchanged webhook signing key; the receiver's soak 1 log is now `hooks-soak1.jsonl`. The first upload came from `git archive` with Windows line endings, which broke the shell scripts, so the tree was uploaded again with `core.autocrlf=false` and rebuilt. Status run: keeper 35 blocks behind, 0 plans and subscriptions, no webhook endpoints yet, keeper wallet 19.807 USDC, alerts none. Next: day 0, David. |
 | 2026-10-24 | Claude | Fixes from the infrastructure review (`docs/REVIEW_INFRA_2026-10-24.md`: H-1, M-1, M-3, M-4, and PR #5 merged) deployed at 15:40 UTC, revision `7aad40e`, before day 0. Webhooks are now signed over the destination webhook id and carry `{16 hex digits}-{row id}` delivery ids; the receiver verifies against webhook id 1 and the soak merchant and keeps bodies only for valid signatures; `/soak-hooks` is rate limited in nginx (60 a minute, burst 30; the old site file is in `/root/app.getlevy.xyz.nginx.bak-20261024154033`). Status run clean: keeper 51 blocks behind, the same signing key, no alerts. |
+| 2026-10-26 | Claude | Day 0, done by David between 17:43 and 17:50 UTC. Webhook endpoint 1 belongs to the merchant and has all ten events. Plans 1 to 3 match the table. Subscriptions: #1 on plan 1 at 17:43:53 with ref soak2-s1, but its subscriber is the Merchant wallet, not S1, because the merchant was still connected at checkout (S1 has no allowance and no subscription). S2 is #2 on plan 3 (TRIAL), S3 is #3 (1 USDC of allowance left), S4 is #4, and S5 is #5 by Permit2. Simulated `charge(1)` and `charge(4)` both revert `NotChargeable`. Status run at 17:50 UTC clean: 4 charges, 4 USDC pulled, the fee router holds 0.04 USDC and that equals the fees recorded, 15 webhooks delivered and verified with none invalid, keeper 7 blocks behind, no alerts. |
+| 2026-10-26 | Claude | David kept #1 as the S1 control rather than replacing it. Its subscriber is the Merchant wallet, so each of its charges takes 1 USDC from the merchant and returns 0.99, and the merchant ends each day 0.01 USDC down on it. S1's wallet is not used in soak 2. The daily check was rewritten for soak 2 (subscriptions 1 to 5 on the new manager) and turned back on. |
