@@ -1,6 +1,6 @@
 # LEVY: Subscription Billing on Arc
 
-**Status:** living build doc, updated 2026-10-24. Contracts, keeper, API, merchant dashboard, customer portal and checkout are built and tested. The contracts are deployed on Arc testnet for the M4 soak (addresses in README, Deployments); nothing is on mainnet. Soak 1 ran from 2026-10-07 to 2026-10-24; the contracts with the fixes from the 2026-10-24 review were deployed that day for soak 2. Verified chain facts are in `VERIFICATION.md`.
+**Status:** living build doc, updated 2026-10-27. Contracts, keeper, API, merchant dashboard, customer portal and checkout are built and tested. The contracts are deployed on Arc testnet for the M4 soak (addresses in README, Deployments); nothing is on mainnet. Soak 1 ran from 2026-10-07 to 2026-10-24; the contracts with the fixes from the 2026-10-24 review were deployed that day, and soak 2 on them started 2026-10-26. Manager v2 (`docs/manager-v2-design.md`) is built on the `docs/manager-v2-design` branch and not deployed; it gets an external audit and soak 3 before mainnet. Verified chain facts are in `VERIFICATION.md`.
 **One-liner:** Stripe Billing for Arc. Merchants create plans, subscribers approve a USDC allowance once, Levy pulls USDC every cycle with dunning, proration, webhooks and invoice records built in.
 
 ## Why this, why Arc, why now
@@ -102,7 +102,7 @@ Open issues and the self-review are in `SECURITY_REVIEW.md`; the math audit is i
 
 **M3: SaaS layer.** Merchant dashboard, customer portal, checkout, Ed25519 webhook dispatcher, invoice records and CSV export, wallet sign-in. Done.
 
-**M4: Hardening + mainnet.** Testnet deploy and soak, verification checklist cleared (Permit2 flow on Arc, treasury multisig), open security items addressed, external audit, mainnet deploy with the treasury multisig. Acceptance: first real USDC subscription billed on mainnet.
+**M4: Hardening + mainnet.** Testnet deploy and soaks, manager v2, verification checklist cleared (Permit2 flow on Arc, treasury multisig), open security items addressed, external audit of v2 and a soak on it, mainnet deploy with the treasury multisig. Acceptance: first real USDC subscription billed on mainnet.
 
 **M5: Token (post-traction).** LEVY, staking tiers, buyback-and-burn router, premium gating. Only after real fee revenue exists.
 
@@ -112,7 +112,7 @@ Open issues and the self-review are in `SECURITY_REVIEW.md`; the math audit is i
 - [x] Finality assumptions: single-block deterministic, ~0.5s, no reorgs
 - [x] PUSH0 behavior: Osaka EVM; paris pin kept as harmless default
 - [x] Permit2 mainnet address: canonical `0x000000000022D473030F116dDEE9F6B43aC78BA3`; subscribeWithPermit2 built against it
-- [ ] Permit2 end to end against Arc (subscribe exercised on testnet by soak wallet S5, 2026-10-07; recurring charges still to confirm in the soak)
+- [ ] Permit2 end to end against Arc (soak 1's S5 subscribed through it and took 11 recurring charges through the fallback; the 2026-10-24 fixes changed how `subscribeWithPermit2` handles a front-run permit, so soak 2's S5 checks both again)
 - [ ] FeeRouter treasury multisig signers set
 - [x] Dunning copy reviewed (revised 2026-09-25 to match actual dunning behaviour; see docs/dunning-copy.md)
 - [ ] Thin-liquidity assumption documented for launch comms

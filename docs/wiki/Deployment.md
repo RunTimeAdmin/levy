@@ -146,7 +146,7 @@ The 1% fee accrues in `FeeRouter` until anyone calls `sweep()`, which sends it t
 - **After:** `treasury()` returns the Safe, a `sweep()` lands USDC in it, and one real `charge()` plus a sweep delivers exactly the 1%.
 - **Later:** only the current treasury can call `proposeTreasury`, and it accepts any non-zero address, a plain key included; the new address takes over only when it calls `acceptTreasury`. Treat every `TreasuryProposed` and `TreasuryUpdated` event as something to verify.
 
-Before mainnet the README also requires a soak of at least a week (day 0 was 2026-10-07), Permit2 checked end to end on Arc, the open items in `SECURITY_REVIEW.md` section 9 dealt with, and an external audit. See [Security](Security.md).
+Before mainnet the README also requires a soak of at least a week (soak 2, day 0 2026-10-26), manager v2 with an external audit and a soak of its own, Permit2 checked end to end on Arc, and the open items in `SECURITY_REVIEW.md` section 9 dealt with. See [Security](Security.md).
 
 ## Source files
 

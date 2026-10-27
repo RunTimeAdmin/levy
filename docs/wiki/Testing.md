@@ -9,8 +9,8 @@ The counts come from the test sources and match the README.
 | Suite | Tests | Made up of |
 |---|---|---|
 | Contracts | 77 | 68 unit tests (52 + 9 + 7) and 9 invariants |
-| Keeper | 56 | 45 unit tests and 11 anvil integration tests |
-| API | 55 | 32 endpoint tests and 23 wallet-encoding tests |
+| Keeper | 76 | 65 unit tests and 11 anvil integration tests |
+| API | 60 | 37 endpoint tests and 23 wallet-encoding tests |
 
 ## Contract tests
 
@@ -52,9 +52,11 @@ The counts come from the test sources and match the README.
 
 | File | Tests | Covers |
 |---|---|---|
-| `webhooks.test.ts` | 30 | Canonical JSON; Ed25519 signing; key loading from file, base64 seed and PEM; the 1m, 5m, 15m, 1h, then 6h backoff and the 24 h dead letter; event mapping; fan-out and fairness; live HTTP delivery (signature headers, redirects and private addresses refused, an endless body, parallel endpoints, one request at a time per endpoint, coarse errors); webhook URL policy |
+| `webhooks.test.ts` | 31 | Canonical JSON; Ed25519 signing; key loading from file, base64 seed and PEM; the 1m, 5m, 15m, 1h, then 6h backoff and the 24 h dead letter; event mapping; fan-out and fairness; live HTTP delivery (signature headers, redirects and private addresses refused, an endless body, parallel endpoints, one request at a time per endpoint, coarse errors); webhook URL policy |
+| `config.test.ts` | 15 | Configuration defaults and valid values, ten bad values refused at startup instead of loading as NaN or 0, and the RPC URL's key kept out of logs and errors |
 | `dunning.test.ts` | 6 | Retry times of 1, 3 and 7 days, clamping, persistence |
 | `dedup.test.ts` | 4 | Collapsing duplicate USDC transfer logs (EIP-7708) |
+| `set-keeper-key.test.ts` | 4 | `ops/set-keeper-key.sh`: replaces or adds the key line, refuses an address, never passes the key as an argument and leaves no temporary copy |
 | `funds.test.ts` | 3 | The allowance runway rule: low under two rounds |
 | `log-ranges.test.ts` | 2 | Block-range chunking, including a day of Arc blocks in 500-block requests |
 | `integration.test.ts` | 11 | The keeper against a real chain |
@@ -65,7 +67,7 @@ The integration test spawns `anvil --port 8546` (chain 31337), reads its printed
 
 ## API tests
 
-`api.test.ts` (32) starts the real Fastify server on an ephemeral port over a seeded temporary SQLite database, with three real keys (a merchant, a subscriber and a second merchant) that sign in with genuine EIP-4361 signatures. Groups: `formatUsdc` (1); sign-in (6: message bound to origin and chain, the sign-in and logout round trip, reused nonce, wrong wallet, malformed input, every private endpoint demanding a session); cookie sessions (5: `__Host-` cookie attributes, origin check on writes, logout, the local http variant); public endpoints (5); data scoped to the signed-in address (6); webhook management (5: scoping, unsafe URLs, the 5-per-merchant cap); the production origin requirement (1); static pages and their Content-Security-Policy (3). See [Authentication](Authentication.md) and [API Reference](API-Reference.md).
+`api.test.ts` (37) starts the real Fastify server on an ephemeral port over a seeded temporary SQLite database, with three real keys (a merchant, a subscriber and a second merchant) that sign in with genuine EIP-4361 signatures. Groups: `formatUsdc` (1); sign-in (6: message bound to origin and chain, the sign-in and logout round trip, reused nonce, wrong wallet, malformed input, every private endpoint demanding a session); cookie sessions (5: `__Host-` cookie attributes, origin check on writes, logout, the local http variant); public endpoints (5); data scoped to the signed-in address (6); webhook management (7: scoping, unsafe URLs, URLs over 2048 characters, the 5-per-merchant cap, also under concurrent registrations); configuration (3: the production origin requirement, a plain origin normalized, anything else refused); static pages and their headers (4: the pages, their Content-Security-Policy, none on API responses, nosniff everywhere and no-store on the API). See [Authentication](Authentication.md) and [API Reference](API-Reference.md).
 
 `wallet.test.ts` (23) guards the hand-written browser code in `api/public/wallet.js` against the contract ABIs in `keeper/abi/`: 10 function selectors, the event topics, the getter field order and the `createPlan` argument order. It also covers the plan-change quote, plain-language wallet errors, exact USDC amounts, the check that the wallet is really on Arc, a missing receipt reported as unknown, reverted transactions, and the faucet and explorer links. See [Dashboard, Portal and Checkout](Dashboard-Portal-and-Checkout.md).
 
@@ -100,18 +102,18 @@ forge test --match-path test/FailureCooldown.t.sol
 
 cd keeper && npm ci
 npx tsc --noEmit                      # typecheck
-npm test                              # 56 tests; the integration test needs anvil on PATH
+npm test                              # 76 tests; the integration test needs anvil on PATH
 npm run test:integration              # the anvil test alone
 node --import tsx --test test/dunning.test.ts   # one file
 
-cd api && npm ci && npx tsc --noEmit && npm test    # 55 tests
+cd api && npm ci && npx tsc --noEmit && npm test    # 60 tests
 ```
 
 Node 24 is expected (22.13 or later also works, since `node:sqlite` is built in). Foundry provides `forge` and `anvil`. See [Getting Started](Getting-Started.md) for the full setup.
 
 ## Live test: the testnet soak
 
-The soak (`ops/testnet-soak.md`) is the end-to-end test: a week of real billing on Arc testnet against the current deployment, the keeper and the API, started on 2026-10-07. Five subscriber wallets cover the paths: a control left alone, a trial with pause, resume and cancel, a failing allowance that goes through dunning to auto-pause and recovery, an upgrade then a downgrade with proration credit, and a Permit2 subscribe. A separate receiver checks every webhook signature, and `ops/soak-status.sh` produces the daily report ([Monitoring and Maintenance](Monitoring-and-Maintenance.md)). Pass criteria include every due charge collected once within 5 minutes, all ten event types received with valid signatures, on-chain totals matching the database to the unit, and the sweep moving exactly the fees collected. It stops if a subscription is charged twice for one date, USDC goes anywhere but the merchant and the fee router, or a signature fails. Results are in the log at the bottom of that file.
+The soak (`ops/testnet-soak.md`) is the end-to-end test: a week of real billing on Arc testnet against the current deployment, the keeper and the API. Soak 2 started on 2026-10-26; soak 1 ran from 2026-10-07 to 2026-10-24 on the previous deployment (`ops/testnet-soak-1.md`). Five subscriber wallets cover the paths: a control left alone, a trial with pause, resume and cancel, a failing allowance that goes through dunning to auto-pause and recovery, an upgrade then a downgrade with proration credit, and a Permit2 subscribe. A separate receiver checks every webhook signature, and `ops/soak-status.sh` produces the daily report ([Monitoring and Maintenance](Monitoring-and-Maintenance.md)). Pass criteria include every due charge collected once within 5 minutes, all ten event types received with valid signatures, on-chain totals matching the database to the unit, and the sweep moving exactly the fees collected. It stops if a subscription is charged twice for one date, USDC goes anywhere but the merchant and the fee router, or a signature fails. Results are in the log at the bottom of that file.
 
 ## Source files
 

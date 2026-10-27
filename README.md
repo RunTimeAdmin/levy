@@ -4,7 +4,7 @@ Pull-based USDC subscription billing for Arc, like Stripe Billing for a chain wh
 
 Charging is permissionless by design: anyone can call `charge()`, but it can only move the subscriber's pre-approved USDC to that plan's merchant.
 
-**Status:** contracts, keeper (charging, dunning, webhooks, allowance warnings), API with wallet sign-in, merchant dashboard, customer portal and checkout page are built and tested. Contracts: 77 tests green (68 unit + 9 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 56 tests green. API: 55 tests green. **On Arc testnet since 2026-10-03 (current deployment, see Deployments); the M4 soak started 2026-10-07. Not on mainnet. Not audited.** Known open issues are listed in `SECURITY_REVIEW.md` §9.
+**Status:** contracts, keeper (charging, dunning, webhooks, allowance warnings), API with wallet sign-in, merchant dashboard, customer portal and checkout page are built and tested. Contracts: 77 tests green (68 unit + 9 invariants; CI fuzzes invariants at 1000 runs x depth 40). Keeper: 76 tests green. API: 60 tests green. **On Arc testnet: the current deployment is from 2026-10-24 (see Deployments) and soak 2 on it started 2026-10-26. Manager v2 is built on the `docs/manager-v2-design` branch and not deployed. Not on mainnet. Not audited.** Known open issues are listed in `SECURITY_REVIEW.md` §9.
 
 **Read next:** [Wiki](docs/wiki/Home.md) · [Getting started](docs/wiki/Getting-Started.md) · [Merchant guide](docs/merchant-guide.md) · [Spec](SPEC.md) · [Security](SECURITY.md) · [Whitepaper](https://getlevy.xyz/whitepaper.html) · [getlevy.xyz](https://getlevy.xyz)
 
@@ -173,10 +173,11 @@ To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file 
 
 ## Before mainnet
 
-- A soak of at least a week on the current testnet deployment (M4; day 0 was 2026-10-07). Checklist and pass criteria: `ops/testnet-soak.md`.
+- A soak of at least a week on the current testnet deployment: soak 2, day 0 2026-10-26. Checklist and pass criteria: `ops/testnet-soak.md`. Soak 1 ran from 2026-10-07 to 2026-10-24 on the previous deployment (`ops/testnet-soak-1.md`).
+- Manager v2 (`docs/manager-v2-design.md` on the `docs/manager-v2-design` branch): a payout address apart from the plan owner, handing an account to a new owner, retiring plans, plans that end after a set number of payments, intro prices and moving a subscription to a new wallet. Built and tested, not deployed. After its external audit it goes to testnet for soak 3.
 - Treasury multisig signers set (`ops/treasury-multisig.md`).
-- Permit2 end to end against Arc (subscribing through it worked on testnet, soak wallet S5 on 2026-10-07; its recurring charges are still being checked in the soak).
-- Open items in `SECURITY_REVIEW.md` §9, and an external audit.
+- Permit2 end to end against Arc. In soak 1, wallet S5 subscribed through it and its next 11 charges came through the Permit2 fallback. The 2026-10-24 fixes changed how `subscribeWithPermit2` handles a front-run permit, so soak 2's S5 checks both again on the current contracts.
+- Open items in `SECURITY_REVIEW.md` §9, and an external audit of v2.
 - Thin-liquidity note for launch comms.
 
 ## Roadmap
@@ -184,7 +185,7 @@ To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file 
 - **M1:** contracts + tests (done; testnet deploy moves to M4)
 - **M2:** keeper service, indexer, dunning engine (done)
 - **M3:** signed webhooks, API, merchant dashboard, customer portal, checkout, invoicing (done)
-- **M4:** testnet deploy (done; current deployment 2026-10-03) and soak (day 0 2026-10-07), then mainnet deploy
+- **M4:** testnet deploy (done; current deployment 2026-10-24) and soaks (soak 1 done, 2026-10-07 to 2026-10-24; soak 2 from 2026-10-26), then manager v2, its external audit and soak 3, then mainnet deploy
 - **M5:** LEVY token: fee split to buyback-and-burn and staking, staking fee-tier discounts, premium feature gating
 
 ## License
