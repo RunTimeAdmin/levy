@@ -46,9 +46,9 @@ forge inspect SubscriptionManager bytecode > keeper/abi/SubscriptionManager.bin
 ## Test the keeper and the API
 
 ```bash
-cd keeper && npm ci && npm test      # 81 tests; includes an integration test that spawns anvil
+cd keeper && npm ci && npm test      # 95 tests; includes an integration test that spawns anvil
 npx tsc --noEmit                     # typecheck, as CI does
-cd ../api && npm ci && npm test      # 73 tests; seeded temp database, ephemeral port
+cd ../api && npm ci && npm test      # 79 tests; seeded temp database, ephemeral port
 ```
 
 `npm ci` installs exactly the lockfile, as CI does; `npm install` also works. The keeper's integration test needs `anvil` on your PATH and uses its own anvil on port 8546. `npm run test:integration` runs it alone. See [Testing](Testing.md).
@@ -102,11 +102,12 @@ The example files default to Arc mainnet. For a local run set these (a few alrea
 | `LEVY_USDC_ADDRESS` | keeper, API | `0x3600000000000000000000000000000000000000` |
 | `LEVY_KEEPER_KEY` | keeper | anvil account (1) private key; it pays gas |
 | `LEVY_DB_PATH` | keeper, API | keep the defaults: `./levy.db` for the keeper, `../keeper/levy.db` for the API (one shared file) |
-| `LEVY_WEBHOOK_KEY_PATH` | keeper, API | keep the defaults; both must point at the same key file, which the keeper creates on first boot |
+| `LEVY_WEBHOOK_KEY_PATH` | keeper | keep the default; the keeper creates the key on first boot |
+| `LEVY_WEBHOOK_PUBLIC_KEY_PATH` | keeper, API | keep the defaults: the keeper writes `./webhook-public-key.pem` and the API reads `../keeper/webhook-public-key.pem`, the same file |
 | `LEVY_PUBLIC_ORIGIN` | API | `http://localhost:3001`; sign-in messages and the write-origin check are bound to it exactly |
 | `LEVY_WEBHOOK_ALLOW_PRIVATE` | keeper, API | optional, `1`: allows `http` and private-address webhook URLs. Local development only |
 
-The API has no RPC URL and no key: it reads the keeper's database. Tuning variables (`LEVY_POLL_MS`, `LEVY_DUNNING_DAYS`, `LEVY_LOOKBACK_BLOCKS`, `LEVY_LOG_CHUNK_BLOCKS`, `LEVY_WEBHOOK_POLL_MS`) are covered in [Keeper Configuration](Keeper-Configuration.md).
+The API has no RPC URL and no key: it reads the keeper's database, and refuses to start if `LEVY_KEEPER_KEY` or `LEVY_WEBHOOK_KEY` is set in its environment. Tuning variables (`LEVY_POLL_MS`, `LEVY_DUNNING_DAYS`, `LEVY_LOOKBACK_BLOCKS`, `LEVY_LOG_CHUNK_BLOCKS`, `LEVY_WEBHOOK_POLL_MS`) are covered in [Keeper Configuration](Keeper-Configuration.md).
 
 ## Start the keeper and the API
 

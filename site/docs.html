@@ -236,7 +236,7 @@ GET /api/invoices?format=csv</code></pre>
   <h2 id="dunning">8. When a payment fails</h2>
   <p>A payment fails when the customer's USDC balance or allowance is too low. The contract never reverts on a failed payment: it records the failure on-chain and emits <code>ChargeFailed</code>, never sooner than the schedule below: the contract enforces its gaps, so nobody calling <code>charge</code> can pause a subscription faster. Then:</p>
   <ol>
-    <li>Levy retries 1 day after the first failure, 3 days after the second, and every 7 days after that.</li>
+    <li>Levy retries 1 day after the first failure, 3 days after the second, and every 7 days after that. After six failures in a row it retries only when the customer's balance and allowance cover the payment.</li>
     <li>When failures reach the plan's <code>maxFailed</code>, the subscription is past due. It stays chargeable, and Levy keeps retrying.</li>
     <li>At twice <code>maxFailed</code>, the contract pauses it. Nothing more is collected until the customer resumes it in the portal; you cannot resume this pause, and your dashboard shows <em>customer resumes</em> instead. Billing then restarts from the resume date, and the missed cycle is not collected.</li>
     <li>A successful payment at any point clears the failure count and starts a fresh cycle that day: the billing date moves to the recovery date, and the late days are not billed.</li>

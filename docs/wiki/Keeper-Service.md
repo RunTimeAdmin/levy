@@ -79,7 +79,7 @@ The backoff map lives in memory, so a restart tries each stuck subscription once
 
 ## Dunning
 
-When the indexer sees `ChargeFailed` with attempt number N, it sets `nextRetryAt` to the chain time of that sync plus entry N of `LEVY_DUNNING_DAYS` (default `1,3,7`; later attempts reuse the last value). The contract enforces the same minimum gaps with `retryGap`: 1 day after the first failure, 3 after the second, 7 after each later one. Configured gaps can be longer but not shorter, since an early retry reverts with `RetryTooSoon` and lands in the error backoff. A successful charge deletes the dunning row. The contract sets PAST_DUE at `maxFailed` failures and auto-pauses at twice that, inside `charge()`; the keeper never pauses anything. See [Dunning and Failures](Dunning-and-Failures.md).
+When the indexer sees `ChargeFailed` with attempt number N, it sets `nextRetryAt` to the chain time of that sync plus entry N of `LEVY_DUNNING_DAYS` (default `1,3,7`; later attempts reuse the last value). The contract enforces the same minimum gaps with `retryGap`: 1 day after the first failure, 3 after the second, 7 after each later one. Configured gaps can be longer but not shorter: the keeper reads `retryGap` at start and refuses a shorter schedule. A successful charge deletes the dunning row. The contract sets PAST_DUE at `maxFailed` failures and auto-pauses at twice that, inside `charge()`; the keeper never pauses anything. Past `LEVY_MAX_SPONSORED_FAILURES` failures in a row (default 6) the keeper stops paying to record more: it sends a retry only when the subscriber's balance and allowances cover the charge, and otherwise moves the retry along the schedule. See [Dunning and Failures](Dunning-and-Failures.md).
 
 ## Allowance runway
 
@@ -101,7 +101,7 @@ The keeper's account pays gas for every `charge()` it sends, and on Arc gas is p
 
 ## Startup and shutdown
 
-At start the keeper loads its configuration, opens the database and runs `backfillAll()`, which re-reads every plan, every plan's merchant account and every subscription from the contract and rewrites those rows. This happens on every start, not only the first, and it emits no webhooks. Then both loops start. On `SIGINT` or `SIGTERM` each loop stops after its current pass and sleep, and the database is closed. `npm run once` runs one charge cycle and one delivery pass, then exits.
+At start the keeper loads its configuration, opens the database and checks that it belongs to this chain, manager and USDC (a fresh database records them), checks `LEVY_DUNNING_DAYS` against `retryGap`, and runs `backfillAll()`, which re-reads every plan, every plan's merchant account and every subscription from the contract, rewrites those rows and rebuilds any dunning row the database is missing. It then writes the webhook public key for the API. This happens on every start, not only the first, and it emits no webhooks. Then both loops start. On `SIGINT` or `SIGTERM` each loop stops after its current pass and sleep, and the database is closed. `npm run once` runs one charge cycle and one delivery pass, then exits.
 
 ## Source files
 

@@ -9,8 +9,8 @@ The counts come from the test sources and match the README.
 | Suite | Tests | Made up of |
 |---|---|---|
 | Contracts | 117 | 104 unit tests (53 + 35 + 9 + 7) and 13 invariants |
-| Keeper | 81 | 69 unit tests and 12 anvil integration tests |
-| API | 73 | 41 endpoint tests and 32 wallet-encoding tests |
+| Keeper | 95 | 81 unit tests and 14 anvil integration tests |
+| API | 79 | 44 endpoint tests and 35 wallet-encoding tests |
 
 The suites test manager v2 ([design](https://github.com/RunTimeAdmin/levy/blob/main/docs/manager-v2-design.md)), which is not deployed yet.
 
@@ -62,24 +62,25 @@ The suites test manager v2 ([design](https://github.com/RunTimeAdmin/levy/blob/m
 
 | File | Tests | Covers |
 |---|---|---|
-| `webhooks.test.ts` | 33 | Canonical JSON; Ed25519 signing; key loading from file, base64 seed and PEM; the 1m, 5m, 15m, 1h, then 6h backoff and the 24 h dead letter; event mapping, including `Completed`, `SubscriptionTransferred` and `merchant.updated` with no subscription fields; fan-out and fairness; live HTTP delivery (signature headers, redirects and private addresses refused, an endless body, parallel endpoints, one request at a time per endpoint, coarse errors); webhook URL policy |
-| `config.test.ts` | 15 | Configuration defaults and refused values, and redacting a key from the RPC URL |
-| `dunning.test.ts` | 6 | Retry times of 1, 3 and 7 days, clamping, persistence |
+| `webhooks.test.ts` | 36 | Canonical JSON; Ed25519 signing; key loading from file, base64 seed and PEM; the published public key; the 1m, 5m, 15m, 1h, then 6h backoff and the 24 h dead letter; event mapping, including `Completed`, `SubscriptionTransferred` and `merchant.updated` with no subscription fields; fan-out and fairness; live HTTP delivery (signature headers, redirects and private addresses refused, an endless body, parallel endpoints, one request at a time per endpoint, coarse errors, and rows the keeper did not write or that were changed never sent); webhook URL policy |
+| `config.test.ts` | 16 | Configuration defaults and refused values, and redacting a key from the RPC URL |
+| `dunning.test.ts` | 8 | Retry times of 1, 3 and 7 days, clamping, persistence, and the schedule checked against `retryGap` |
 | `dedup.test.ts` | 4 | Collapsing duplicate USDC transfer logs (EIP-7708) |
 | `funds.test.ts` | 5 | The allowance runway rule: low when the next two charges are not covered, intro cycles at the intro price, and a limited plan whose remaining charges are covered not low |
-| `set-keeper-key.test.ts` | 4 | `ops/set-keeper-key.sh` writing the key line without passing the key as an argument |
+| `deployment.test.ts` | 4 | The database tied to one chain, manager and USDC |
+| `set-keeper-key.test.ts` | 6 | `ops/set-keeper-key.sh` writing the key line to the keeper-only `ops/keeper.env` (created mode 600) without passing the key as an argument, and naming a key left in `ops/.env` |
 | `log-ranges.test.ts` | 2 | Block-range chunking, including a day of Arc blocks in 500-block requests |
-| `integration.test.ts` | 12 | The keeper against a real chain |
+| `integration.test.ts` | 14 | The keeper against a real chain |
 
 The live HTTP tests start local servers, so they build the dispatcher with `allowPrivate: true` (the code behind `LEVY_WEBHOOK_ALLOW_PRIVATE`); the private-address test uses the strict setting.
 
-The integration test spawns `anvil --port 8546` (chain 31337), reads its printed dev keys, deploys `MockUSDC`, `FeeRouter`, `MockPermit2` and `SubscriptionManager` from `keeper/abi/*.json` and `.bin`, and builds a `Keeper` over an in-memory database. It sets the log chunk to 7 blocks so every sync crosses chunk boundaries, and moves time with `evm_increaseTime` because the keeper works on chain time. Its twelve scenarios: a due charge splits 99/1; failures schedule dunning retries; a retry after the backoff clears dunning on success; resume clears dunning and charges from now; the database records who paused, since the merchant may resume only its own pause; `Subscribed` and `Charged` enqueue webhooks; charging never waits on webhook delivery; plans nobody subscribed to are indexed and plan changes reported; a charge that reverts backs off; the merchant is warned once when an allowance runs low; only USDC logs involving Levy are indexed; and the v2 run, which follows intro pricing, a wallet transfer, a completion and merchant account changes into the database and the webhook queue. See [Keeper Service](Keeper-Service.md).
+The integration test spawns `anvil --port 8546` (chain 31337), reads its printed dev keys, deploys `MockUSDC`, `FeeRouter`, `MockPermit2` and `SubscriptionManager` from `keeper/abi/*.json` and `.bin`, and builds a `Keeper` over an in-memory database. It sets the log chunk to 7 blocks so every sync crosses chunk boundaries, and moves time with `evm_increaseTime` because the keeper works on chain time. Its fourteen scenarios: a due charge splits 99/1; failures schedule dunning retries; a lost database rebuilds dunning from the chain; a retry after the backoff clears dunning on success; resume clears dunning and charges from now; the database records who paused, since the merchant may resume only its own pause; `Subscribed` and `Charged` enqueue webhooks; charging never waits on webhook delivery; plans nobody subscribed to are indexed and plan changes reported; a charge that reverts backs off; the merchant is warned once when an allowance runs low; only USDC logs involving Levy are indexed; past the sponsored-failure cap a retry waits for funds, then goes through; and the v2 run, which follows intro pricing, a wallet transfer, a completion and merchant account changes into the database and the webhook queue. See [Keeper Service](Keeper-Service.md).
 
 ## API tests
 
-`api.test.ts` (41) starts the real Fastify server on an ephemeral port over a seeded temporary SQLite database, with four real keys (a merchant, a subscriber, a second merchant and a former owner that handed its account on) that sign in with genuine EIP-4361 signatures. Groups: `formatUsdc` (1); sign-in (6: message bound to origin and chain, the sign-in and logout round trip, reused nonce, wrong wallet, malformed input, every private endpoint demanding a session); cookie sessions (5: `__Host-` cookie attributes, origin check on writes, logout, the local http variant); public endpoints (5); merchant accounts (4: the accounts an address owns and is offered, an account's data served to its current owner only, webhooks registered under the account for its owner, subscriptions offered to the signed-in wallet); data scoped to the signed-in address (6); webhook management (7: scoping, deliveries, unsafe URLs, an over-long URL, the 5-per-merchant cap, also under concurrent registrations); the `LEVY_PUBLIC_ORIGIN` requirement and format (3); static pages and their Content-Security-Policy (4). See [Authentication](Authentication.md) and [API Reference](API-Reference.md).
+`api.test.ts` (44) starts the real Fastify server on an ephemeral port over a seeded temporary SQLite database, with four real keys (a merchant, a subscriber, a second merchant and a former owner that handed its account on) that sign in with genuine EIP-4361 signatures. Groups: `formatUsdc` (1); sign-in (6: message bound to origin and chain, the sign-in and logout round trip, reused nonce, wrong wallet, malformed input, every private endpoint demanding a session); cookie sessions (5: `__Host-` cookie attributes, origin check on writes, logout, the local http variant); public endpoints (6: including a 503 for the public key until the keeper writes it); merchant accounts (4: the accounts an address owns and is offered, an account's data served to its current owner only, webhooks registered under the account for its owner, subscriptions offered to the signed-in wallet); data scoped to the signed-in address (6); webhook management (7: scoping, deliveries, unsafe URLs, an over-long URL, the 5-per-merchant cap, also under concurrent registrations); configuration (5: the `LEVY_PUBLIC_ORIGIN` requirement and format, no keeper secrets, a database from another deployment refused); static pages and their Content-Security-Policy (4). See [Authentication](Authentication.md) and [API Reference](API-Reference.md).
 
-`wallet.test.ts` (32) guards the hand-written browser code in `api/public/wallet.js` against the contract ABIs in `keeper/abi/`: 17 function selectors, the event topics, the getter field order, the `createPlan` encoding of the account and `PlanTerms`, and every v2 transaction encoded exactly as the ABI does. It also prices a plan's first payments (intro cycles at the intro price, none past a cycle limit). It also covers the plan-change quote, plain-language wallet errors, exact USDC amounts, the check that the wallet is really on Arc, a missing receipt reported as unknown, reverted transactions, and the faucet and explorer links. See [Dashboard, Portal and Checkout](Dashboard-Portal-and-Checkout.md).
+`wallet.test.ts` (35) guards the hand-written browser code in `api/public/wallet.js` against the contract ABIs in `keeper/abi/`: 18 function selectors, the event topics, the getter field order (`subscriptions()` and `plans()`), the `createPlan` encoding of the account and `PlanTerms`, and every v2 transaction encoded exactly as the ABI does. It also prices a plan's first payments (intro cycles at the intro price, none past a cycle limit). It also covers the on-chain plan check the checkout runs before any transaction, the plan-change quote, plain-language wallet errors, exact USDC amounts, the check that the wallet is really on Arc, a missing receipt reported as unknown, reverted transactions, and the faucet and explorer links. See [Dashboard, Portal and Checkout](Dashboard-Portal-and-Checkout.md).
 
 ## Continuous integration
 
@@ -98,7 +99,7 @@ flowchart LR
 | `contracts` | 15 min | Checks out submodules, installs Foundry, `forge build --sizes`, then `forge test -vvv` with `FOUNDRY_PROFILE=ci`, then the ABI drift check |
 | `keeper` | 15 min | Installs Foundry (for anvil) and Node 24, then `npm ci`, `npx tsc --noEmit`, `npm test` |
 | `api` | 15 min | Node 24, then `npm ci`, `npx tsc --noEmit`, `npm test` |
-| `docker` | 20 min | Builds both images and starts the API container. Checks `/api/health`, `/`, `/public/auth.js`, `/checkout.html` and `/api/config`, that `/api/metrics` answers 401, that the API refuses to start without `LEVY_PUBLIC_ORIGIN`, and that the keeper image stops with `missing env var LEVY_MANAGER_ADDRESS`. Always prints the API logs. |
+| `docker` | 20 min | Builds both images and starts the API container. Checks `/api/health`, `/`, `/public/auth.js`, `/checkout.html` and `/api/config`, that `/api/metrics` answers 401, that the API refuses to start without `LEVY_PUBLIC_ORIGIN` or with `LEVY_KEEPER_KEY`, that compose gives the keeper's secrets and key volume to the keeper alone, and that the keeper image stops with `missing env var LEVY_MANAGER_ADDRESS`. Always prints the API logs. |
 
 The ABI drift check runs `forge inspect <Contract> abi --json` for `FeeRouter`, `MockPermit2`, `MockUSDC` and `SubscriptionManager` and fails if the result differs from `keeper/abi/<Contract>.json`. Those files are regenerated by hand (`forge inspect <Contract> abi --json > keeper/abi/<Contract>.json`, and the bytecode into the matching `.bin`). The check covers the `.json` files only, not the `.bin` files that the integration test deploys. The Docker job exists because the Docker files once broke silently. CI has no coverage report or static-analysis step and never deploys.
 
@@ -112,11 +113,11 @@ forge test --match-path test/FailureCooldown.t.sol
 
 cd keeper && npm ci
 npx tsc --noEmit                      # typecheck
-npm test                              # 81 tests; the integration test needs anvil on PATH
+npm test                              # 95 tests; the integration test needs anvil on PATH
 npm run test:integration              # the anvil test alone
 node --import tsx --test test/dunning.test.ts   # one file
 
-cd api && npm ci && npx tsc --noEmit && npm test    # 73 tests
+cd api && npm ci && npx tsc --noEmit && npm test    # 79 tests
 ```
 
 Node 24 is expected (22.13 or later also works, since `node:sqlite` is built in). Foundry provides `forge` and `anvil`. See [Getting Started](Getting-Started.md) for the full setup.

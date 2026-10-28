@@ -98,7 +98,7 @@ Keeper output is plain text on stdout and stderr; there is no structured logging
 |---|---|
 | `levy keeper: chain=... manager=... keeper=0x...` | Boot. Shows the keeper address to fund. |
 | `backfilled N subscriptions` | Boot hydration from the chain |
-| `[cycle] charged=a retried=b failed=c logs=n` | A cycle that did something. Failures follow as `  ! sub <id>: <reason>`. |
+| `[cycle] charged=a retried=b failed=c deferred=d logs=n` | A cycle that did something. Failures follow as `  ! sub <id>: <reason>`. `deferred` counts retries not sent because a subscription is past `LEVY_MAX_SPONSORED_FAILURES` and its funds do not cover the charge. |
 | `[cycle] error: ...` | The cycle threw; the loop carries on |
 | `[webhooks] sent=a failed=b dead=c` | A delivery pass with activity |
 | `[webhooks] error: ...` | A delivery pass threw |
@@ -125,17 +125,13 @@ The receiver runs as `levy-soak-hooks` from `ops/soak/docker-compose.yml` on loo
 
 ## Backups and database loss
 
-`levy.db` holds the sync cursor, charge history, dunning schedules, webhook registrations and delivery log, API sessions and allowance runway. Plans and subscriptions also live on-chain. The webhook signing key sits beside it as `webhook-signing-key.pem`.
+`levy.db` holds the sync cursor, charge history, dunning schedules, webhook registrations and delivery log, API sessions and allowance runway. Plans and subscriptions also live on-chain. The webhook signing key is kept apart from it, on the keeper's own `levy-keys` volume in Docker.
 
-**Backup (a recommendation; there is no repository tool).** Take a consistent copy on the host with `sqlite3 levy.db ".backup /safe/place/levy.db"`, copy the signing key with it, keep copies off the host, and test a restore. Back up before every upgrade: the schema is created at startup with `CREATE TABLE IF NOT EXISTS` plus an `ALTER TABLE ... ADD COLUMN` for each column added later (`ref`, `pausedByMerchant` and the manager v2 columns on `subscriptions` and `plans`), and there is no migration tool. Keep the key because, if the file is missing, the keeper generates a new one at start (and the API does on its next public-key request), and merchants who cached the old public key then fail verification.
+**Backup (a recommendation; there is no repository tool).** Take a consistent copy on the host with `sqlite3 levy.db ".backup /safe/place/levy.db"`, copy the signing key with it, keep copies off the host, and test a restore. Back up before every upgrade: the schema is created at startup with `CREATE TABLE IF NOT EXISTS` plus an `ALTER TABLE ... ADD COLUMN` for each column added later (`ref`, `pausedByMerchant` and the manager v2 columns on `subscriptions` and `plans`), and there is no migration tool. Keep the key because, if the file is missing, the keeper generates a new one at start, and merchants who cached the old public key then fail verification.
 
-**Loss.** With no database, the keeper rebuilds plans, their merchant accounts and subscriptions from the chain at start (`backfillAll`). It loses webhook registrations (merchants register again), the delivery log, sessions (users sign in again), charge history older than `LEVY_LOOKBACK_BLOCKS` (raise it to reach the deploy block to re-index charges), and dunning schedules.
+**Loss.** With no database, the keeper rebuilds plans, their merchant accounts and subscriptions from the chain at start (`backfillAll`). It loses webhook registrations (merchants register again), the delivery log, sessions (users sign in again), and charge history older than `LEVY_LOOKBACK_BLOCKS` (raise it to reach the deploy block to re-index charges).
 
-The dunning loss is a known open item (`SECURITY_REVIEW.md` section 9; finding 10 of `docs/REVIEW_2026-10-02.md`). The ordinary due query selects only TRIAL and ACTIVE subscriptions, and retries come only from `dunning` rows, so a PAST_DUE subscription with no row is never retried although the contract would still charge it. The review's proposed fix, rebuilding the schedule from on-chain failure counts after a rescan from the deploy block, is not built. A suggested check (not in `monitoring.md`) lists the orphans after any restore:
-
-```sql
-SELECT subId FROM subscriptions WHERE status = 2 AND subId NOT IN (SELECT subId FROM dunning);
-```
+Dunning is rebuilt at start: for every chargeable subscription with failures on-chain and no `dunning` row, the keeper times the next retry from the contract's `lastFailedAt` (finding 10 of `docs/REVIEW_2026-10-02.md`, M-3 of `docs/REVIEW_2026-10-27.md`). A database made for another deployment, or one with data but no deployment record, stops the keeper at start, so restore the copy made for this deployment or start fresh.
 
 ## Upgrading the keeper and API
 
@@ -143,7 +139,7 @@ Run one keeper per deployment. A second cannot double-charge or speed up dunning
 
 1. Back up the database and key.
 2. Put the new revision on the host. The soak report prints the revision from a `REVISION` file in the repo copy, if there is one.
-3. `docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --build` rebuilds and recreates changed containers and leaves the `levy-data` volume alone. Rebuild both images when `keeper/src` changed, since the API compiles it too. Under systemd: `npm ci`, `npx tsc`, `npm prune --omit=dev` in `keeper/`, then `systemctl restart levy-keeper`.
+3. `docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --build` rebuilds and recreates changed containers and leaves the `levy-data` volume alone. Rebuild both images when `keeper/src` changed, since the API compiles it too. A host still on the shared key layout moves first ([Deployment](Deployment.md)). Under systemd: `npm ci`, `npx tsc`, `npm prune --omit=dev` in `keeper/`, then `systemctl restart levy-keeper`.
 4. Confirm the boot lines, `/api/health` and the next `[cycle]` line.
 
 On SIGINT or SIGTERM the keeper sets a flag that each loop checks after its sleep, so with the default 30 s poll interval Docker's 10 s grace period usually ends in SIGKILL. That is safe. State lives in SQLite and on-chain, and the only in-memory state is the revert backoff, so each stuck subscription is tried once more after a restart. A charge transaction cut off mid-flight is either mined, and the next sync records it, or not; a repeat `charge()` on a paid cycle reverts, so nothing is charged twice. The soak plan includes a drill that restarts the keeper right before a due charge (`ops/testnet-soak.md`, day 4).
@@ -155,10 +151,10 @@ Rollback is a rebuild. Compose tags images `levy-keeper:latest` and `levy-api:la
 | Key | How |
 |---|---|
 | Keeper key | Create a new wallet, fund it, run `ops/set-keeper-key.sh`, recreate the keeper container. No on-chain step is needed: `charge()` is permissionless and the contracts never register the keeper. Move the old wallet's remaining USDC out. Rotate at once if the key may be exposed. |
-| Webhook signing key | No tool exists; this is derived from the code and not rehearsed. The keeper reads the key once at start, while the API re-reads the file on every public-key request. Stop the keeper, replace the PEM (or delete it so a new one is generated), start the keeper. The API picks up the file at once, so a keeper left running would sign with the old key while the API published the new one. |
+| Webhook signing key | No tool exists; this is derived from the code and not rehearsed. The keeper reads the key and publishes its public half once, at start, and the API serves what the keeper last published. Stop the keeper, replace the PEM on `levy-keys` (or delete it so a new one is generated), start the keeper. |
 | Treasury | Two steps: the current treasury calls `FeeRouter.proposeTreasury(<new>)`, then the new address calls `acceptTreasury()`. On mainnet the current treasury is the Safe; see `ops/treasury-multisig.md`. |
 
-After a signing-key change, `X-Levy-Key-Id` and the public-key endpoint carry a new `keyId`. Levy signs with one key per deployment, so there is no overlap period and merchants must refetch the public key. Queued deliveries are signed when sent, so they use the new key. Never paste a private key into chat or a ticket; `set-keeper-key.sh` exists to avoid that.
+After a signing-key change, `X-Levy-Key-Id` and the public-key endpoint carry a new `keyId`. Levy signs with one key per deployment, so there is no overlap period and merchants must refetch the public key. Deliveries still queued at the change carry a MAC under the old key, so the keeper refuses them and dead-letters them; let the queue drain before rotating. Never paste a private key into chat or a ticket; `set-keeper-key.sh` exists to avoid that.
 
 ## Certificate renewal
 

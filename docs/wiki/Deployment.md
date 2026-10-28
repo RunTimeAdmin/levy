@@ -71,7 +71,7 @@ The contracts have no protocol owner and no upgrade path; the only admin functio
 
 ```bash
 cp ops/.env.example ops/.env     # edit it; ops/.env is git-ignored
-bash ops/set-keeper-key.sh       # stores the keeper key, see below
+bash ops/set-keeper-key.sh       # writes the keeper key to ops/keeper.env, see below
 docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --build
 ```
 
@@ -82,15 +82,16 @@ docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --build
 | Container | `levy-keeper` | `levy-api` |
 | Build | context `keeper/`, `ops/Dockerfile.keeper` | context is the repo root, `ops/Dockerfile.api` |
 | Ports | none | `127.0.0.1:${LEVY_API_PORT:-3001}` to container port 3001 |
-| Volume | `levy-data` at `/data` | the same |
-| Forced env | `LEVY_DB_PATH=/data/levy.db`, `LEVY_WEBHOOK_KEY_PATH=/data/webhook-signing-key.pem` | the same, plus `LEVY_API_PORT=3001` |
+| Env files | `ops/.env` and `ops/keeper.env` | `ops/.env` only |
+| Volumes | `levy-data` at `/data`, and `levy-keys` at `/keys` for the signing key | `levy-data` at `/data` only |
+| Forced env | `LEVY_DB_PATH=/data/levy.db`, `LEVY_WEBHOOK_KEY_PATH=/keys/webhook-signing-key.pem`, `LEVY_WEBHOOK_PUBLIC_KEY_PATH=/data/webhook-public-key.pem` | `LEVY_DB_PATH=/data/levy.db`, `LEVY_WEBHOOK_PUBLIC_KEY_PATH=/data/webhook-public-key.pem`, `LEVY_API_PORT=3001` |
 | Health | none | `fetch` of `/api/health` every 30 s |
 | Restart | `unless-stopped` | `unless-stopped`, starts after the keeper |
 | Logs | json-file, 5 files of 50 MB | the same |
 
 `--env-file` is what makes `LEVY_API_PORT` apply on the host side; if you change it, change the nginx `proxy_pass` to match.
 
-Both images are multi-stage builds on `node:24-slim` with production dependencies only, and run as a non-root `levy` user that can write only `/data`. The API image also compiles `keeper/src`, because the API imports the keeper's database and webhook code, so a change under `keeper/src` means rebuilding both. The keeper image bakes in `keeper/abi/`, so regenerate the ABIs after any contract change. The root `.dockerignore` keeps `.git`, `node_modules`, `lib`, `out`, `cache`, `broadcast`, `.env`, `*.pem` and `*.db` out of the API build context.
+Both images are multi-stage builds on `node:24-slim` with production dependencies only, and run as a non-root `levy` user that can write only `/data` (and, in the keeper, `/keys`). The API image also compiles `keeper/src`, because the API imports the keeper's database and webhook code, so a change under `keeper/src` means rebuilding both. The keeper image bakes in `keeper/abi/`, so regenerate the ABIs after any contract change. The root `.dockerignore` keeps `.git`, `node_modules`, `lib`, `out`, `cache`, `broadcast`, `.env`, `*.pem` and `*.db` out of the API build context.
 
 ### Setting the keeper key
 
@@ -98,10 +99,22 @@ The keeper key is a hot wallet that pays gas; fund it minimally. `ops/set-keeper
 
 1. Create a separate keeper wallet (`cast wallet new`) and note only its address.
 2. Run the script on the host. It prompts for the private key with no echo and rejects a 40-hex address pasted by mistake.
-3. It derives the address by piping the key to the `levy-keeper` image on stdin, writes `LEVY_KEEPER_KEY=` into `ops/.env` and sets mode 600.
+3. It derives the address by piping the key to the `levy-keeper` image on stdin and writes `LEVY_KEEPER_KEY=` into `ops/keeper.env`, creating the file if needed, with mode 600.
 4. It prints the keeper address and its USDC balance (via `python3`; "unknown" if that fails), so you can confirm it is the wallet you funded.
 
-It needs the keeper image built and a `LEVY_KEEPER_KEY=` line already in `ops/.env`, because it replaces that line with `sed`. Two caveats from reading it: the key passes through a `sed` argument for an instant, so run it where only you can list processes; and compose gives the whole `ops/.env` to both containers, so the API container's environment also holds the key, although the API code never reads it. After changing the key, recreate the keeper with `docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --force-recreate keeper`. A plain `docker restart` does not re-read the env file.
+It needs the keeper image built. The key reaches `awk` through its environment, never a command line. Compose gives `ops/keeper.env` to the keeper alone; the API reads only `ops/.env` and refuses to start if `LEVY_KEEPER_KEY` or `LEVY_WEBHOOK_KEY` is there, and the script says so when `ops/.env` still holds a key. After changing the key, recreate the keeper with `docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --force-recreate keeper`. A plain `docker restart` does not re-read the env file.
+
+### Moving a host to the split key layout
+
+Hosts set up before 2026-10-27 kept the keeper key in `ops/.env` and the webhook signing key on `levy-data`, where the API could read both (2026-10-27 review M-1). To move one:
+
+1. Run `bash ops/set-keeper-key.sh`; it writes `ops/keeper.env`.
+2. Delete the `LEVY_KEEPER_KEY` line from `ops/.env`.
+3. Rebuild and recreate both containers (`docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --build`).
+4. The keeper creates a new signing key on `levy-keys` and publishes its public half, so the `keyId` changes. That rotation is deliberate, since the API could read the old key. Merchants, and the soak receiver, fetch the new public key.
+5. Delete the old key: `docker exec levy-keeper rm /data/webhook-signing-key.pem`.
+
+A new manager deployment also needs a fresh database: the keeper records the chain, manager and USDC in its database and refuses to start on one made for another deployment.
 
 ### Verifying
 

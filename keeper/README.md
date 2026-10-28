@@ -10,7 +10,7 @@ Two independent loops run in one process (`src/index.ts`).
 
 1. **Sync:** fetches new logs (in chunks of `LEVY_LOG_CHUNK_BLOCKS`) and refreshes subscription and plan state from chain into SQLite. For a PAUSED subscription that includes `pausedByMerchant`, so the dashboard offers Resume only on the merchant's own pause. Where the plan uses them, it also reads the intro cycles left, the cycle count and a pending wallet transfer (manager v2). Payout and ownership events refresh the merchant account in `merchant_accounts`, which the API uses to decide who may act for it.
 2. **Charge due:** calls `charge(subId)` for TRIAL and ACTIVE subscriptions past `nextChargeAt` that have no open dunning entry. Anyone can call `charge()`; the keeper is just the always-on caller.
-3. **Dunning retries:** re-calls `charge()` for failed subscriptions (including PAST_DUE ones) on the backoff schedule: 1 day after the first failure, 3 days after the second, then 7 days after each later one (`LEVY_DUNNING_DAYS`). A success clears the schedule. The contract enforces the same gaps (`retryGap`), so configured gaps can be longer but not shorter (a sooner retry reverts `RetryTooSoon` and falls into the revert backoff).
+3. **Dunning retries:** re-calls `charge()` for failed subscriptions (including PAST_DUE ones) on the backoff schedule: 1 day after the first failure, 3 days after the second, then 7 days after each later one (`LEVY_DUNNING_DAYS`). A success clears the schedule. The contract enforces the same gaps (`retryGap`), so configured gaps can be longer but not shorter: the keeper checks the schedule against `retryGap` at start and refuses a shorter one. After `LEVY_MAX_SPONSORED_FAILURES` failures in a row (default 6) it retries only when the subscriber's funds cover the charge.
 4. **Re-sync:** picks up this cycle's own receipts immediately.
 5. **Allowance runway:** checks a bounded batch of subscribers' allowances (see Operational notes).
 
@@ -54,7 +54,10 @@ unknown event types). The webhook id is also sent as `X-Levy-Webhook`, and
 delivery ids are `{16 hex digits}-{row id}`, the prefix fixed per database so a
 recreated database never repeats one. `X-Levy-Key-Id` names the key. The signing key is loaded
 from `LEVY_WEBHOOK_KEY_PATH`, or created there on first boot (or passed inline via
-`LEVY_WEBHOOK_KEY`); the public key is served at `GET /api/webhooks/public-key`.
+`LEVY_WEBHOOK_KEY`). The keeper writes the public half to `LEVY_WEBHOOK_PUBLIC_KEY_PATH`
+at every start and the API serves it at `GET /api/webhooks/public-key`, so the
+API never sees the private key; the keeper signs only delivery rows that carry
+its own MAC.
 
 Deliveries only go to https URLs on port 443 at public addresses. The address is
 checked at connect time (so DNS rebinding after registration does not help), and
@@ -74,7 +77,7 @@ dead-lettered, not held. Delivery state lives in `webhook_deliveries`
 ## Tests
 
 ```bash
-npm test                 # unit tests + anvil integration test (81 tests)
+npm test                 # unit tests + anvil integration test (95 tests)
 npm run test:integration # the anvil test alone
 ```
 
@@ -88,8 +91,8 @@ The integration test needs `anvil` (Foundry) on PATH. It starts a local chain, d
 - **Allowance runway.** After charging, each cycle reads the USDC allowance and balance of up to 50 subscribers whose last check is over 6h old (see `src/funds.ts`). A charge, an `Approval` to the manager (a top-up) or a subscription transfer (for both wallets) makes that subscriber due for a recheck on the next cycle. The next charges are priced as they will be billed: intro cycles at the intro price, and none past a limited plan's last cycle. When the allowance does not cover the next 2 charges of all their chargeable subscriptions, each affected subscription's merchant gets one `allowance.low` webhook; it repeats only after the allowance recovers. A limited plan whose remaining charges are covered never counts as low. Only the direct ERC-20 allowance is read, so Permit2 subscribers are flagged low.
 - **Stuck charges back off.** A charge that fails for any reason other than payment (a revert, an RPC error) re-reads the subscription from chain and is retried after 1m, 5m, 15m, 1h, then every 6h, instead of every cycle. The backoff is in memory, so a restart tries each once more.
 - **Log sync is chunked and scoped.** Each `LEVY_LOG_CHUNK_BLOCKS` range (default 500; dRPC rejects 1,000) makes four `eth_getLogs` calls: the manager's events, USDC `Transfer`s into and out of the manager, and `Approval`s to it. The cursor advances after each chunk, so a keeper that was down for a day (~172,800 blocks) catches up in ~350 chunks (~1,400 requests). Never every USDC log: on Arc, USDC is the gas token (measured 25 Sep 2026: ~4,000 USDC logs per 500 blocks on testnet, ~1,200 on mainnet, i.e. ~1.4M and ~430k a day), which would swamp the DB and hit provider result caps.
-- **Start-up.** Every start re-reads every plan, each plan's merchant account and every subscription from chain state (the backfill). With no sync cursor, the first sync also scans back `LEVY_LOOKBACK_BLOCKS` (default 5000, ~40 min) of logs. If the keeper starts long after the deploy, raise the lookback to reach the deploy block (printed by `script/Deploy.s.sol`) so charge history is indexed too.
-- **DB is the state.** `levy.db` holds sync cursors, dunning schedules, charge history, webhook registrations and delivery logs, and API sessions. Back it up. Deleting it re-reads plans, their merchant accounts and subscriptions from chain but loses webhooks, history older than the lookback, and dunning schedules (PAST_DUE subscriptions without a schedule are not retried).
+- **Start-up.** The keeper first checks that the database belongs to this chain, manager and USDC (a fresh one records them) and refuses any other. Every start then re-reads every plan, each plan's merchant account and every subscription from chain state (the backfill). With no sync cursor, the first sync also scans back `LEVY_LOOKBACK_BLOCKS` (default 5000, ~40 min) of logs. If the keeper starts long after the deploy, raise the lookback to reach the deploy block (printed by `script/Deploy.s.sol`) so charge history is indexed too.
+- **DB is the state.** `levy.db` holds sync cursors, dunning schedules, charge history, webhook registrations and delivery logs, and API sessions. Back it up. Deleting it re-reads plans, their merchant accounts and subscriptions from chain but loses webhooks and history older than the lookback; dunning rows are rebuilt from each subscription's on-chain failures.
 - **ABI.** `abi/SubscriptionManager.json` and `.bin` are manager v2's. The keeper reads v2's `plans()` layout and calls `ownerOf`, `accountPayout` and `pendingOwner`, so it works only against a v2 deployment, not the testnet contracts from 2026-10-24.
 - **Transfer accounting.** `usdc_transfers` records the USDC `Transfer` logs into and out of the manager, for visibility. `dedupedTransfers()` collapses same-tx identical (from, to, amount) rows; see the doc comment in `src/db.ts` for the limitation. Charge truth comes from `Charged` / `ChargeFailed` events, not transfer sums.
 

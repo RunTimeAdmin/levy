@@ -95,8 +95,8 @@ The earliest auto-pause is `1 + 3 + 7 x (2 x maxFailed - 3)` days after the firs
 
 | Key | Where it lives | Rules |
 |---|---|---|
-| Keeper key | `LEVY_KEEPER_KEY` in the keeper's environment (untracked `ops/.env`) | pays gas only; fund minimally, rotate if exposed, alert below 1 USDC |
-| Webhook signing key | `LEVY_WEBHOOK_KEY_PATH` file (created mode 0600) or `LEVY_WEBHOOK_KEY` | shared by keeper and API; only the public half is published |
+| Keeper key | `LEVY_KEEPER_KEY` in the keeper's environment (untracked `ops/keeper.env`, given to the keeper alone) | pays gas only; fund minimally, rotate if exposed, alert below 1 USDC |
+| Webhook signing key | `LEVY_WEBHOOK_KEY_PATH` file (created mode 0600, on a volume only the keeper mounts) or `LEVY_WEBHOOK_KEY` | keeper only; the keeper publishes the public half for the API to serve, and signs only delivery rows that carry its own MAC |
 | Deployer key | `DEPLOYER_PRIVATE_KEY` for one forge run | `script/deploy-testnet.ps1` reads it without echo and clears it |
 | User keys | the user's wallet | the API holds none; the pages never see them |
 
@@ -128,7 +128,7 @@ Two earlier testnet deployments, one without the H-1 fix and one with only a fla
 
 From `SECURITY_REVIEW.md` section 9, all before mainnet:
 
-1. Self-funded spam subscriptions cost the keeper a charge a day each, unbounded.
+1. Self-funded spam subscriptions cost the keeper a charge a day each, unbounded. Failed charges are capped: past `LEVY_MAX_SPONSORED_FAILURES` (6) in a row the keeper retries only when the funds cover the charge.
 2. CEI inverted; pause, resume and cancel unguarded (safe with USDC).
 3. `changePlan`, resume, and (since the 2026-10-24 review) a charge after failures or after a whole skipped cycle forgive the overdue time; confirm this is intended.
 4. Fixed 2026-10-24: a Permit2 nonce front-run made `subscribeWithPermit2` revert. It now subscribes on the existing Permit2 allowance when that covers one cycle and has not expired (L-2 in the 2026-10-24 review).
@@ -141,10 +141,12 @@ From `SECURITY_REVIEW.md` section 9, all before mainnet:
 11. The wallet checks the network at connect only.
 12. `solc` is not pinned in `foundry.toml` (the deployment used 0.8.33), `foundry.lock` names a different OpenZeppelin commit from the submodule, and the source is not verified on the explorer.
 13. A dunning row stays listed after pause or cancel until its stale retry time.
-14. The Compose file gives the internet-facing API container the keeper's `.env`, including the keeper's gas key, which the API never reads.
+14. Fixed 2026-10-27: the API container held the keeper's gas key and could read the signing key. Both now stay with the keeper (2026-10-27 review M-1).
 15. The CI ABI drift check ignores the `.bin` files used by the keeper integration test.
+16. Fixed 2026-10-27: the keeper's database was not tied to a chain and manager (2026-10-27 review M-4).
+17. Fixed 2026-10-27: `LEVY_DUNNING_DAYS` accepted gaps shorter than `retryGap` (2026-10-27 review L-3).
 
-Also open: verified merchant identity on the checkout, a Permit2 checkout path and Permit2 in the runway check, dunning rebuild after database loss, treasury signers, contract-wallet sign-in, scoped API keys and the external audit.
+Also open: verified merchant identity on the checkout, a Permit2 checkout path and Permit2 in the runway check, treasury signers, contract-wallet sign-in, scoped API keys and the external audit.
 
 ## Reporting a vulnerability
 
