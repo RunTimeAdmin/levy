@@ -1,20 +1,20 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateKeyPairSync } from "node:crypto";
 import dns from "node:dns";
-import { writeFileSync } from "node:fs";
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { parseSiweMessage } from "viem/siwe";
-import { LevyDb } from "../../keeper/src/db.js";
+import { LevyDb, deploymentId } from "../../keeper/src/db.js";
+import { writePublicKey } from "../../keeper/src/webhooks.js";
 import { apiOptionsFromEnv, buildServer, formatUsdc, publicOrigin } from "../src/server.js";
 import type { FastifyInstance } from "fastify";
 
 const tmp = mkdtempSync(join(tmpdir(), "levy-api-"));
 const DB = join(tmp, "test.db");
-const KEY = join(tmp, "wh-key.pem");
+const PUBKEY = join(tmp, "wh-public-key.pem");
 const ORIGIN = "https://app.levy.test";
 
 // Real keys: sign-in needs genuine signatures.
@@ -99,12 +99,12 @@ function seed(): void {
 
 before(async () => {
   seed();
-  // Pre-generate the signing key so the API doesn't create one.
+  // The keeper publishes the public key; the API only reads it.
   const { privateKey } = generateKeyPairSync("ed25519");
-  writeFileSync(KEY, privateKey.export({ format: "pem", type: "pkcs8" }), { mode: 0o600 });
+  writePublicKey(PUBKEY, privateKey);
 
   app = buildServer({
-    dbPath: DB, webhookKeyPath: KEY, origin: ORIGIN, chainId: 5042002,
+    dbPath: DB, webhookPublicKeyPath: PUBKEY, origin: ORIGIN, chainId: 5042002,
     managerAddress: MANAGER, usdcAddress: USDC,
   });
   await app.listen({ port: 0, host: "127.0.0.1" });
@@ -292,7 +292,7 @@ describe("cookie sessions (the pages)", () => {
   });
 
   it("drops the __Host- prefix and Secure on a local http origin", async () => {
-    const local = buildServer({ dbPath: DB, webhookKeyPath: KEY, origin: "http://localhost:3001", chainId: 5042002 });
+    const local = buildServer({ dbPath: DB, webhookPublicKeyPath: PUBKEY, origin: "http://localhost:3001", chainId: 5042002 });
     await local.listen({ port: 0, host: "127.0.0.1" });
     try {
       const addr = local.server.address() as { port: number };
@@ -319,7 +319,7 @@ describe("public endpoints", () => {
 
   it("GET /api/config treats the zero-address placeholder as unset", async () => {
     const zero = `0x${"0".repeat(40)}`;
-    const local = buildServer({ dbPath: DB, webhookKeyPath: KEY, origin: ORIGIN, chainId: 5042002, managerAddress: zero, usdcAddress: USDC });
+    const local = buildServer({ dbPath: DB, webhookPublicKeyPath: PUBKEY, origin: ORIGIN, chainId: 5042002, managerAddress: zero, usdcAddress: USDC });
     try {
       const r = await local.inject({ method: "GET", url: "/api/config" });
       assert.deepEqual(r.json(), { chainId: 5042002, managerAddress: null, usdcAddress: USDC });
@@ -357,6 +357,18 @@ describe("public endpoints", () => {
     assert.ok(r.json.events.includes("subscription.updated"));
     for (const e of ["subscription.completed", "subscription.transferred", "merchant.updated"]) {
       assert.ok(r.json.events.includes(e), e);
+    }
+  });
+
+  it("GET /api/webhooks/public-key answers 503 until the keeper publishes a key, and never makes one", async () => {
+    const missing = join(tmp, "not-published.pem");
+    const local = buildServer({ dbPath: DB, webhookPublicKeyPath: missing, origin: ORIGIN, chainId: 5042002 });
+    try {
+      const r = await local.inject({ method: "GET", url: "/api/webhooks/public-key" });
+      assert.equal(r.statusCode, 503);
+      assert.equal(existsSync(missing), false);
+    } finally {
+      await local.close();
     }
   });
 });
@@ -640,6 +652,30 @@ describe("configuration", () => {
       else process.env.LEVY_PUBLIC_ORIGIN = saved.origin;
       if (saved.env === undefined) delete process.env.NODE_ENV;
       else process.env.NODE_ENV = saved.env;
+    }
+  });
+
+  it("refuses a database the keeper recorded for another deployment", () => {
+    const path = join(tmp, "other-deployment.db");
+    const other = new LevyDb(path);
+    other.bindDeployment(deploymentId(5042002, "0x00000000000000000000000000000000000000ee", USDC));
+    other.close();
+    assert.throws(
+      () => buildServer({ dbPath: path, webhookPublicKeyPath: PUBKEY, origin: ORIGIN, chainId: 5042002, managerAddress: MANAGER, usdcAddress: USDC }),
+      /belongs to/
+    );
+  });
+
+  it("refuses to start holding the keeper key or the webhook signing key", () => {
+    for (const secret of ["LEVY_KEEPER_KEY", "LEVY_WEBHOOK_KEY"]) {
+      const saved = process.env[secret];
+      process.env[secret] = "0xsecret";
+      try {
+        assert.throws(() => apiOptionsFromEnv(), new RegExp(`${secret} is set`));
+      } finally {
+        if (saved === undefined) delete process.env[secret];
+        else process.env[secret] = saved;
+      }
     }
   });
 

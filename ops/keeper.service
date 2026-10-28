@@ -34,9 +34,11 @@ User=levy
 Group=levy
 WorkingDirectory=/srv/levy/keeper
 # Defaults for the persistent state dir. EnvironmentFile wins if keeper.env sets
-# the same variables, so keep these paths there too (ops/.env.example does).
+# the same variables, so keep these paths there too (ops/.env.example and
+# ops/keeper.env.example do).
 Environment=LEVY_DB_PATH=/var/lib/levy/levy.db
 Environment=LEVY_WEBHOOK_KEY_PATH=/var/lib/levy/webhook-signing-key.pem
+Environment=LEVY_WEBHOOK_PUBLIC_KEY_PATH=/var/lib/levy/webhook-public-key.pem
 EnvironmentFile=/etc/levy/keeper.env
 ExecStart=/usr/bin/node dist/index.js
 Restart=on-failure

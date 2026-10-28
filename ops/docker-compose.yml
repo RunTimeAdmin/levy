@@ -2,13 +2,19 @@
 # (REST, dashboard, portal, checkout).
 #
 # Usage:
-#   cp ops/.env.example ops/.env   # fill in secrets + addresses (NEVER commit ops/.env)
+#   cp ops/.env.example ops/.env   # addresses and settings (NEVER commit ops/.env)
+#   bash ops/set-keeper-key.sh     # writes the keeper's key to ops/keeper.env
 #   docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --build
 #
-# Both services share one SQLite DB and the webhook signing key via the
-# levy-data volume. The keeper does most of the writing; the API writes webhook
-# registrations and sign-in challenges and sessions. SQLite in WAL mode handles
-# this fine on a single host (both set busy_timeout).
+# Both services share one SQLite DB on the levy-data volume. The keeper does
+# most of the writing; the API writes webhook registrations and sign-in
+# challenges and sessions. SQLite in WAL mode handles this fine on a single
+# host (both set busy_timeout).
+#
+# Secrets stay with the keeper: ops/keeper.env (the gas key) is read by the
+# keeper only, and the webhook signing key lives on levy-keys, which only the
+# keeper mounts. The keeper publishes the public key to levy-data for the API
+# to serve, and the API refuses to start if it sees either secret.
 
 # Fixed project name: without it compose names the project after this folder
 # ("ops"), which is too generic on a shared host.
@@ -23,12 +29,16 @@ services:
     container_name: levy-keeper
     env_file:
       - .env
+      - keeper.env
     environment:
-      # Force DB + signing key onto the shared volume regardless of .env values.
+      # Fixed paths regardless of .env values: the DB and public key on the
+      # shared volume, the signing key on the keeper's own.
       LEVY_DB_PATH: /data/levy.db
-      LEVY_WEBHOOK_KEY_PATH: /data/webhook-signing-key.pem
+      LEVY_WEBHOOK_KEY_PATH: /keys/webhook-signing-key.pem
+      LEVY_WEBHOOK_PUBLIC_KEY_PATH: /data/webhook-public-key.pem
     volumes:
       - levy-data:/data
+      - levy-keys:/keys
     restart: unless-stopped
     logging:
       driver: json-file
@@ -47,7 +57,7 @@ services:
       - .env
     environment:
       LEVY_DB_PATH: /data/levy.db
-      LEVY_WEBHOOK_KEY_PATH: /data/webhook-signing-key.pem
+      LEVY_WEBHOOK_PUBLIC_KEY_PATH: /data/webhook-public-key.pem
       # Fixed inside the container; LEVY_API_PORT only picks the host port.
       LEVY_API_PORT: "3001"
     ports:
@@ -74,3 +84,5 @@ services:
 volumes:
   levy-data:
     name: levy-data
+  levy-keys:
+    name: levy-keys

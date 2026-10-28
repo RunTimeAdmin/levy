@@ -13,11 +13,13 @@ The keeper and the API are configured entirely through environment variables. Th
 | `LEVY_KEEPER_KEY` | yes | none | Private key of the keeper account, `0x` plus 64 hex digits. | from your secret store |
 | `LEVY_POLL_MS` | no | `30000` | Pause between charge cycles, in ms. | `30000` |
 | `LEVY_WEBHOOK_POLL_MS` | no | `5000` | Pause between webhook delivery passes, in ms. | `5000` |
-| `LEVY_DUNNING_DAYS` | no | `1,3,7` | Days to wait before retry N after the Nth failure; later failures reuse the last value. Cannot beat the on-chain gaps (see below). | `1,3,7` |
+| `LEVY_DUNNING_DAYS` | no | `1,3,7` | Days to wait before retry N after the Nth failure; later failures reuse the last value. No shorter than the on-chain gaps (see below). | `1,3,7` |
+| `LEVY_MAX_SPONSORED_FAILURES` | no | `6` | Failed charges in a row the keeper pays to record for one subscription; past that it retries only when the subscriber's funds cover the charge ([Dunning and Failures](Dunning-and-Failures.md)). | `6` |
 | `LEVY_DB_PATH` | no | `./levy.db` | SQLite file, relative to the working directory. | `/data/levy.db` |
 | `LEVY_LOOKBACK_BLOCKS` | no | `5000` | How far back the first sync scans when no cursor exists (about 40 minutes). | `100000` |
 | `LEVY_LOG_CHUNK_BLOCKS` | no | `500` | Blocks per `eth_getLogs` request. Keep it under your RPC provider's range cap. | `500` |
-| `LEVY_WEBHOOK_KEY_PATH` | no | `./webhook-signing-key.pem` | File holding the Ed25519 webhook signing key. Created on first boot if missing. | `/data/webhook-signing-key.pem` |
+| `LEVY_WEBHOOK_KEY_PATH` | no | `./webhook-signing-key.pem` | File holding the Ed25519 webhook signing key. Created on first boot if missing. | `/keys/webhook-signing-key.pem` |
+| `LEVY_WEBHOOK_PUBLIC_KEY_PATH` | no | `./webhook-public-key.pem` | Where the keeper writes the public half at every start, for the API to serve. | `/data/webhook-public-key.pem` |
 | `LEVY_WEBHOOK_KEY` | no | unset | Inline signing key: PEM PKCS#8 or a base64 32-byte seed. Wins over the file. | from your secret store |
 | `LEVY_WEBHOOK_ALLOW_PRIVATE` | no | off | `1` allows http, any port and private addresses for webhooks. Local development only. | `1` |
 
@@ -37,9 +39,9 @@ Levy runs on Arc testnet only. Nothing is deployed on mainnet.
 
 ### Parsing rules
 
-- Numbers must be whole numbers (`LEVY_POLL_MS` at least 100, `LEVY_WEBHOOK_POLL_MS` at least 100, `LEVY_LOG_CHUNK_BLOCKS` and `LEVY_CHAIN_ID` at least 1, `LEVY_LOOKBACK_BLOCKS` at least 0), and `LEVY_DUNNING_DAYS` positive numbers. Anything else stops the keeper at startup with an error naming the variable. An empty value means the default. Addresses and the key are not checked here; a malformed key fails when the keeper derives its account.
+- Numbers must be whole numbers (`LEVY_POLL_MS` at least 100, `LEVY_WEBHOOK_POLL_MS` at least 100, `LEVY_LOG_CHUNK_BLOCKS` and `LEVY_CHAIN_ID` at least 1, `LEVY_LOOKBACK_BLOCKS` at least 0, `LEVY_MAX_SPONSORED_FAILURES` at least 1), and `LEVY_DUNNING_DAYS` positive numbers. Anything else stops the keeper at startup with an error naming the variable. An empty value means the default. Addresses and the key are not checked here; a malformed key fails when the keeper derives its account.
 - `LEVY_WEBHOOK_ALLOW_PRIVATE` is on only when the value is exactly `1`.
-- `LEVY_DUNNING_DAYS` is split on commas. The contract enforces minimum gaps between recorded failures through `retryGap`: 1 day after the first, 3 after the second, 7 after each later one. A shorter configured gap makes the retry revert with `RetryTooSoon`, and the keeper then treats it as an error and backs off. Longer gaps work.
+- `LEVY_DUNNING_DAYS` is split on commas. The contract enforces minimum gaps between recorded failures through `retryGap`: 1 day after the first, 3 after the second, 7 after each later one. The keeper reads `retryGap` at start and refuses a schedule with a shorter gap, naming the failure it applies to. Longer gaps work.
 - `npm start` and `npm run once` load a `.env` file from the working directory if one exists. A variable already set in the real environment takes precedence over the file.
 
 ## API variables
@@ -53,27 +55,26 @@ The API reads some of the same variables. Where the name matches, the meaning is
 | `LEVY_PUBLIC_ORIGIN` | `http://localhost:<port>` | Origin the pages are served from; sign-in messages and cookie checks are bound to it. **Required when `NODE_ENV=production`**, otherwise startup throws. It must be a bare origin (`https://host[:port]`, no path, query or credentials), and https in production except on localhost. |
 | `NODE_ENV` | unset | The API image sets `production`. |
 | `LEVY_DB_PATH` | `keeper/levy.db` in the repo | Must point at the keeper's file. |
-| `LEVY_WEBHOOK_KEY_PATH` | `keeper/webhook-signing-key.pem` in the repo | Must be the keeper's key file. |
-| `LEVY_WEBHOOK_KEY` | unset | Inline key, same format as the keeper's. |
+| `LEVY_WEBHOOK_PUBLIC_KEY_PATH` | `keeper/webhook-public-key.pem` in the repo | The public key the keeper writes; served at `GET /api/webhooks/public-key`, which answers 503 until it exists. |
 | `LEVY_CHAIN_ID` | `5042` | Goes into sign-in messages and `GET /api/config`. |
 | `LEVY_WEBHOOK_ALLOW_PRIVATE` | off | Relaxes the URL check at registration. |
 | `LEVY_MANAGER_ADDRESS`, `LEVY_USDC_ADDRESS` | unset | Optional here. `GET /api/config` hands them to the checkout page; unset or the zero address means "checkout not configured". |
 
-The API never reads `LEVY_KEEPER_KEY`. See [Authentication](Authentication.md) and [API Reference](API-Reference.md).
+The API never reads `LEVY_KEEPER_KEY` or the signing key, and refuses to start if `LEVY_KEEPER_KEY` or `LEVY_WEBHOOK_KEY` is in its environment. See [Authentication](Authentication.md) and [API Reference](API-Reference.md).
 
 `ops/soak/status.mjs` and `ops/soak/webhook-receiver.mjs` are testnet soak tools that read their own extra variables (`LEVY_ABI_DIR`, `PORT`, `PUBLIC_KEY_URL`, `LOG_PATH`). They are not part of the keeper.
 
 ## Keys
 
-**Keeper account (`LEVY_KEEPER_KEY`).** A hot externally owned account that signs `charge()` transactions and pays gas in USDC. The contract gives it no role, since `charge()` is permissionless, so the key's only value is its gas balance. Fund it minimally and watch the balance ([Monitoring and Maintenance](Monitoring-and-Maintenance.md)). If the key is exposed, switch to a new account and restart; no contract change is needed. The keeper prints the account's address at boot and never logs the key. Never commit it: Docker reads it from the untracked `ops/.env` (`ops/set-keeper-key.sh` writes it there without echoing it), and systemd reads it from a root-owned `keeper.env` with mode 600.
+**Keeper account (`LEVY_KEEPER_KEY`).** A hot externally owned account that signs `charge()` transactions and pays gas in USDC. The contract gives it no role, since `charge()` is permissionless, so the key's only value is its gas balance. Fund it minimally and watch the balance ([Monitoring and Maintenance](Monitoring-and-Maintenance.md)). If the key is exposed, switch to a new account and restart; no contract change is needed. The keeper prints the account's address at boot and never logs the key. Never commit it: Docker reads it from the untracked `ops/keeper.env`, which compose gives to the keeper alone (`ops/set-keeper-key.sh` writes it there without echoing it), and systemd reads it from a root-owned `keeper.env` with mode 600.
 
 **Webhook signing key.** A separate Ed25519 key, loaded in this order:
 
 1. `LEVY_WEBHOOK_KEY`, if set.
 2. The file at `LEVY_WEBHOOK_KEY_PATH`.
-3. If that file does not exist, the keeper generates a keypair and saves it there with mode 0600. Any other read error stops the keeper.
+3. If that file does not exist, the keeper generates a keypair and saves it there with mode 0600, create-only, so a key another process wrote first wins. Any other read error stops the keeper.
 
-The API serves the matching public key at `GET /api/webhooks/public-key`, so it must load the same key: the same file path (in Docker both containers share one volume) or the same `LEVY_WEBHOOK_KEY`. If the API finds no key file at its own path it creates a fresh one, and when that path differs from the keeper's, every merchant's signature check fails. Back up the key file. A new key changes `X-Levy-Key-Id`, and merchants must fetch the new public key ([Webhooks](Webhooks.md)).
+At every start the keeper writes the public half to `LEVY_WEBHOOK_PUBLIC_KEY_PATH`, and the API serves that file at `GET /api/webhooks/public-key`; the API never sees the private key. In Docker the private key sits on `levy-keys`, a volume only the keeper mounts. Back up the key file. A new key changes `X-Levy-Key-Id`, and merchants must fetch the new public key ([Webhooks](Webhooks.md)).
 
 ## Running the keeper
 
@@ -96,9 +97,9 @@ The keeper has no logging framework, no levels and no log variable. It writes pl
 | Line | Stream | When |
 |---|---|---|
 | `levy keeper: chain=<id> manager=<addr> keeper=<addr>` | stdout | Startup |
-| `webhook signing key: <path> (public key at GET /api/webhooks/public-key)` | stdout | Startup |
+| `webhook signing key: <path>, public key published to <path>` | stdout | Startup |
 | `backfilled <n> subscriptions` | stdout | Startup |
-| `[cycle] charged=N retried=N failed=N logs=N` | stdout | Only when the cycle charged, retried or failed something |
+| `[cycle] charged=N retried=N failed=N deferred=N logs=N` | stdout | Only when the cycle charged, retried, failed or deferred something |
 | `  ! sub <id>: <error>` | stdout | One per failed charge in that cycle |
 | `[cycle] error: <message>` | stderr | The cycle threw, for example an RPC or database error |
 | `[webhooks] sent=N failed=N dead=N` | stdout | Only when the pass sent, failed or dead-lettered something |

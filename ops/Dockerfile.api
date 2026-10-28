@@ -24,7 +24,7 @@ ENV NODE_ENV=production
 # only and put a TLS reverse proxy in front (see docker-compose.yml).
 ENV LEVY_API_HOST=0.0.0.0
 # State lives on the /data volume (the only path the runtime user can write).
-ENV LEVY_DB_PATH=/data/levy.db LEVY_WEBHOOK_KEY_PATH=/data/webhook-signing-key.pem
+ENV LEVY_DB_PATH=/data/levy.db LEVY_WEBHOOK_PUBLIC_KEY_PATH=/data/webhook-public-key.pem
 COPY api/package.json api/package-lock.json api/
 RUN cd api && npm ci --omit=dev && npm cache clean --force
 COPY --from=build /build/api/dist/ api/dist/

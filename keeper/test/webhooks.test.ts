@@ -2,7 +2,8 @@ import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LevyDb } from "../src/db.js";
@@ -15,10 +16,12 @@ import {
   loadSigningKey,
   nextRetryAt,
   publicKeyPem,
+  readPublicKey,
   signPayload,
   verifyDelivery,
   verifySignature,
   WebhookDispatcher,
+  writePublicKey,
   type WebhookEventType,
 } from "../src/webhooks.js";
 import { checkWebhookUrl, isBlockedAddress } from "../src/webhook-url.js";
@@ -73,6 +76,16 @@ describe("loadSigningKey", () => {
     const k1 = loadSigningKey(p);
     const k2 = loadSigningKey(p);
     assert.equal(publicKeyPem(k1), publicKeyPem(k2));
+  });
+
+  it("publishes only the public half, which reads back with the same key id", () => {
+    const k = loadSigningKey(join(tmp, "k-pub.pem"));
+    const p = join(tmp, "published.pem");
+    writePublicKey(p, k);
+    const text = readFileSync(p, "utf-8");
+    assert.match(text, /BEGIN PUBLIC KEY/);
+    assert.doesNotMatch(text, /PRIVATE/);
+    assert.equal(keyId(readPublicKey(p)), keyId(k));
   });
 
   it("accepts a base64 seed from env", () => {
@@ -405,6 +418,38 @@ describe("dispatchDue (live HTTP)", () => {
     db.deleteWebhook(id);
     const out = await d.dispatchDue(0);
     assert.deepEqual(out, { sent: 0, failed: 0, dead: 1 });
+    db.close();
+  });
+
+  it("never signs a delivery row the keeper did not write", async () => {
+    await ready;
+    received.length = 0;
+    const db = testDb();
+    const d = new WebhookDispatcher(db, testKey(), LOCAL);
+    const id = d.register(MERCHANT, `http://127.0.0.1:${port}/hook`, ["charge.succeeded"], 0);
+    // What a compromised API could do: write a row straight into the shared table.
+    const forged = db.enqueueDelivery(id, "charge.succeeded", canonicalJson({ subId: "1", amount: "1000000" }), 0);
+    const out = await d.dispatchDue(0);
+    assert.deepEqual(out, { sent: 0, failed: 0, dead: 1 });
+    assert.equal(received.length, 0);
+    assert.match(db.listDeliveries({}).find((r) => r.id === forged)!.last_error!, /did not write/);
+    db.close();
+  });
+
+  it("refuses a keeper row whose payload was changed afterwards", async () => {
+    await ready;
+    received.length = 0;
+    const path = join(tmp, "tamper.db");
+    const db = new LevyDb(path);
+    const d = new WebhookDispatcher(db, testKey(), LOCAL);
+    d.register(MERCHANT, `http://127.0.0.1:${port}/hook`, ["charge.succeeded"], 0);
+    const [row] = d.enqueue("charge.succeeded", MERCHANT, { subId: "1", amount: "1" }, 0);
+    const other = new DatabaseSync(path);
+    other.prepare(`UPDATE webhook_deliveries SET payload = ? WHERE id = ?`).run(canonicalJson({ subId: "1", amount: "999" }), row);
+    other.close();
+    const out = await d.dispatchDue(0);
+    assert.deepEqual(out, { sent: 0, failed: 0, dead: 1 });
+    assert.equal(received.length, 0);
     db.close();
   });
 

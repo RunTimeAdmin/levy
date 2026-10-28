@@ -11,7 +11,7 @@ const REQUIRED = {
 };
 const TUNING = [
   "LEVY_CHAIN_ID", "LEVY_POLL_MS", "LEVY_WEBHOOK_POLL_MS", "LEVY_DUNNING_DAYS",
-  "LEVY_LOOKBACK_BLOCKS", "LEVY_LOG_CHUNK_BLOCKS",
+  "LEVY_LOOKBACK_BLOCKS", "LEVY_LOG_CHUNK_BLOCKS", "LEVY_MAX_SPONSORED_FAILURES",
 ];
 
 describe("loadConfig", () => {
@@ -38,6 +38,7 @@ describe("loadConfig", () => {
     assert.deepEqual(cfg.dunningScheduleDays, [1, 3, 7]);
     assert.equal(cfg.initialLookbackBlocks, 5000);
     assert.equal(cfg.logChunkBlocks, 500);
+    assert.equal(cfg.maxSponsoredFailures, 6);
   });
 
   it("reads valid values", () => {
@@ -67,6 +68,7 @@ describe("loadConfig", () => {
     ["LEVY_DUNNING_DAYS", "1,3,x"],
     ["LEVY_DUNNING_DAYS", "1,,7"],
     ["LEVY_DUNNING_DAYS", "1,0"],
+    ["LEVY_MAX_SPONSORED_FAILURES", "0"],
   ] as const) {
     it(`refuses ${name}=${value}`, () => {
       process.env[name] = value;

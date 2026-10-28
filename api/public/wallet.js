@@ -14,6 +14,7 @@ const LevyWallet = (() => {
     createPlan: "0xc558b5eb", // createPlan(address,(uint256,uint256,uint256,uint8,uint32,uint256,uint32,bool))
     changePlan: "0x7b750eed", // changePlan(uint256,uint256)
     subscriptions: "0x2d5bbf60", // subscriptions(uint256)
+    plans: "0xb1620616", // plans(uint256)
     billedPrice: "0x7e025486", // billedPrice(uint256)
     setPlanRetired: "0x72c36e75", // setPlanRetired(uint256,bool)
     setPayout: "0xc2fb1ceb", // setPayout(address,address)
@@ -206,6 +207,39 @@ const LevyWallet = (() => {
     return { planId: w(1), nextChargeAt: Number(w(3)), credit: w(5), chargeCount: w(6), status: Number(w(7)), billedPrice };
   }
 
+  /**
+   * A plan's terms as the manager holds them. Getter order: merchant, price,
+   * cycleSeconds, trialSeconds, maxFailed, exists, retired, transferable,
+   * maxCycles, introPrice, introCycles.
+   */
+  async function planTerms(manager, planId) {
+    const hex = await rpc("eth_call", [{ to: manager, data: SEL.plans + word(planId) }, "latest"]);
+    const w = (i) => BigInt("0x" + hex.slice(2 + i * 64, 2 + (i + 1) * 64));
+    return {
+      merchant: "0x" + hex.slice(2 + 24, 2 + 64), price: w(1), cycleSeconds: w(2), trialSeconds: w(3),
+      exists: w(5) === 1n, retired: w(6) === 1n, maxCycles: w(8), introPrice: w(9), introCycles: w(10),
+    };
+  }
+
+  /**
+   * Throws unless the plan on-chain has the terms the page shows. The page's
+   * copy comes from Levy's database and subscribe() carries only the plan id,
+   * so a stale copy would show a price the contract does not charge.
+   */
+  async function checkPlan(manager, shown) {
+    const t = await planTerms(manager, shown.planId);
+    const differ = [];
+    if (!t.exists) differ.push("missing");
+    if (t.merchant !== String(shown.merchant).toLowerCase()) differ.push("merchant");
+    for (const k of ["price", "cycleSeconds", "trialSeconds", "maxCycles", "introPrice", "introCycles"]) {
+      if (t[k] !== BigInt(shown[k] ?? 0)) differ.push(k);
+    }
+    if (t.retired) differ.push("retired");
+    if (differ.length) {
+      throw new Error(`Plan #${shown.planId} on-chain does not match this page (${differ.join(", ")}). Nothing was sent. Reload the page, and if this stays, contact the merchant.`);
+    }
+  }
+
   /** The price of a plan's first payment: its intro price when it has one. */
   const firstPrice = (plan) => BigInt(Number(plan.introCycles || 0) > 0 ? plan.introPrice : plan.price);
 
@@ -253,7 +287,7 @@ const LevyWallet = (() => {
   return {
     connect, balanceOf, allowance, approve, subscribe, manage, createPlan, changePlan,
     setPlanRetired, setPayout, transferOwnership, acceptOwnership, proposeTransfer, acceptTransfer,
-    subscription, changePlanQuote, firstPrice, paymentsTotal, receipt, subscribedFrom, usdcText,
+    subscription, planTerms, checkPlan, changePlanQuote, firstPrice, paymentsTotal, receipt, subscribedFrom, usdcText,
     explorer, chainName, txUrl, faucet, friendly,
   };
 })();

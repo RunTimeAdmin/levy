@@ -143,12 +143,14 @@ reverse proxy that rate-limits
 that writes. The server also caps pending challenges at 10,000 and answers 503
 beyond that.
 
-The API and keeper must share one `LEVY_WEBHOOK_KEY_PATH` (compose does this via
-`/data`): if the API finds no key file there it creates one, and a key that
-differs from the keeper's makes every merchant's signature check fail.
+The API serves the public key the keeper writes to `LEVY_WEBHOOK_PUBLIC_KEY_PATH`
+(compose puts it on `/data`) and answers 503 until the keeper has written it. It
+never reads or creates the private key, and it refuses to start if
+`LEVY_KEEPER_KEY` or `LEVY_WEBHOOK_KEY` is in its environment. It also refuses a
+database the keeper recorded for another chain, manager or USDC.
 
 ## Tests
 
 ```bash
-npm test   # 73 tests, seeded temp DB, ephemeral port, real wallet signatures
+npm test   # 79 tests, seeded temp DB, ephemeral port, real wallet signatures
 ```

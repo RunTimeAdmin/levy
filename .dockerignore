@@ -8,6 +8,7 @@ cache
 broadcast
 **/dist
 **/.env
+**/keeper.env
 **/*.pem
 **/*.db
 **/*.db-*

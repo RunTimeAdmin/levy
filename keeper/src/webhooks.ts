@@ -1,13 +1,15 @@
 import {
   createHash,
+  createHmac,
   createPrivateKey,
   createPublicKey,
   generateKeyPairSync,
   sign,
+  timingSafeEqual,
   verify,
   type KeyObject,
 } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import { LevyDb, type DeliveryRow } from "./db.js";
@@ -81,7 +83,13 @@ export function loadSigningKey(keyPath: string, envKey?: string): KeyObject {
   } catch (e: unknown) {
     if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") throw e;
     const { privateKey } = generateKeyPairSync("ed25519");
-    writeFileSync(keyPath, privateKey.export({ format: "pem", type: "pkcs8" }), { mode: 0o600 });
+    try {
+      // Create-only: if another process wrote a key first, use that one.
+      writeFileSync(keyPath, privateKey.export({ format: "pem", type: "pkcs8" }), { mode: 0o600, flag: "wx" });
+    } catch (w: unknown) {
+      if ((w as NodeJS.ErrnoException)?.code !== "EEXIST") throw w;
+      return createPrivateKey(readFileSync(keyPath, "utf-8"));
+    }
     return privateKey;
   }
 }
@@ -89,6 +97,22 @@ export function loadSigningKey(keyPath: string, envKey?: string): KeyObject {
 /** SPKI PEM of the public half, published via GET /api/webhooks/public-key. */
 export function publicKeyPem(privateKey: KeyObject): string {
   return createPublicKey(privateKey).export({ format: "pem", type: "spki" }).toString();
+}
+
+/**
+ * The keeper writes the public half where the API can read it, so the API
+ * never needs the private key. Written to a temporary file and renamed, so a
+ * reader never sees half a key.
+ */
+export function writePublicKey(path: string, privateKey: KeyObject): void {
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, publicKeyPem(privateKey), { mode: 0o644 });
+  renameSync(tmp, path);
+}
+
+/** The public key the keeper published. Throws if the keeper has not written it yet. */
+export function readPublicKey(path: string): KeyObject {
+  return createPublicKey(readFileSync(path, "utf-8"));
 }
 
 /** Sign canonical payload bytes; returns base64 for the X-Levy-Signature header. */
@@ -361,14 +385,45 @@ function deliveryError(e: NodeJS.ErrnoException): string {
 
 export class WebhookDispatcher {
   /** allowPrivate: deliver to http and private addresses (local dev and tests only). */
+  /**
+   * Delivery rows live in the database the API can also write. Each row the
+   * keeper enqueues carries a MAC under a key derived from the signing key,
+   * and a row without a valid one is never signed: a compromised API cannot
+   * get the keeper to sign an event it made up.
+   */
+  private rowMacKey: Buffer;
+
   constructor(
     private db: LevyDb,
     private privateKey: KeyObject,
     private policy: WebhookUrlPolicy = { allowPrivate: false }
-  ) {}
+  ) {
+    this.rowMacKey = createHash("sha256")
+      .update("levy webhook delivery rows\n")
+      .update(privateKey.export({ format: "der", type: "pkcs8" }))
+      .digest();
+  }
 
   get publicKey(): string {
     return publicKeyPem(this.privateKey);
+  }
+
+  /** Write the public key where the API reads it (see writePublicKey). */
+  publish(path: string): void {
+    writePublicKey(path, this.privateKey);
+  }
+
+  private rowMac(d: { id: number; webhook_id: number; event_type: string; payload: string }): string {
+    return createHmac("sha256", this.rowMacKey)
+      .update(`${d.id}\n${d.webhook_id}\n${d.event_type}\n${d.payload}`)
+      .digest("hex");
+  }
+
+  private rowMacOk(d: DeliveryRow): boolean {
+    if (!d.mac) return false;
+    const want = Buffer.from(this.rowMac(d), "hex");
+    const got = Buffer.from(d.mac, "hex");
+    return got.length === want.length && timingSafeEqual(got, want);
   }
 
   register(merchant: string, url: string, events: WebhookEventType[], nowSec: number): number {
@@ -390,7 +445,10 @@ export class WebhookDispatcher {
       if (!hook.active) continue;
       const subscribed: string[] = JSON.parse(hook.events);
       if (!subscribed.includes(type)) continue;
-      ids.push(this.db.enqueueDelivery(hook.id, type, canonicalJson(payload), nowSec));
+      const body = canonicalJson(payload);
+      const id = this.db.enqueueDelivery(hook.id, type, body, nowSec);
+      this.db.setDeliveryMac(id, this.rowMac({ id, webhook_id: hook.id, event_type: type, payload: body }));
+      ids.push(id);
     }
     return ids;
   }
@@ -441,6 +499,11 @@ export class WebhookDispatcher {
     nowSec: number,
     out: { sent: number; failed: number; dead: number }
   ): Promise<void> {
+    if (!this.rowMacOk(d)) {
+      this.db.markDeliveryDead(d.id, "refused: the keeper did not write this delivery");
+      out.dead++;
+      return;
+    }
     const hook = this.db.getWebhook(d.webhook_id);
     if (!hook || !hook.active) {
       this.db.markDeliveryDead(d.id, "webhook deleted or deactivated");

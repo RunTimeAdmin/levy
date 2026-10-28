@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Stores the keeper's private key in ops/.env (next to this script) without
-# echoing it, then prints the address it belongs to and that address's USDC
-# balance on the configured chain, so you can check it is the wallet you funded.
+# Stores the keeper's private key in ops/keeper.env (next to this script)
+# without echoing it, then prints the address it belongs to and that address's
+# USDC balance on the configured chain, so you can check it is the wallet you
+# funded. Only the keeper reads ops/keeper.env (docker-compose.yml); the shared
+# ops/.env must not hold the key, since the API reads that file too.
 #
 #   bash /docker/levy/ops/set-keeper-key.sh
 #
@@ -9,8 +11,10 @@
 # the KEEPER wallet (not the deployer). Needs the levy-keeper image to be built.
 set -euo pipefail
 
-ENV_FILE="${LEVY_ENV_FILE:-$(dirname "$(readlink -f "$0")")/.env}"
-[ -f "$ENV_FILE" ] || { echo "STOPPED: no $ENV_FILE"; exit 1; }
+OPS_DIR=$(dirname "$(readlink -f "$0")")
+ENV_FILE="${LEVY_ENV_FILE:-$OPS_DIR/keeper.env}"
+SHARED_ENV="${LEVY_SHARED_ENV_FILE:-$OPS_DIR/.env}"
+[ -d "$(dirname "$ENV_FILE")" ] || { echo "STOPPED: no directory for $ENV_FILE"; exit 1; }
 
 read -rsp "Paste the KEEPER wallet's private key, then press Enter (nothing shows): " K
 echo
@@ -32,6 +36,7 @@ ADDR=$(printf '%s' "$K" | docker run --rm -i --entrypoint node levy-keeper:lates
 # The key reaches awk through its environment, never its arguments: a command
 # line is visible to every user on the host (ps, /proc/*/cmdline), a process's
 # environment only to its owner. Adds the line when the file has none.
+[ -f "$ENV_FILE" ] || (umask 077 && : > "$ENV_FILE")
 chmod 600 "$ENV_FILE"
 TMP=$(mktemp "$ENV_FILE.XXXXXX")
 trap 'rm -f "$TMP"' EXIT
@@ -47,9 +52,12 @@ unset K
 
 echo "Saved to $ENV_FILE."
 echo "Keeper address: $ADDR"
+if grep -q '^LEVY_KEEPER_KEY=' "$SHARED_ENV" 2>/dev/null; then
+  echo "NOTE: $SHARED_ENV still has a LEVY_KEEPER_KEY line. Delete it: the API reads that file and refuses to start while the key is there."
+fi
 
 # The RPC rejects Python's default user agent, so send a named one.
-RPC=$(grep '^LEVY_RPC_URL=' "$ENV_FILE" | cut -d= -f2-)
+RPC=$(grep -h '^LEVY_RPC_URL=' "$SHARED_ENV" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)
 BAL=$(python3 - "$RPC" "$ADDR" 2>/dev/null <<'PY' || echo "unknown (RPC lookup failed)"
 import json, sys, urllib.request
 rpc, addr = sys.argv[1], sys.argv[2]

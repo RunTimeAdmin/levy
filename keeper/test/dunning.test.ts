@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { DAY_SECONDS, clearDunning, nextRetryAt, recordFailure } from "../src/dunning.js";
+import { DAY_SECONDS, checkDunningSchedule, clearDunning, nextRetryAt, recordFailure } from "../src/dunning.js";
 import { LevyDb } from "../src/db.js";
 import type { LevyConfig } from "../src/config.js";
 
@@ -41,5 +41,21 @@ describe("dunning persistence", () => {
     clearDunning(db, "42");
     assert.equal(db.dueRetries(NOW + 30 * DAY_SECONDS).length, 0);
     db.close();
+  });
+});
+
+describe("checkDunningSchedule", () => {
+  // SubscriptionManager.retryGap: 1 day after the first failure, 3 after the second, 7 after that.
+  const retryGap = async (n: bigint) => BigInt((n === 1n ? 1 : n === 2n ? 3 : 7) * DAY_SECONDS);
+
+  it("accepts the contract's own schedule and longer gaps", async () => {
+    await checkDunningSchedule([1, 3, 7], retryGap);
+    await checkDunningSchedule([2, 5, 10, 14], retryGap);
+  });
+
+  it("refuses a retry sooner than retryGap allows", async () => {
+    await assert.rejects(checkDunningSchedule([1, 1, 7], retryGap), /after failure 2/);
+    // The last interval repeats, so [1, 3] retries 3 days after the third failure.
+    await assert.rejects(checkDunningSchedule([1, 3], retryGap), /after failure 3/);
   });
 });

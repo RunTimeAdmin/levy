@@ -16,6 +16,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { createClients } from "../src/chain.js";
 import { LevyDb } from "../src/db.js";
+import { Indexer } from "../src/indexer.js";
 import { Keeper } from "../src/keeper.js";
 
 const ABI_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "abi");
@@ -42,6 +43,7 @@ let keeper: ReturnType<typeof privateKeyToAccount>;
 let alice: ReturnType<typeof privateKeyToAccount>;
 let bob: ReturnType<typeof privateKeyToAccount>;
 let carol: ReturnType<typeof privateKeyToAccount>;
+let dave: ReturnType<typeof privateKeyToAccount>;
 let merchant: ReturnType<typeof privateKeyToAccount>;
 let publicClient: any;
 let usdc: any;
@@ -49,6 +51,8 @@ let manager: any;
 let feeRouterAddr: string;
 let db: LevyDb;
 let keeperSvc: Keeper;
+let cfg: any;
+let clients: any;
 
 async function mine() {
   await publicClient.request({ method: "evm_mine", params: [] } as any);
@@ -113,6 +117,7 @@ before(async () => {
   alice = privateKeyToAccount(ALICE_KEY as `0x${string}`);
   bob = privateKeyToAccount(BOB_KEY as `0x${string}`);
   carol = privateKeyToAccount(CAROL_KEY);
+  dave = privateKeyToAccount(keys[4] as `0x${string}`);
   merchant = keeper; // keeper account doubles as merchant deployer
 
   const chain = {
@@ -154,7 +159,7 @@ before(async () => {
   });
 
   // Fund subscribers with USDC.
-  for (const a of [alice.address, bob.address]) {
+  for (const a of [alice.address, bob.address, dave.address]) {
     await usdc.write.mint([a, 1_000_000_000n], { account: keeper, chain });
   }
 
@@ -176,8 +181,8 @@ before(async () => {
   process.env.LEVY_WEBHOOK_KEY_PATH = join(dirname(fileURLToPath(import.meta.url)), "test-webhook-key.pem");
 
   const { loadConfig } = await import("../src/config.js");
-  const cfg = loadConfig();
-  const clients = createClients({ ...cfg, chainId: CHAIN_ID });
+  cfg = loadConfig();
+  clients = createClients({ ...cfg, chainId: CHAIN_ID });
   db = new LevyDb(":memory:");
   keeperSvc = new Keeper(cfg, clients as any, db);
 });
@@ -261,6 +266,24 @@ describe("keeper integration (anvil)", () => {
     // Not due yet at chain now, due after the 1-day backoff.
     assert.equal(db.dueRetries(nowSec).length, 0);
     assert.equal(db.dueRetries(nowSec + 86_400 + 1).filter((r) => r.subId === "2").length, 1);
+  });
+
+  it("rebuilds dunning from the chain when the database is lost", async () => {
+    // A fresh database knows nothing of Bob's failure, and its event scan
+    // would miss it too once the failure is older than the lookback.
+    const fresh = new LevyDb(":memory:");
+    try {
+      await new Indexer(cfg, clients, fresh).backfillAll();
+      const row = fresh.getDunning("2");
+      assert.ok(row, "no dunning row rebuilt for sub 2");
+      const last = Number(await manager.read.lastFailedAt([2n]));
+      assert.equal(row.attempts, 1);
+      assert.equal(row.nextRetryAt, last + 86_400);
+      // So the due sweep leaves it to dunning instead of charging it at once.
+      assert.equal(fresh.dueSubscriptions(await chainTime()).some((s) => s.subId === "2"), false);
+    } finally {
+      fresh.close();
+    }
   });
 
   it("retries after the backoff and clears dunning on success", async () => {
@@ -512,6 +535,43 @@ describe("keeper integration (anvil)", () => {
       "every indexed transfer moves USDC into or out of the manager"
     );
     assert.ok(!rows.some((r) => /^0x0{40}$/.test(r.fromAddr)), "no mints");
+  });
+
+  it("stops paying for failures past LEVY_MAX_SPONSORED_FAILURES until the funds are back", async () => {
+    const daveWallet = createWalletClient({ account: dave, chain: publicClient.chain, transport: http(RPC) });
+    const asDave = getContract({
+      address: manager.address, abi: abi("SubscriptionManager"),
+      client: { public: publicClient, wallet: daveWallet },
+    });
+    const asDaveUsdc = getContract({
+      address: usdc.address, abi: usdc.abi,
+      client: { public: publicClient, wallet: daveWallet },
+    });
+    // One cycle approved, spent at subscribe: every later pull fails.
+    await mined(await asDaveUsdc.write.approve([manager.address, PRICE], { account: dave, chain: publicClient.chain }));
+    await mined(await asDave.write.subscribe([1n, zeroHash], { account: dave, chain: publicClient.chain }));
+    const subId = String(await manager.read.subCount());
+    const failures = async () => Number(((await manager.read.subscriptions([BigInt(subId)])) as readonly unknown[])[4]);
+    const capped = new Keeper({ ...cfg, maxSponsoredFailures: 1 }, clients, db);
+
+    // The first failure is the keeper's to record.
+    await increaseTime(CYCLE + 60);
+    await capped.runCycle();
+    assert.equal(await failures(), 1);
+
+    // Past the cap, with nothing to pull, the retry is moved along without a transaction.
+    await increaseTime(86_400 + 120);
+    let report = await capped.runCycle();
+    assert.ok(report.deferred.includes(subId), "expected the retry to be deferred");
+    assert.equal(await failures(), 1);
+    assert.ok(db.getDunning(subId)!.nextRetryAt > (await chainTime()));
+
+    // Once the allowance is back, the keeper charges again.
+    await mined(await asDaveUsdc.write.approve([manager.address, PRICE * 2n], { account: dave, chain: publicClient.chain }));
+    await increaseTime(86_400 + 120);
+    report = await capped.runCycle();
+    assert.ok(report.retried.some((c) => c.subId === subId), "expected the funded retry to go through");
+    assert.equal(await failures(), 0);
   });
 
   it("v2: follows intro pricing, a wallet transfer, completion and account changes", async () => {

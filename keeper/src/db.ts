@@ -130,6 +130,8 @@ export interface DeliveryRow {
   next_retry_at: number; // unix seconds
   created_at: number; // unix seconds
   last_error: string | null;
+  /** The keeper's MAC over the row (WebhookDispatcher); rows without a valid one are never sent. */
+  mac: string | null;
 }
 
 const SCHEMA = `
@@ -268,6 +270,11 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions (expires_at);
 `;
 
+/** The deployment a database belongs to (LevyDb.bindDeployment). */
+export function deploymentId(chainId: number, manager: string, usdc: string): string {
+  return `${chainId}:${manager.toLowerCase()}:${usdc.toLowerCase()}`;
+}
+
 export class LevyDb {
   private db: DatabaseSync;
 
@@ -289,6 +296,7 @@ export class LevyDb {
       introPrice: "TEXT NOT NULL DEFAULT '0'",
       introCycles: "INTEGER NOT NULL DEFAULT 0",
     });
+    this.addColumns("webhook_deliveries", { mac: "TEXT" });
     // The API server may hold the same file open; wait instead of failing
     // on a locked database during brief concurrent writes.
     this.db.exec("PRAGMA busy_timeout = 5000");
@@ -471,6 +479,22 @@ export class LevyDb {
 
   // ---- allowance runway (see funds.ts) ----
 
+  /**
+   * Chargeable subscriptions with failures on-chain but no dunning row: what a
+   * lost or restored database is missing. dueSubscriptions leaves them to the
+   * dunning table, so without a row they are never retried.
+   */
+  subscriptionsMissingDunning(): Array<{ subId: string; failedAttempts: number }> {
+    return this.db
+      .prepare(
+        `SELECT s.subId, s.failedAttempts FROM subscriptions s
+         LEFT JOIN dunning d ON d.subId = s.subId
+         WHERE s.status IN (${CHARGEABLE.join(",")}) AND s.failedAttempts > 0 AND d.subId IS NULL
+         ORDER BY CAST(s.subId AS INTEGER)`
+      )
+      .all() as Array<{ subId: string; failedAttempts: number }>;
+  }
+
   /** Subscribers with chargeable subscriptions whose funds were never checked or are stale. */
   fundsCandidates(staleBefore: number, limit: number): string[] {
     return (this.db
@@ -583,6 +607,10 @@ export class LevyDb {
       .all(address) as unknown as DbAccount[];
   }
 
+  getPlan(planId: string): DbPlan | undefined {
+    return this.db.prepare(`SELECT * FROM plans WHERE planId = ?`).get(planId) as unknown as DbPlan | undefined;
+  }
+
   /** The on-chain plan registry mirror. */
   listPlans(): DbPlan[] {
     return this.db
@@ -659,7 +687,7 @@ export class LevyDb {
     return this.db
       .prepare(
         `SELECT id, webhook_id, event_type, payload, status, attempts,
-                next_retry_at, created_at, last_error
+                next_retry_at, created_at, last_error, mac
          FROM (
            SELECT *, ROW_NUMBER() OVER (PARTITION BY webhook_id ORDER BY next_retry_at, id) AS turn
            FROM webhook_deliveries
@@ -688,6 +716,10 @@ export class LevyDb {
     return this.db
       .prepare(`SELECT d.* FROM webhook_deliveries d ${join} ${where} ORDER BY d.id DESC LIMIT ?`)
       .all(...params, limit) as unknown as DeliveryRow[];
+  }
+
+  setDeliveryMac(id: number, mac: string): void {
+    this.db.prepare(`UPDATE webhook_deliveries SET mac = ? WHERE id = ?`).run(mac, id);
   }
 
   markDeliverySent(id: number): void {
@@ -762,6 +794,37 @@ export class LevyDb {
   }
 
   // ---- sync state ----
+
+  /**
+   * Ties the database to one deployment (deploymentId): its plans,
+   * subscriptions and event cursor mean nothing for another contract, and
+   * serving them would show prices the contract does not charge. A fresh
+   * database records the deployment; one recorded for another deployment is
+   * refused, and so is one holding data from before the record was kept.
+   */
+  bindDeployment(id: string): void {
+    const stored = this.deployment();
+    if (stored === id) return;
+    if (stored) {
+      throw new Error(`the database belongs to ${stored}, not ${id}: use a fresh database for another deployment`);
+    }
+    const { n } = this.db
+      .prepare(`SELECT (SELECT COUNT(*) FROM plans) + (SELECT COUNT(*) FROM subscriptions)
+                     + (SELECT COUNT(*) FROM sync_state WHERE key <> 'delivery_epoch') AS n`)
+      .get() as { n: number };
+    if (n > 0) {
+      throw new Error(
+        `the database has data but no record of its deployment, so it cannot be matched to ${id}: ` +
+          "start on a fresh database with LEVY_LOOKBACK_BLOCKS reaching back to the deploy"
+      );
+    }
+    this.setSync("deployment", id);
+  }
+
+  /** The deployment the keeper recorded (bindDeployment), if any. */
+  deployment(): string | undefined {
+    return this.getSync("deployment");
+  }
 
   getSync(key: string): string | undefined {
     const row = this.db

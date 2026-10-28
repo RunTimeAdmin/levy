@@ -31,6 +31,7 @@ describe("wallet.js encodings match the contracts", () => {
     ["createPlan", "createPlan", "SubscriptionManager"],
     ["changePlan", "changePlan", "SubscriptionManager"],
     ["subscriptions", "subscriptions", "SubscriptionManager"],
+    ["plans", "plans", "SubscriptionManager"],
     ["billedPrice", "billedPrice", "SubscriptionManager"],
     ["setPlanRetired", "setPlanRetired", "SubscriptionManager"],
     ["setPayout", "setPayout", "SubscriptionManager"],
@@ -72,6 +73,13 @@ describe("wallet.js encodings match the contracts", () => {
     const getter = fn("subscriptions", "SubscriptionManager");
     assert.deepEqual(getter.outputs.map((o) => o.name),
       ["subscriber", "planId", "start", "nextChargeAt", "failedAttempts", "credit", "chargeCount", "status"]);
+  });
+
+  it("plans() getter fields are in the order planTerms() decodes", () => {
+    const getter = fn("plans", "SubscriptionManager");
+    assert.deepEqual(getter.outputs.map((o) => o.name),
+      ["merchant", "price", "cycleSeconds", "trialSeconds", "maxFailed", "exists", "retired", "transferable",
+        "maxCycles", "introPrice", "introCycles"]);
   });
 
   it("createPlan takes the account, then PlanTerms in the order createPlan() encodes them", () => {
@@ -161,6 +169,29 @@ describe("wallet.js chain names and explorer links", () => {
     };
   }
   const ARC_TESTNET = "0x" + (5042002).toString(16);
+
+  it("checks the plan on-chain against what the page shows before anything is sent", async () => {
+    const merchant = "0x00000000000000000000000000000000000000bb";
+    const shown = {
+      planId: "3", merchant, price: "1000000", cycleSeconds: 86_400, trialSeconds: 0,
+      maxCycles: 0, introPrice: "0", introCycles: 0, retired: false,
+    };
+    const terms = { price: 1_000_000n, retired: 0n };
+    fakeWallet({ id: ARC_TESTNET }, (method, params) => {
+      assert.equal(method, "eth_call");
+      const data = (params[0] as { data: string }).data;
+      assert.equal(data, "0xb1620616" + (3).toString(16).padStart(64, "0"));
+      const p = (v: bigint | number | string) => BigInt(v).toString(16).padStart(64, "0");
+      // merchant, price, cycleSeconds, trialSeconds, maxFailed, exists, retired, transferable, maxCycles, introPrice, introCycles
+      return "0x" + [merchant, terms.price, 86_400, 0, 2, 1, terms.retired, 0, 0, 0, 0].map(p).join("");
+    });
+    await wallet.checkPlan("0x00000000000000000000000000000000000000cc", shown);
+    terms.price = 2_000_000n;
+    await assert.rejects(wallet.checkPlan("0x00000000000000000000000000000000000000cc", shown), /does not match this page \(price\)/);
+    terms.price = 1_000_000n;
+    terms.retired = 1n;
+    await assert.rejects(wallet.checkPlan("0x00000000000000000000000000000000000000cc", shown), /\(retired\)/);
+  });
 
   it("connects only once the wallet is really on Arc", async () => {
     const chain = { id: "0x1" };

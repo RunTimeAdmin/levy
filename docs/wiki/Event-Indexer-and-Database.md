@@ -34,7 +34,7 @@ flowchart TD
     I -->|"no"| J["Return log count and chain time"]
 ```
 
-- **Cursor.** `sync_state` holds one key, `manager_events_from_block`, the next block to read. It moves after every chunk, so a failure part-way through a long catch-up loses at most one chunk.
+- **Cursor.** `sync_state` holds the cursor, `manager_events_from_block`, the next block to read, beside the database's `deployment` and the webhook `delivery_epoch`. It moves after every chunk, so a failure part-way through a long catch-up loses at most one chunk.
 - **Chunking.** Ranges are inclusive and at most `LEVY_LOG_CHUNK_BLOCKS` blocks (default 500; some providers reject 1,000). A keeper that was down for a day is about 172,800 blocks behind, which is 346 chunks and roughly 1,400 requests.
 - **First boot.** With no cursor, the first sync scans back `LEVY_LOOKBACK_BLOCKS` (default 5000, about 40 minutes). If the keeper starts long after deployment, raise it to reach the deploy block (the testnet deployment is at block 65201372), or older charge history is never indexed.
 - **Transport.** The RPC client retries a failed request 4 times with a doubling delay starting at 1 second (about 15 seconds in total) before the cycle fails.
@@ -42,7 +42,9 @@ flowchart TD
 
 ## Backfill
 
-At every start the keeper calls `backfillAll()`: it reads `planCount` and `subCount` from the contract, then refreshes every plan, the merchant account of every plan (three reads each: `ownerOf`, `accountPayout`, `pendingOwner`) and every subscription (three contract reads for a subscription on a plain plan, more as below). This hydrates a fresh database and repairs drift in an old one. It does not touch charges, failures, dunning or webhooks, and it emits no webhooks.
+At every start the keeper calls `backfillAll()`: it reads `planCount` and `subCount` from the contract, then refreshes every plan, the merchant account of every plan (three reads each: `ownerOf`, `accountPayout`, `pendingOwner`) and every subscription (three contract reads for a subscription on a plain plan, more as below). This hydrates a fresh database and repairs drift in an old one. It does not touch charges, failures or webhooks, and it emits no webhooks. It does write the dunning rows a lost or restored database is missing: for every TRIAL, ACTIVE or PAST_DUE subscription with failures on-chain and no row, the next retry is timed from the contract's `lastFailedAt`.
+
+Before the backfill the keeper ties the database to its deployment: a fresh database records the chain, manager and USDC (`deployment` in `sync_state`), and a database recorded for another deployment, or one holding data from before the record was kept, stops the keeper. The API refuses a database recorded for another deployment too, so it never serves another contract's plans.
 
 ## How events update the database
 
@@ -92,10 +94,10 @@ The schema is created with `CREATE TABLE IF NOT EXISTS` when the database opens.
 
 | Table | Key | Main columns | Purpose |
 |---|---|---|---|
-| `sync_state` | `key` | `value` | The log cursor. |
+| `sync_state` | `key` | `value` | The log cursor, the deployment the database belongs to and the delivery id prefix. |
 | `subscriber_funds` | `subscriber` (NOCASE) | `allowance`, `balance`, `per_cycle`, `cycles_covered`, `low`, `checked_at` | Allowance runway per subscriber. `checked_at` of 0 forces a recheck. `cycles_covered` is capped at 1,000,000 so unlimited approvals fit. |
 | `webhooks` | `id` | `merchant`, `url`, `events` (JSON array), `active`, `created_at` | Merchant endpoints. Written by the API; deleting one removes the row. |
-| `webhook_deliveries` | `id`; index on (`status`, `next_retry_at`) | `webhook_id`, `event_type`, `payload`, `status`, `attempts`, `next_retry_at`, `created_at`, `last_error` | One row per event per endpoint. `payload` is the exact canonical JSON that is posted. `webhook_id` has no foreign key, so rows survive endpoint deletion and are dead-lettered on the next pass. |
+| `webhook_deliveries` | `id`; index on (`status`, `next_retry_at`) | `webhook_id`, `event_type`, `payload`, `status`, `attempts`, `next_retry_at`, `created_at`, `last_error`, `mac` | One row per event per endpoint. `payload` is the exact canonical JSON that is posted. `webhook_id` has no foreign key, so rows survive endpoint deletion and are dead-lettered on the next pass. `mac` is the keeper's MAC over the row, under a key derived from the signing key; the keeper never signs a row without a valid one, so a row the API or anything else writes is dead-lettered. |
 | `auth_challenges` | `nonce` | `address`, `message`, `expires_at` | Single-use sign-in messages, consumed by one `DELETE ... RETURNING`. Expired rows are purged when a new challenge is created. |
 | `sessions` | `token_hash` | `address`, `expires_at` | SHA-256 of the bearer token only. Expired rows are purged when a session is created. |
 
