@@ -286,6 +286,26 @@ recorded, and the contract spaces those on the dunning schedule (§3).
   webhook signing key; with item 14) and the signing-key race fix still on
   branch `claude/awesome-mendel-xzq52r`, L-1 to L-4, the rest of L-7 and L-8,
   L-9 to L-12 (including a dedicated host for the keeper), and I-1 to I-3.
+- **Fifth external review (2026-10-27, `docs/REVIEW_2026-10-27.md`).**
+  No-go for mainnet, with no critical or high finding. It reviewed `main` at
+  `941d5ed`, the soak 2 contracts, not manager v2. Checked against the code
+  the same day. Already open and raised again: M-1 (the API holds the keeper
+  key and the webhook signing key: item 14 and the infrastructure review's
+  M-2), M-3 (dunning after database loss, the 2026-10-02 review's finding
+  10), M-5 (a treasury handover to any address, item 6), L-1 (keeper replay,
+  item 9) and L-4 (the network checked at connect only, item 11). M-2 adds
+  to item 1: a trial needs no first payment, and the keeper retries every 7
+  days until `2 × maxFailed` failures, up to 510 transactions for one free
+  subscription. New: M-4 (item 16) and L-3 (item 17). L-3 overstates the
+  cost: the keeper sends without a gas limit, so a `RetryTooSoon` revert
+  fails gas estimation and nothing is broadcast. Fixed the same day, L-2 and
+  L-5: `script/count-unique-actors.py` took Uniswap V2's `Swap` topic for a
+  Permit2 event and looked for USDC `Transfer` logs at Levy's addresses, so
+  it found almost nothing. It now counts the senders of transactions in which
+  a Levy contract emitted a log, writes its inputs with the result, backs off
+  when the RPC rate limits, and has tests that CI runs. The keeper and API
+  findings are being fixed on branch `fix/review-2026-10-27`, made from
+  manager v2, so soak 3 runs the fixes; soak 2 keeps its deployment.
 
 **Open** (for the paid audit and M4):
 
@@ -352,6 +372,17 @@ recorded, and the contract spaces those on the dunning schedule (§3).
 15. The CI ABI drift check compares `keeper/abi/*.json` with the compiled
     contracts but not the `.bin` files that the keeper integration test deploys,
     so a stale `.bin` would pass CI.
+16. The keeper's database is not tied to a chain and manager (2026-10-27
+    M-4). The event cursor has one global key, `upsertPlan` never refreshes a
+    row, and nothing at boot checks that the database was made for the
+    configured chain, manager and USDC. A host pointed at a new manager with
+    its old database would serve the old plans. Soak 2 started on a fresh
+    database. Fix: store that identity and refuse to start on a mismatch.
+17. `LEVY_DUNNING_DAYS` accepts gaps shorter than the contract's `retryGap`
+    of 1, 3, then 7 days (2026-10-27 L-3). A retry that comes too soon fails
+    gas estimation with `RetryTooSoon` and backs off, so no gas is spent, but
+    the schedule then says one thing and the chain does another. Fix: check
+    the schedule against `retryGap` at startup.
 
 ## 10. Off-chain services (keeper and API)
 
