@@ -7,13 +7,22 @@ export interface LevyConfig {
   pollIntervalMs: number;
   /** Retry offsets in days after a failed pull, by attempt number (1-based). */
   dunningScheduleDays: number[];
+  /**
+   * Failed charges in a row the keeper pays gas to record for one
+   * subscription. Past that it sends a retry only when the subscriber's
+   * funds cover the charge, so a subscription that never pays costs the
+   * keeper at most this many transactions.
+   */
+  maxSponsoredFailures: number;
   dbPath: string;
   /** How far back to scan on first run (blocks). */
   initialLookbackBlocks: number;
   /** Blocks per eth_getLogs request. Arc RPCs cap the range (dRPC under 1,000). */
   logChunkBlocks: number;
-  /** Path of the Ed25519 webhook signing key (generated on first run). */
+  /** Path of the Ed25519 webhook signing key (generated on first run). Keeper only. */
   webhookKeyPath: string;
+  /** Where the keeper publishes the public half for the API to serve. */
+  webhookPublicKeyPath: string;
   /** Optional inline signing key: PEM PKCS#8 or base64 32-byte seed. */
   webhookKey?: string;
   /** Allow http and private-address webhook URLs. Local development only. */
@@ -62,10 +71,12 @@ export function loadConfig(): LevyConfig {
     keeperKey: required("LEVY_KEEPER_KEY") as `0x${string}`,
     pollIntervalMs: integer("LEVY_POLL_MS", 30_000, 100),
     dunningScheduleDays: dunningDays(),
+    maxSponsoredFailures: integer("LEVY_MAX_SPONSORED_FAILURES", 6, 1),
     dbPath: process.env.LEVY_DB_PATH ?? "./levy.db",
     initialLookbackBlocks: integer("LEVY_LOOKBACK_BLOCKS", 5000, 0),
     logChunkBlocks: integer("LEVY_LOG_CHUNK_BLOCKS", 500, 1),
     webhookKeyPath: process.env.LEVY_WEBHOOK_KEY_PATH ?? "./webhook-signing-key.pem",
+    webhookPublicKeyPath: process.env.LEVY_WEBHOOK_PUBLIC_KEY_PATH ?? "./webhook-public-key.pem",
     webhookKey: process.env.LEVY_WEBHOOK_KEY,
     webhookAllowPrivate: process.env.LEVY_WEBHOOK_ALLOW_PRIVATE === "1",
     webhookPollMs: integer("LEVY_WEBHOOK_POLL_MS", 5_000, 100),

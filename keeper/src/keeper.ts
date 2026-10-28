@@ -3,9 +3,15 @@ import type { LevyConfig } from "./config.js";
 import { LevyDb } from "./db.js";
 import { Indexer } from "./indexer.js";
 import { managerAbi, usdcAbi } from "./chain.js";
+import { nextRetryAt } from "./dunning.js";
 import { FUNDS_CHECKS_PER_CYCLE, FUNDS_RECHECK_SEC, fundsStatus } from "./funds.js";
 import { WebhookDispatcher, loadSigningKey } from "./webhooks.js";
-import { decodeEventLog } from "viem";
+import { decodeEventLog, parseAbi } from "viem";
+import type { DbSubscription } from "./db.js";
+
+const permit2Abi = parseAbi([
+  "function allowance(address owner, address token, address spender) view returns (uint160 amount, uint48 expiration, uint48 nonce)",
+]);
 
 /**
  * Retry delays after a charge that failed for a reason other than payment (a
@@ -19,6 +25,8 @@ export interface CycleReport {
   charged: Array<{ subId: string; txHash: string }>;
   retried: Array<{ subId: string; txHash: string }>;
   failed: Array<{ subId: string; error: string }>;
+  /** Retries not sent: past maxSponsoredFailures and the funds do not cover the charge. */
+  deferred: string[];
 }
 
 /**
@@ -47,7 +55,7 @@ export class Keeper {
   }
 
   async runCycle(): Promise<CycleReport> {
-    const report: CycleReport = { syncedLogs: 0, charged: [], retried: [], failed: [] };
+    const report: CycleReport = { syncedLogs: 0, charged: [], retried: [], failed: [], deferred: [] };
 
     const first = await this.indexer.sync();
     report.syncedLogs = first.logs;
@@ -58,8 +66,9 @@ export class Keeper {
     const handled = new Set<string>();
     for (const sub of this.db.dueSubscriptions(nowSec)) {
       if (this.backedOff(sub.subId, nowSec)) continue;
-      const r = await this.tryCharge(sub.subId);
       handled.add(sub.subId);
+      if (await this.deferred(sub, nowSec)) { report.deferred.push(sub.subId); continue; }
+      const r = await this.tryCharge(sub.subId);
       if (r.ok) report.charged.push({ subId: sub.subId, txHash: r.txHash });
       else report.failed.push({ subId: sub.subId, error: r.error });
       await this.settle(sub.subId, r, nowSec);
@@ -75,6 +84,7 @@ export class Keeper {
         continue;
       }
       if (this.backedOff(row.subId, nowSec)) continue;
+      if (await this.deferred(sub, nowSec)) { report.deferred.push(row.subId); continue; }
       const r = await this.tryCharge(row.subId);
       if (r.ok) report.retried.push({ subId: row.subId, txHash: r.txHash });
       else report.failed.push({ subId: row.subId, error: r.error });
@@ -136,6 +146,61 @@ export class Keeper {
           nextChargeAt: s.nextChargeAt,
         }, nowSec);
       }
+    }
+  }
+
+  /**
+   * Past maxSponsoredFailures failures in a row the keeper stops paying to
+   * record more: it reads the subscriber's funds (free) and, if they do not
+   * cover the charge, moves the retry along the schedule without sending.
+   * Anyone can still call charge(); the keeper just stops paying for a
+   * subscription that keeps failing, such as a free trial nobody funds.
+   */
+  private async deferred(sub: DbSubscription, nowSec: number): Promise<boolean> {
+    if (sub.failedAttempts < this.cfg.maxSponsoredFailures) return false;
+    if (await this.fundsCoverCharge(sub)) return false;
+    this.db.setDunning({
+      subId: sub.subId,
+      attempts: sub.failedAttempts,
+      nextRetryAt: nextRetryAt(sub.failedAttempts, nowSec, this.cfg.dunningScheduleDays),
+      updatedAt: nowSec,
+    });
+    return true;
+  }
+
+  private permit2?: `0x${string}`;
+
+  /**
+   * Whether the next pull would find the money, the way _tryPull looks for it:
+   * a direct allowance, else a Permit2 allowance (with USDC approved to
+   * Permit2), and the balance either way. Errs towards sending: when a read
+   * fails it answers true, and the contract decides.
+   */
+  private async fundsCoverCharge(sub: DbSubscription): Promise<boolean> {
+    try {
+      const plan = this.db.getPlan(sub.planId);
+      const intro = (sub.introCyclesLeft ?? 0) > 0 && Number(plan?.introCycles ?? 0) > 0;
+      const price = BigInt(intro ? (plan!.introPrice ?? "0") : sub.price);
+      const onChain = (await this.clients.manager.read.subscriptions([BigInt(sub.subId)])) as readonly unknown[];
+      const credit = onChain[5] as bigint;
+      if (credit >= price) return true;
+      const due = price - credit;
+      const usdc = { address: this.cfg.usdcAddress, abi: usdcAbi } as const;
+      const owner = sub.subscriber as `0x${string}`;
+      this.permit2 ??= (await this.clients.manager.read.permit2()) as `0x${string}`;
+      const [balance, direct, toPermit2, [p2Amount, p2Expiry]] = (await Promise.all([
+        this.clients.public.readContract({ ...usdc, functionName: "balanceOf", args: [owner] }),
+        this.clients.public.readContract({ ...usdc, functionName: "allowance", args: [owner, this.cfg.managerAddress] }),
+        this.clients.public.readContract({ ...usdc, functionName: "allowance", args: [owner, this.permit2] }),
+        this.clients.public.readContract({
+          address: this.permit2, abi: permit2Abi, functionName: "allowance",
+          args: [owner, this.cfg.usdcAddress, this.cfg.managerAddress],
+        }),
+      ])) as [bigint, bigint, bigint, readonly [bigint, number, number]];
+      const viaPermit2 = toPermit2 >= due && p2Amount >= due && p2Expiry >= Math.floor(Date.now() / 1000);
+      return balance >= due && (direct >= due || viaPermit2);
+    } catch {
+      return true;
     }
   }
 

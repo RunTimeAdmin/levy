@@ -17,6 +17,29 @@ export function nextRetryAt(
   return nowSec + scheduleDays[idx] * DAY_SECONDS;
 }
 
+/**
+ * Throws if the schedule retries sooner than the contract allows. A failure
+ * is recorded no sooner than retryGap(failures) after the last one, so a
+ * shorter retry fails with RetryTooSoon: the schedule would say one thing and
+ * the chain do another. Longer gaps are fine.
+ */
+export async function checkDunningSchedule(
+  scheduleDays: number[],
+  retryGap: (failures: bigint) => Promise<bigint>
+): Promise<void> {
+  // retryGap is the same from the third failure on.
+  for (let n = 1; n <= Math.max(scheduleDays.length, 3); n++) {
+    const days = scheduleDays[Math.min(n, scheduleDays.length) - 1];
+    const gap = Number(await retryGap(BigInt(n)));
+    if (days * DAY_SECONDS < gap) {
+      throw new Error(
+        `LEVY_DUNNING_DAYS retries ${days} day(s) after failure ${n}, but the contract records the next failure ` +
+          `only ${gap / DAY_SECONDS} day(s) later (retryGap): use at least 1,3,7`
+      );
+    }
+  }
+}
+
 /** Record a failed pull and schedule the next retry. */
 export function recordFailure(
   db: LevyDb,

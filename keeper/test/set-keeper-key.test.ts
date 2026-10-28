@@ -31,11 +31,11 @@ for (const tool of ["sed", "awk", "perl", "tee"]) {
 
 after(() => rmSync(tmp, { recursive: true, force: true }));
 
-function run(envFile: string, input: string) {
+function run(envFile: string, input: string, sharedEnv = join(tmp, "no-shared.env")) {
   writeFileSync(argvLog, "");
   const r = spawnSync("bash", [SCRIPT], {
     input: `${input}\n`,
-    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, LEVY_ENV_FILE: envFile },
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, LEVY_ENV_FILE: envFile, LEVY_SHARED_ENV_FILE: sharedEnv },
   });
   return { status: r.status, out: r.stdout.toString() + r.stderr.toString(), argv: readFileSync(argvLog, "utf8") };
 }
@@ -59,6 +59,24 @@ describe("ops/set-keeper-key.sh", () => {
     const r = run(env, KEY.slice(2)); // without 0x: the script adds it
     assert.equal(r.status, 0, r.out);
     assert.equal(readFileSync(env, "utf8"), `LEVY_RPC_URL=\nLEVY_KEEPER_KEY=${KEY}\n`);
+  });
+
+  it("creates the keeper-only file, readable by its owner alone, when it does not exist", () => {
+    const env = join(tmp, "new-keeper.env");
+    const r = run(env, KEY);
+    assert.equal(r.status, 0, r.out);
+    assert.equal(readFileSync(env, "utf8"), `LEVY_KEEPER_KEY=${KEY}\n`);
+    assert.equal(statSync(env).mode & 0o777, 0o600);
+  });
+
+  it("says to delete a key left in the shared env file, without printing it", () => {
+    const env = join(tmp, "moved.env");
+    const shared = join(tmp, "shared.env");
+    writeFileSync(shared, `LEVY_RPC_URL=\nLEVY_KEEPER_KEY=${KEY}\n`);
+    const r = run(env, KEY, shared);
+    assert.equal(r.status, 0, r.out);
+    assert.ok(r.out.includes("still has a LEVY_KEEPER_KEY line"), r.out);
+    assert.ok(!r.out.includes(KEY.slice(2)), "key echoed");
   });
 
   it("refuses an address and leaves the file untouched", () => {

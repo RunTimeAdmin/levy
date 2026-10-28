@@ -344,6 +344,13 @@ export class Indexer {
     for (let i = 1; i <= count; i++) {
       await this.refreshSubscription(String(i));
     }
+    // Dunning exists only in this database. Rebuild what it is missing from
+    // each failure's on-chain time, or a PAST_DUE subscription whose failure
+    // predates the lookback would never be retried.
+    for (const s of this.db.subscriptionsMissingDunning()) {
+      const last = Number(await this.clients.manager.read.lastFailedAt([BigInt(s.subId)]));
+      recordFailure(this.db, this.cfg, s.subId, s.failedAttempts, last);
+    }
     return count;
   }
 }

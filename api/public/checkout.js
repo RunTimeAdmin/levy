@@ -168,6 +168,8 @@ $("go").onclick = async () => {
   $("go").disabled = true;
   try {
     let p = loadPending();
+    status("Checking the plan on-chain...", "busy");
+    await LevyWallet.checkPlan(cfg.managerAddress, plan);
     if (!approved) {
       // The total is fixed when the approval is sent; approve() sets the
       // allowance to it, so sending the same approval again changes nothing.

@@ -3,14 +3,13 @@ import { readFile } from "node:fs/promises";
 import { dirname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAddress } from "viem";
-import { LevyDb, Status } from "../../keeper/src/db.js";
+import { LevyDb, Status, deploymentId } from "../../keeper/src/db.js";
 import { checkWebhookUrl } from "../../keeper/src/webhook-url.js";
 import {
   WEBHOOK_EVENTS,
   isWebhookEventType,
   keyId,
-  loadSigningKey,
-  publicKeyPem,
+  readPublicKey,
 } from "../../keeper/src/webhooks.js";
 import { registerAuthRoutes } from "./auth.js";
 
@@ -20,9 +19,8 @@ const PUBLIC_DIR = join(API_DIR, "..", "public");
 export interface ApiOptions {
   /** Path to the keeper's SQLite file. */
   dbPath: string;
-  /** Path of the Ed25519 webhook signing key (for the public-key endpoint). */
-  webhookKeyPath: string;
-  webhookKey?: string;
+  /** The webhook public key the keeper publishes (the API never holds the private key). */
+  webhookPublicKeyPath: string;
   /** Origin the dashboard is served from; sign-in messages are bound to it. */
   origin: string;
   chainId: number;
@@ -37,16 +35,22 @@ export function apiOptionsFromEnv(): ApiOptions {
   // Sign-in messages name this origin; a wrong default would teach every
   // user to click through the wallet's domain-mismatch warning.
   const production = process.env.NODE_ENV === "production";
+  // The API faces the internet; the keeper's gas key and the webhook signing
+  // key belong to the keeper alone (ops/keeper.env), so refuse to run with them.
+  for (const secret of ["LEVY_KEEPER_KEY", "LEVY_WEBHOOK_KEY"]) {
+    if (process.env[secret]) {
+      throw new Error(`${secret} is set: the API must not hold keeper secrets; give it to the keeper only (ops/keeper.env)`);
+    }
+  }
   if (!process.env.LEVY_PUBLIC_ORIGIN && production) {
     throw new Error("LEVY_PUBLIC_ORIGIN must be set in production (e.g. https://app.getlevy.xyz)");
   }
   return {
     dbPath:
       process.env.LEVY_DB_PATH ?? join(API_DIR, "..", "..", "keeper", "levy.db"),
-    webhookKeyPath:
-      process.env.LEVY_WEBHOOK_KEY_PATH ??
-      join(API_DIR, "..", "..", "keeper", "webhook-signing-key.pem"),
-    webhookKey: process.env.LEVY_WEBHOOK_KEY,
+    webhookPublicKeyPath:
+      process.env.LEVY_WEBHOOK_PUBLIC_KEY_PATH ??
+      join(API_DIR, "..", "..", "keeper", "webhook-public-key.pem"),
     origin: publicOrigin(
       process.env.LEVY_PUBLIC_ORIGIN ?? `http://localhost:${process.env.LEVY_API_PORT ?? 3001}`,
       production
@@ -138,6 +142,16 @@ function checkOwnAddress(v: unknown, me: string, what: string): void {
 
 export function buildServer(opts: ApiOptions): FastifyInstance {
   const db = new LevyDb(opts.dbPath);
+  // The keeper records which deployment the database belongs to. Serving
+  // another deployment's plans would show prices the contract does not charge.
+  const recorded = db.deployment();
+  if (recorded && opts.managerAddress && opts.usdcAddress) {
+    const mine = deploymentId(opts.chainId, opts.managerAddress, opts.usdcAddress);
+    if (recorded !== mine) {
+      db.close();
+      throw new Error(`the database belongs to ${recorded}, not this API's ${mine}`);
+    }
+  }
   const app = Fastify({ logger: false });
 
   app.addHook("onClose", async () => {
@@ -426,11 +440,12 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   app.get("/api/webhooks/public-key", async () => {
     let key;
     try {
-      key = loadSigningKey(opts.webhookKeyPath, opts.webhookKey);
+      key = readPublicKey(opts.webhookPublicKeyPath);
     } catch {
       return bad(503, "signing key not available (keeper has not booted yet)");
     }
-    return { algorithm: "ed25519", keyId: keyId(key), publicKey: publicKeyPem(key), events: [...WEBHOOK_EVENTS] };
+    const publicKey = key.export({ format: "pem", type: "spki" }).toString();
+    return { algorithm: "ed25519", keyId: keyId(key), publicKey, events: [...WEBHOOK_EVENTS] };
   });
 
   app.get("/api/deliveries", async (req) => {
@@ -449,7 +464,7 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
       filter.status = q.status;
     }
     if (q.limit !== undefined) filter.limit = Number(q.limit) || 100;
-    return db.listDeliveries(filter);
+    return db.listDeliveries(filter).map(({ mac: _mac, ...d }) => d);
   });
 
   /** Someone else's webhook looks the same as a missing one. */

@@ -90,6 +90,26 @@ jobs:
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3001/api/metrics)" = 401
       - name: API refuses to start without LEVY_PUBLIC_ORIGIN
         run: "! docker run --rm levy-api:ci"
+      - name: API refuses to start holding the keeper key
+        run: |
+          ! docker run --rm -e LEVY_PUBLIC_ORIGIN=http://localhost:3001 -e LEVY_KEEPER_KEY=0x01 levy-api:ci > api-key.log 2>&1
+          grep -q "LEVY_KEEPER_KEY is set" api-key.log
+      - name: Compose gives secrets to the keeper only
+        run: |
+          cp ops/.env.example ops/.env
+          cp ops/keeper.env.example ops/keeper.env
+          docker compose -f ops/docker-compose.yml --env-file ops/.env config --format json > compose.json
+          python3 - <<'PY'
+          import json
+          s = json.load(open("compose.json"))["services"]
+          for name in ("LEVY_KEEPER_KEY", "LEVY_WEBHOOK_KEY", "LEVY_WEBHOOK_KEY_PATH"):
+              assert name not in s["api"].get("environment", {}), f"api has {name}"
+          assert "LEVY_KEEPER_KEY" in s["keeper"]["environment"], "keeper has no LEVY_KEEPER_KEY"
+          for svc in ("api", "keeper"):
+              print(svc, [(v.get("source"), v["target"]) for v in s[svc]["volumes"]])
+          assert not any(v["target"] == "/keys" or v.get("source") == "levy-keys" for v in s["api"]["volumes"]), "api mounts the signing key"
+          assert any(v["target"] == "/keys" for v in s["keeper"]["volumes"]), "keeper has no key volume"
+          PY
       - name: Keeper image loads (stops at missing config)
         run: docker run --rm levy-keeper:ci 2>&1 | grep -q "missing env var LEVY_MANAGER_ADDRESS"
       - name: API logs

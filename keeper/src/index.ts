@@ -1,8 +1,9 @@
 import { createClients } from "./chain.js";
 import { loadConfig, redactRpcUrl } from "./config.js";
-import { LevyDb } from "./db.js";
+import { LevyDb, deploymentId } from "./db.js";
 import { Indexer } from "./indexer.js";
 import { Keeper } from "./keeper.js";
+import { checkDunningSchedule } from "./dunning.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -10,13 +11,14 @@ async function main(): Promise<void> {
   const cfg = loadConfig();
   const clients = createClients(cfg);
   const db = new LevyDb(cfg.dbPath);
+  db.bindDeployment(deploymentId(cfg.chainId, cfg.managerAddress, cfg.usdcAddress));
 
   const once = process.argv.includes("--once");
+  await checkDunningSchedule(cfg.dunningScheduleDays, (n) => clients.manager.read.retryGap([n]) as Promise<bigint>);
 
   console.log(
     `levy keeper: chain=${cfg.chainId} manager=${cfg.managerAddress} keeper=${clients.account.address}`
   );
-  console.log(`webhook signing key: ${cfg.webhookKeyPath} (public key at GET /api/webhooks/public-key)`);
 
   // First boot: hydrate subscription state from chain.
   const indexer = new Indexer(cfg, clients, db);
@@ -24,13 +26,17 @@ async function main(): Promise<void> {
   console.log(`backfilled ${n} subscriptions`);
 
   const keeper = new Keeper(cfg, clients, db);
+  // The API serves this file at GET /api/webhooks/public-key; the private key stays with the keeper.
+  keeper.webhooks.publish(cfg.webhookPublicKeyPath);
+  console.log(`webhook signing key: ${cfg.webhookKeyPath}, public key published to ${cfg.webhookPublicKeyPath}`);
 
   const cycle = async () => {
     try {
       const r = await keeper.runCycle();
-      if (r.charged.length || r.retried.length || r.failed.length) {
+      if (r.charged.length || r.retried.length || r.failed.length || r.deferred.length) {
         console.log(
-          `[cycle] charged=${r.charged.length} retried=${r.retried.length} failed=${r.failed.length} logs=${r.syncedLogs}`
+          `[cycle] charged=${r.charged.length} retried=${r.retried.length} failed=${r.failed.length} ` +
+            `deferred=${r.deferred.length} logs=${r.syncedLogs}`
         );
         for (const f of r.failed) console.log(redactRpcUrl(`  ! sub ${f.subId}: ${f.error}`));
       }
