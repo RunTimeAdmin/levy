@@ -173,7 +173,7 @@ async function loadMetrics(m) {
 const LIVE = new Set(["trial", "active", "past_due"]);
 
 async function loadPlans(m, subsP = api(`/api/subscriptions?merchant=${m}`)) {
-  const [plans, subs] = await Promise.all([fetch("/api/plans").then((r) => r.json()), subsP]);
+  const [plans, subs] = await Promise.all([fetch(`/api/plans?merchant=${m}`).then((r) => r.json()), subsP]);
   const mine = plans.filter((p) => p.merchant.toLowerCase() === m.toLowerCase());
   $("linkTip").hidden = !mine.length;
   if (!mine.length) {

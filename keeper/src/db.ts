@@ -151,6 +151,7 @@ CREATE TABLE IF NOT EXISTS plans (
   introPrice TEXT NOT NULL DEFAULT '0',
   introCycles INTEGER NOT NULL DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS idx_plans_merchant ON plans (merchant COLLATE NOCASE);
 -- Merchant accounts whose owner or payout changed on-chain. A plan's merchant
 -- is its account; an account with no row owns itself and is paid itself.
 CREATE TABLE IF NOT EXISTS merchant_accounts (
@@ -623,11 +624,21 @@ export class LevyDb {
     return this.db.prepare(`SELECT * FROM plans WHERE planId = ?`).get(planId) as unknown as DbPlan | undefined;
   }
 
-  /** The on-chain plan registry mirror. */
-  listPlans(): DbPlan[] {
+  /**
+   * The on-chain plan registry mirror: every plan, one merchant account's, or
+   * a page of `limit` plans with ids above `after`.
+   */
+  listPlans(filter: { merchant?: string; after?: number; limit?: number } = {}): DbPlan[] {
+    const clauses: string[] = [];
+    const params: Array<string | number> = [];
+    if (filter.merchant) { clauses.push(`merchant = ? COLLATE NOCASE`); params.push(filter.merchant); }
+    if (filter.after !== undefined) { clauses.push(`CAST(planId AS INTEGER) > ?`); params.push(filter.after); }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const limit = filter.limit !== undefined ? `LIMIT ?` : "";
+    if (filter.limit !== undefined) params.push(filter.limit);
     return this.db
-      .prepare(`SELECT * FROM plans ORDER BY CAST(planId AS INTEGER) ASC`)
-      .all() as unknown as DbPlan[];
+      .prepare(`SELECT * FROM plans ${where} ORDER BY CAST(planId AS INTEGER) ASC ${limit}`)
+      .all(...params) as unknown as DbPlan[];
   }
 
   chargeStats(merchant?: string): { charges: number; failures: number } {

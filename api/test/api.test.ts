@@ -346,6 +346,33 @@ describe("public endpoints", () => {
     assert.equal(v2.introCycles, 1);
   });
 
+  it("GET /api/plans/:id serves one plan, so checkout never loads the list", async () => {
+    const r = await get("/api/plans/4");
+    assert.equal(r.status, 200);
+    assert.equal(r.json.planId, "4");
+    assert.equal(r.json.retired, true);
+    assert.equal(r.json.introPriceUsdc, "1.000000");
+    for (const id of ["99", "abc", "1x"]) assert.equal((await get(`/api/plans/${id}`)).status, 404, id);
+  });
+
+  it("GET /api/plans?merchant= serves one account's plans", async () => {
+    const ids = async (url: string) => ((await get(url)).json as Array<{ planId: string }>).map((p) => p.planId);
+    assert.deepEqual(await ids(`/api/plans?merchant=${OTHER.toLowerCase()}`), ["2", "3"]);
+    assert.deepEqual(await ids(`/api/plans?merchant=${MERCHANT}`), ["1"]);
+    assert.deepEqual(await ids(`/api/plans?merchant=${SAFE}`), []);
+    assert.equal((await get("/api/plans?merchant=0x1234")).status, 400);
+  });
+
+  it("GET /api/plans pages by plan id", async () => {
+    const ids = async (url: string) => ((await get(url)).json as Array<{ planId: string }>).map((p) => p.planId);
+    assert.deepEqual(await ids("/api/plans?limit=2"), ["1", "2"]);
+    assert.deepEqual(await ids("/api/plans?after=2&limit=2"), ["3", "4"]);
+    assert.deepEqual(await ids("/api/plans?after=4"), []);
+    for (const q of ["limit=0", "limit=abc", "after=-1", "after=1.5"]) {
+      assert.equal((await get(`/api/plans?${q}`)).status, 400, q);
+    }
+  });
+
   it("GET /api/webhooks/public-key serves the SPKI PEM", async () => {
     const r = await get("/api/webhooks/public-key");
     assert.equal(r.status, 200);

@@ -75,7 +75,8 @@ is indexed. A `subscriber` or `pendingTransfer` param naming someone else gets
 |---|---|---|---|
 | GET | `/api/health` | public | liveness |
 | GET | `/api/config` | public | chain id and contract addresses, for the checkout page and portal |
-| GET | `/api/plans` | public | every on-chain plan (read-only mirror, including plans with no subscribers), with `retired`, `transferable`, `maxCycles`, `introPrice`, `introPriceUsdc` and `introCycles` |
+| GET | `/api/plans` | public | on-chain plans (read-only mirror, including plans with no subscribers), with `retired`, `transferable`, `maxCycles`, `introPrice`, `introPriceUsdc` and `introCycles`: one merchant account's with `?merchant=`, otherwise a page of `limit` (default 100, at most 500) after plan id `after` |
+| GET | `/api/plans/:id` | public | one plan, or 404 |
 | GET | `/api/webhooks/public-key` | public | Ed25519 SPKI PEM and its `keyId`, plus the event list |
 | POST | `/api/auth/challenge`, `/api/auth/verify` | public | sign-in (above) |
 | GET | `/api/auth/session`, POST `/api/auth/logout` | session | check or revoke the session |

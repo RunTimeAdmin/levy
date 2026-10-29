@@ -16,7 +16,8 @@ The Levy API is a Fastify server that reads the keeper's SQLite database and ser
 |---|---|
 | `GET /api/health` | `{"ok":true,"service":"levy-api","version":"0.1.0"}` |
 | `GET /api/config` | `{chainId, managerAddress, usdcAddress}`; an address is `null` when unset, malformed or all zeros. |
-| `GET /api/plans` | Every plan of every merchant account: `planId, merchant, price, priceUsdc, cycleSeconds, cycleDays, trialSeconds, maxFailed, retired, transferable, maxCycles, introPrice, introPriceUsdc, introCycles`. `retired` and `transferable` are booleans, `maxCycles` is 0 for no limit, and `introPrice` is `"0"` when the plan has no intro price. A read-only mirror of the on-chain registry, including plans with no subscribers. |
+| `GET /api/plans` | Plans, as an array of `planId, merchant, price, priceUsdc, cycleSeconds, cycleDays, trialSeconds, maxFailed, retired, transferable, maxCycles, introPrice, introPriceUsdc, introCycles`. `retired` and `transferable` are booleans, `maxCycles` is 0 for no limit, and `introPrice` is `"0"` when the plan has no intro price. A read-only mirror of the on-chain registry, including plans with no subscribers. Anyone can create plans, so the list never comes whole: `?merchant=0x...` gives one merchant account's plans, and otherwise you get a page of `limit` plans (default 100, at most 500) with ids above `after` (default 0), in id order. A page shorter than `limit` is the last. 400 on a malformed `merchant`, `limit` or `after`. |
+| `GET /api/plans/:id` | One plan, in the same shape. 404 when there is no such plan. The checkout page uses this. |
 | `GET /api/webhooks/public-key` | `{algorithm:"ed25519", keyId, publicKey, events}` (SPKI PEM and the thirteen event names), read from the public key file the keeper publishes. 503 until the keeper has published it. |
 
 Testnet `/api/config` today:

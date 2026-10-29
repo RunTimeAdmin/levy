@@ -59,12 +59,12 @@ async function init() {
   if (!planId || !/^\d+$/.test(planId)) { planMsg("No plan in the link. Ask the merchant for their checkout link."); return; }
   ref = parseRef(params.get("ref"));
   if (!ref) { planMsg("This checkout link has an invalid reference. Ask the merchant for a new link."); return; }
-  const [config, plans] = await Promise.all([
+  const [config, found] = await Promise.all([
     fetch("/api/config").then((r) => r.json()),
-    fetch("/api/plans").then((r) => r.json()),
+    fetch(`/api/plans/${planId}`).then((r) => (r.ok ? r.json() : null)),
   ]);
   cfg = config;
-  plan = plans.find((p) => p.planId === planId);
+  plan = found;
   if (!plan) { planMsg(`Plan #${planId} was not found.`); return; }
   if (plan.retired) { planMsg(`Plan #${planId} is closed to new subscribers. Ask the merchant for a current checkout link.`); return; }
   if (!cfg.managerAddress || !cfg.usdcAddress) { planMsg("Checkout is not configured on this server yet."); return; }

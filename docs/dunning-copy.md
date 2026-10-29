@@ -20,7 +20,7 @@ Copy rules: short sentences, no blame, no jargon, one action per notice.
   `GET /api/subscriptions/:id` → `dunning.nextRetryAt` after that).
 - `{portal_url}`: `https://<your Levy host>/portal.html`, where the subscriber
   can top up their approval and resume.
-- `maxFailed` for the plan: `GET /api/plans`.
+- `maxFailed` for the plan: `GET /api/plans/:id`.
 
 ## 1. First failed charge
 
