@@ -285,7 +285,8 @@ recorded, and the contract spaces those on the dunning schedule (§3).
   Open before mainnet: M-2 (the API container holds and can create the
   webhook signing key; with item 14) and the signing-key race fix still on
   branch `claude/awesome-mendel-xzq52r`, L-1 to L-4, the rest of L-7 and L-8,
-  L-9 to L-12 (including a dedicated host for the keeper), and I-1 to I-3.
+  L-10 to L-12 (including a dedicated host for the keeper), and I-1 to I-3.
+  L-9, the `.gitignore`, was fixed on 2026-10-29.
 - **Fifth external review (2026-10-27, `docs/REVIEW_2026-10-27.md`).**
   No-go for mainnet, with no critical or high finding. It reviewed `main` at
   `941d5ed`, the soak 2 contracts, not manager v2. Checked against the code
@@ -306,6 +307,29 @@ recorded, and the contract spaces those on the dunning schedule (§3).
   when the RPC rate limits, and has tests that CI runs. The keeper and API
   findings are being fixed on branch `fix/review-2026-10-27`, made from
   manager v2, so soak 3 runs the fixes; soak 2 keeps its deployment.
+- **Sixth external review (2026-10-29, `docs/REVIEW_2026-10-29.md`).**
+  No-go for mainnet, with no critical or high finding. It reviewed `main` at
+  `f8005b3`, the soak 2 contracts, and says it did not review manager v2.
+  Checked against the code the same day: twelve of its fourteen findings were
+  already known. F-01, F-04, F-05, F-06 and F-09 are the 2026-10-27 review's
+  M-1, M-4, L-1, L-3 and L-4, fixed on manager v2 (branch
+  `docs/manager-v2-design`) but not on `main`. F-02 and F-03 (M-2 and M-3)
+  are fixed there in part: failed charges are capped by
+  `LEVY_MAX_SPONSORED_FAILURES` and dunning rows are rebuilt at start, but
+  self-funded spam is still uncapped (item 1) and a fresh database reads
+  history back only as far as `LEVY_LOOKBACK_BLOCKS`. Still open: F-07
+  (item 6), F-08 (items 7 and 8) and F-13 (items 12 and 15). F-10 and F-14
+  are the infrastructure review's L-4 and L-9. F-10, the plan list sent
+  whole, is being fixed on manager v2 on branch
+  `fix/review-2026-10-29-plans`. F-14 is fixed: `.gitignore` now covers a
+  root `.env`, `*.pem` and SQLite database files; the CI secret scan it also
+  suggests is not done. New, and fixed the same day, F-11 and F-12 in
+  `script/count-unique-actors.py`: it needs `--chain-id` and stops on an
+  endpoint on another chain, refuses a chunk below 1 and malformed addresses
+  and blocks, lists service senders such as the keeper apart with
+  `--exclude`, says in its output that it counts transaction senders rather
+  than customers, and reads the endpoint from `LEVY_RPC_URL` so a key in the
+  URL stays out of shell history.
 
 **Open** (for the paid audit and M4):
 
