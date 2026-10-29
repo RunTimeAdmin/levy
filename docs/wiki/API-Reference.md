@@ -106,7 +106,7 @@ A non-integer `:id` is 400 `invalid id`; a webhook of an account you do not own 
 
 `GET /api/deliveries` (session) lists attempts for the account's webhooks, newest first (`merchant` optional, as above). `webhookId` must be an integer (400 `invalid webhookId`; a webhook that is not yours gives an empty list). `status` is `pending`, `sent`, `failed` (waiting for a retry) or `dead` (given up), else 400 `invalid status`. `limit` is 1 to 500, default 100; non-numbers fall back to 100.
 
-Row fields: `id, webhook_id, event_type, payload, status, attempts, next_retry_at, created_at, last_error`. `payload` is the exact canonical JSON that was or will be sent.
+Row fields: `id, webhook_id, event_type, payload, status, attempts, next_retry_at, created_at, last_error, event_key`. `payload` is the exact canonical JSON that was or will be sent. `event_key` is the `txHash:logIndex` of the log behind the event (null for `allowance.low` and rows queued before 2026-10-28).
 
 ## Pages
 

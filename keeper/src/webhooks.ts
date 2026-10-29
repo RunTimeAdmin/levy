@@ -368,7 +368,9 @@ export type WebhookSink = (
   type: WebhookEventType,
   merchant: string,
   payload: Record<string, unknown>,
-  atSec: number
+  atSec: number,
+  /** `txHash:logIndex` of the log behind the event (see WebhookDispatcher.enqueue). */
+  eventKey?: string
 ) => void;
 
 const DELIVERY_TIMEOUT_MS = 5_000;
@@ -433,12 +435,17 @@ export class WebhookDispatcher {
     return this.db.registerWebhook(merchant, url, events, nowSec);
   }
 
-  /** Fan one event out to every active webhook of the merchant subscribed to it. */
+  /**
+   * Fan one event out to every active webhook of the merchant subscribed to
+   * it. An event from a log carries `eventKey` (`txHash:logIndex`) and is
+   * queued once per webhook, however often the indexer handles that log.
+   */
   enqueue(
     type: WebhookEventType,
     merchant: string,
     payload: Record<string, unknown>,
-    nowSec: number
+    nowSec: number,
+    eventKey?: string
   ): number[] {
     const ids: number[] = [];
     for (const hook of this.db.listWebhooks(merchant)) {
@@ -446,16 +453,18 @@ export class WebhookDispatcher {
       const subscribed: string[] = JSON.parse(hook.events);
       if (!subscribed.includes(type)) continue;
       const body = canonicalJson(payload);
-      const id = this.db.enqueueDelivery(hook.id, type, body, nowSec);
-      this.db.setDeliveryMac(id, this.rowMac({ id, webhook_id: hook.id, event_type: type, payload: body }));
-      ids.push(id);
+      const id = this.db.enqueueDelivery(hook.id, type, body, nowSec, {
+        eventKey,
+        mac: (id) => this.rowMac({ id, webhook_id: hook.id, event_type: type, payload: body }),
+      });
+      if (id !== null) ids.push(id);
     }
     return ids;
   }
 
   sink(): WebhookSink {
-    return (type, merchant, payload, atSec) => {
-      this.enqueue(type, merchant, payload, atSec);
+    return (type, merchant, payload, atSec, eventKey) => {
+      this.enqueue(type, merchant, payload, atSec, eventKey);
     };
   }
 

@@ -22,6 +22,9 @@ const APPROVAL_EVENT = parseAbiItem(
 
 const SYNC_KEY = "manager_events_from_block";
 
+/** Names one log, so the webhook events it causes are queued once (WebhookDispatcher.enqueue). */
+const eventKey = (log: RawLog): string => `${log.transactionHash}:${log.logIndex}`;
+
 // topic0 -> event name, built once from the contract ABI.
 const TOPIC_TO_NAME = new Map<string, string>();
 for (const entry of managerAbi as any[]) {
@@ -92,7 +95,10 @@ export class Indexer {
     if (fromBlock > toBlock) return { fromBlock, toBlock, logs: 0, nowSec };
 
     // Chunked, and the cursor moves after each chunk: a failure part-way
-    // through a long catch-up loses at most one chunk of progress.
+    // through a long catch-up loses at most one chunk of progress. That chunk
+    // is handled again on the next run, which writes nothing twice: charges,
+    // failures, transfers and webhook deliveries already recorded are
+    // skipped, and the rest are upserts of chain state.
     let count = 0;
     for (const [from, to] of logRanges(fromBlock, toBlock, BigInt(this.cfg.logChunkBlocks))) {
       const logs = await this.fetchLogs(from, to);
@@ -177,7 +183,7 @@ export class Indexer {
       const account = await this.refreshAccount(args.account as string);
       if (this.onEvent) {
         const e = buildAccountWebhookEvent(account, log);
-        this.onEvent(e.type, account.account, e.payload, nowSec);
+        this.onEvent(e.type, account.account, e.payload, nowSec, eventKey(log));
       }
       return;
     }
@@ -249,7 +255,7 @@ export class Indexer {
     if (!sub) return;
     const merchant = sub.merchant;
     for (const e of buildWebhookEvents(name, args, log, { merchant, ref: sub.ref ?? null, dunningNextRetryAt })) {
-      this.onEvent(e.type, merchant, e.payload, nowSec);
+      this.onEvent(e.type, merchant, e.payload, nowSec, eventKey(log));
     }
   }
 

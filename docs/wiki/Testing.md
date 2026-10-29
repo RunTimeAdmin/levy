@@ -9,8 +9,8 @@ The counts come from the test sources and match the README.
 | Suite | Tests | Made up of |
 |---|---|---|
 | Contracts | 117 | 104 unit tests (53 + 35 + 9 + 7) and 13 invariants |
-| Keeper | 95 | 81 unit tests and 14 anvil integration tests |
-| API | 79 | 44 endpoint tests and 35 wallet-encoding tests |
+| Keeper | 97 | 82 unit tests and 15 anvil integration tests |
+| API | 80 | 44 endpoint tests and 36 wallet-encoding tests |
 
 The suites test manager v2 ([design](https://github.com/RunTimeAdmin/levy/blob/main/docs/manager-v2-design.md)), which is not deployed yet.
 
@@ -113,11 +113,11 @@ forge test --match-path test/FailureCooldown.t.sol
 
 cd keeper && npm ci
 npx tsc --noEmit                      # typecheck
-npm test                              # 95 tests; the integration test needs anvil on PATH
+npm test                              # 97 tests; the integration test needs anvil on PATH
 npm run test:integration              # the anvil test alone
 node --import tsx --test test/dunning.test.ts   # one file
 
-cd api && npm ci && npx tsc --noEmit && npm test    # 79 tests
+cd api && npm ci && npx tsc --noEmit && npm test    # 80 tests
 ```
 
 Node 24 is expected (22.13 or later also works, since `node:sqlite` is built in). Foundry provides `forge` and `anvil`. See [Getting Started](Getting-Started.md) for the full setup.

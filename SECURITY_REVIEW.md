@@ -322,7 +322,16 @@ recorded, and the contract spaces those on the dunning schedule (§3).
     deployment, and checkout checks the plan against the contract before
     any transaction (item 16).
   - L-3: the keeper refuses a schedule shorter than `retryGap` (item 17).
-  Still open: M-5 (item 6), L-1 (item 9) and L-4 (item 11).
+  Fixed 2026-10-28 on branch `fix/review-2026-10-27-low`, also made from
+  manager v2:
+  - L-1: a log handled twice writes nothing twice. A failure already recorded
+    is skipped, and each webhook delivery carries its event's transaction hash
+    and log index under a unique key, so a replayed chunk queues no new
+    delivery. A delivery and its MAC are written in one transaction (item 9).
+  - L-4: the wallet checks the network again before every transaction and
+    names the chain in the request, so a wallet that moved since connecting
+    refuses it (item 11).
+  Still open: M-5 (item 6).
 
 **Open** (for the paid audit and M4):
 
@@ -361,7 +370,10 @@ recorded, and the contract spaces those on the dunning schedule (§3).
    stamped with the sync time rather than its block time (a late catch-up
    postpones retries). Fix: key events by transaction hash and log index, take
    the failure time from the block, test a crash between handling and cursor
-   commit.
+   commit. Duplicates fixed 2026-10-28 (2026-10-27 review L-1): a failure
+   already recorded is skipped and a delivery is unique per webhook, event type
+   and log, with a test that handles the same logs twice. Still open: the
+   failure time comes from the sync, not the block.
 10. Webhook retries stop earlier than "24 hours" suggests. The schedule is 1
     minute, 5 minutes, 15 minutes, 1 hour, then 6 hours, and a delivery whose
     next retry would pass 24 hours is dead-lettered, so the last attempt is at
@@ -370,7 +382,9 @@ recorded, and the contract spaces those on the dunning schedule (§3).
     whether to keep it or add a final attempt nearer 24 hours.
 11. The wallet checks the network at connect only; `send()` does not check it
     again before each transaction. Low: the manager address has no code on
-    the other Arc network, so the wrong-network case wastes gas.
+    the other Arc network, so the wrong-network case wastes gas. Fixed
+    2026-10-28 (2026-10-27 review L-4): `send()` checks the network before
+    every transaction and names the chain in the request.
 12. Reproducible build. `foundry.toml` does not pin `solc`. The deployment used
     0.8.33. Building the same sources with 0.8.30 reproduces the reviewer's
     33-byte difference in the metadata tail, with the code body identical

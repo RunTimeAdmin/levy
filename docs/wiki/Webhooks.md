@@ -168,7 +168,7 @@ If attempt 8 fails, the next retry would fall at 25 h 21 min, past 24 hours of a
 
 - Verify every request on the raw body before trusting it.
 - Answer 2xx within 5 seconds, then do slow work.
-- Deduplicate on `X-Levy-Delivery`. For charges, also key on `invoiceRef`, which is unique per charge: if the keeper crashes while indexing, the same event can in rare cases be queued again under a new delivery id.
+- Deduplicate on `X-Levy-Delivery`. For charges, also key on `invoiceRef`, which is unique per charge. The keeper queues each chain event once per endpoint, even when it reads the same logs again after a crash; before 2026-10-28 a crash could queue an event twice under a new delivery id.
 - Do not rely on arrival order.
 - Track a subscription by `subId`. The `ref` is chosen by whoever subscribes, so link it to your customer once and then use `subId` (see the [merchant guide](https://github.com/RunTimeAdmin/levy/blob/main/docs/merchant-guide.md)). The subscriber can change with `subscription.transferred`; the `subId` never does.
 - Check every `merchant.updated` you did not expect. A stolen owner key that redirects the payout or hands the account on shows up there.

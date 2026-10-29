@@ -253,6 +253,27 @@ describe("WebhookDispatcher", () => {
     db.close();
   });
 
+  it("queues an event from a log once per webhook, however often the log is handled", () => {
+    const db = testDb();
+    const d = new WebhookDispatcher(db, testKey());
+    const a = d.register(MERCHANT, "https://a.example/hook", ["charge.succeeded", "invoice.ready"], 1000);
+    const [first] = d.enqueue("charge.succeeded", MERCHANT, { subId: "1" }, 1000, "0xtx:3");
+    assert.deepEqual(d.enqueue("charge.succeeded", MERCHANT, { subId: "1" }, 1001, "0xtx:3"), []);
+    // The same log's other event, another log, and a webhook added since are each queued.
+    assert.equal(d.enqueue("invoice.ready", MERCHANT, { subId: "1" }, 1000, "0xtx:3").length, 1);
+    assert.equal(d.enqueue("charge.succeeded", MERCHANT, { subId: "2" }, 1000, "0xtx:4").length, 1);
+    const b = d.register(MERCHANT, "https://b.example/hook", ["charge.succeeded"], 1002);
+    assert.deepEqual(
+      d.enqueue("charge.succeeded", MERCHANT, { subId: "1" }, 1002, "0xtx:3").map((id) => db.listDeliveries().find((r) => r.id === id)!.webhook_id),
+      [b]
+    );
+    // An event without a key (allowance.low comes from no log) is never merged.
+    assert.equal(d.enqueue("charge.succeeded", MERCHANT, { subId: "1" }, 1003).length, 2);
+    assert.equal(db.listDeliveries({ webhookId: a }).filter((r) => r.event_key === "0xtx:3").length, 2);
+    assert.ok(db.listDeliveries().find((r) => r.id === first)!.mac, "queued with its MAC");
+    db.close();
+  });
+
   it("rejects unknown event types on register", () => {
     const db = testDb();
     const d = new WebhookDispatcher(db, testKey());
