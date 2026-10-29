@@ -120,7 +120,7 @@ Docker images exclude `.env`, `*.pem` and `*.db`, and containers run as a non-ro
 | [External, 2026-10-02](https://github.com/RunTimeAdmin/levy/blob/main/docs/REVIEW_2026-10-02.md) | 10 findings | fixed: on-chain schedule, canonical mainnet addresses, exact checkout amounts, pending-transaction recovery, chain recheck. Open: keeper policy for uneconomic plans, verified merchant identity on the checkout, Permit2 checkout path and runway check, dunning rebuild after database loss. One finding (soak not started) was a status item |
 | [External, 2026-10-06](https://github.com/RunTimeAdmin/levy/blob/main/docs/REVIEW_2026-10-06.md), received 2026-10-07 | none needs a contract change | items 7 to 12 below confirmed and open; the rest raised again or not defects. Fixes land on `main` and deploy after the soak |
 | [Review, 2026-10-24](https://github.com/RunTimeAdmin/levy/blob/main/docs/REVIEW_2026-10-24.md) | 0 critical, 0 high, 2 medium, 4 low, 5 info | fixed 2026-10-24 with regression tests and the invariant `noBackToBackCharges`: M-1 (a merchant could resume the subscriber's pause or an auto-pause), M-2 (missed cycles pulled back to back after a PAST_DUE recovery), L-2 (Permit2 front-run) and L-3 (single-step treasury move). Deployed 2026-10-24 for soak 2 |
-| [External, 2026-10-27](https://github.com/RunTimeAdmin/levy/blob/main/docs/REVIEW_2026-10-27.md) | 0 critical, 0 high, 5 medium, 5 low | covers the soak 2 contracts at `941d5ed`, not manager v2. Fixed the same day: L-2 and L-5 (the actor-count script). Raised again and open: M-1, M-3, M-5, L-1, L-4. New and open: the free-trial cost to the keeper (M-2), the database's chain and manager (M-4) and the retry schedule check (L-3) |
+| [External, 2026-10-27](https://github.com/RunTimeAdmin/levy/blob/main/docs/REVIEW_2026-10-27.md) | 0 critical, 0 high, 5 medium, 5 low | covers the soak 2 contracts at `941d5ed`, not manager v2. Fixed the same day: L-2 and L-5 (the actor-count script). Fixed on manager v2: M-1 to M-4 and L-3 (2026-10-27), L-1 and L-4 (2026-10-28). Open: M-5, the treasury handover |
 
 Two earlier testnet deployments, one without the H-1 fix and one with only a flat 1-day gap, were superseded and never used for billing. The soak started on 2026-10-07 on the current deployment. For the test suites and invariants see [Testing](Testing.md).
 
@@ -136,9 +136,9 @@ From `SECURITY_REVIEW.md` section 9, all before mainnet:
 6. Narrowed 2026-10-24: the treasury move is two-step (`proposeTreasury`, then `acceptTreasury` from the new address), so a mistyped address cannot take over the fees (L-3 in the 2026-10-24 review). A plain key that accepts can still become the treasury.
 7. Checkout: a second pre-connected tab does not stop at a pending subscribe, and the pending record expires after a day.
 8. Portal top-up can add rounds twice after an unreadable approval receipt.
-9. Keeper replay after a crash can duplicate webhook deliveries and stamp failures with sync time.
+9. Fixed 2026-10-28: keeper replay after a crash duplicated webhook deliveries and failure rows (2026-10-27 review L-1). Still open: failures are stamped with sync time, not block time.
 10. Webhook retries end at about 19 hours 21 minutes, not 24 hours; the docs now say so.
-11. The wallet checks the network at connect only.
+11. Fixed 2026-10-28: the wallet checked the network at connect only. It now checks before every transaction and names the chain in the request (2026-10-27 review L-4).
 12. `solc` is not pinned in `foundry.toml` (the deployment used 0.8.33), `foundry.lock` names a different OpenZeppelin commit from the submodule, and the source is not verified on the explorer.
 13. A dunning row stays listed after pause or cancel until its stale retry time.
 14. Fixed 2026-10-27: the API container held the keeper's gas key and could read the signing key. Both now stay with the keeper (2026-10-27 review M-1).

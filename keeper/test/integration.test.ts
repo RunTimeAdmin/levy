@@ -18,6 +18,8 @@ import { createClients } from "../src/chain.js";
 import { LevyDb } from "../src/db.js";
 import { Indexer } from "../src/indexer.js";
 import { Keeper } from "../src/keeper.js";
+import { WEBHOOK_EVENTS, WebhookDispatcher } from "../src/webhooks.js";
+import { generateKeyPairSync } from "node:crypto";
 
 const ABI_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "abi");
 const abi = (n: string) => JSON.parse(readFileSync(join(ABI_DIR, `${n}.json`), "utf-8"));
@@ -395,6 +397,34 @@ describe("keeper integration (anvil)", () => {
     assert.equal(db.getSubscription("1")?.ref, null); // subscribed with no reference
     assert.equal(payload.merchant.toLowerCase(), keeper.address.toLowerCase());
   });
+
+  it("handles the same logs twice without writing anything twice", async () => {
+    // A crash after a chunk's rows are written but before the cursor is saved
+    // makes the next run read that chunk again (2026-10-27 review, L-1).
+    const fresh = new LevyDb(":memory:");
+    try {
+      const hooks = new WebhookDispatcher(fresh, generateKeyPairSync("ed25519").privateKey, { allowPrivate: true });
+      hooks.register(keeper.address, "http://127.0.0.1:9/replay", [...WEBHOOK_EVENTS], 0);
+      const indexer = new Indexer(cfg, clients, fresh, hooks.sink());
+      const count = (table: string) =>
+        Number((fresh["db"].prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n);
+      const counts = () => ({
+        deliveries: count("webhook_deliveries"),
+        failures: count("charge_failures"),
+        charges: count("charges"),
+      });
+
+      await indexer.sync();
+      const once = counts();
+      assert.ok(once.deliveries > 0 && once.failures > 0 && once.charges > 0, JSON.stringify(once));
+      fresh.setSync("manager_events_from_block", "0");
+      await indexer.sync();
+      assert.deepEqual(counts(), once);
+    } finally {
+      fresh.close();
+    }
+  });
+
   it("charging never waits on webhook delivery", async () => {
     // An endpoint that accepts connections and never answers. Before delivery
     // moved to its own loop, runCycle POSTed to it and stalled all charging.

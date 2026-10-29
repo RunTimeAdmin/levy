@@ -75,8 +75,13 @@ const LevyWallet = (() => {
     }
   }
 
+  // The chain connect() put the wallet on. The wallet can change network at
+  // any time after that, so send() checks it again before every transaction.
+  let connectedChain = null;
+
   /** Ask for the account and make sure the wallet is on `chainId`. */
   async function connect(chainId) {
+    connectedChain = null;
     const [account] = await rpc("eth_requestAccounts");
     const hex = "0x" + chainId.toString(16);
     if (String(await rpc("eth_chainId")).toLowerCase() !== hex) {
@@ -95,6 +100,7 @@ const LevyWallet = (() => {
         throw new Error(`Your wallet is still on another network. Switch it to ${chainName(chainId)} and try again.`);
       }
     }
+    connectedChain = hex;
     return account;
   }
 
@@ -111,10 +117,16 @@ const LevyWallet = (() => {
    * If the receipt cannot be read within two minutes the outcome is unknown,
    * not failed: the error carries `hash` and `unknown`, and the caller must not
    * send again until receipt(hash) says how it ended. A transaction that
-   * reverted throws with `hash` and `failed`.
+   * reverted throws with `hash` and `failed`. Sends nothing unless the wallet
+   * is still on the chain connect() checked; the request names that chain too,
+   * so a wallet that moves in between refuses it.
    */
   async function send(from, to, data, onSent) {
-    const hash = await rpc("eth_sendTransaction", [{ from, to, data }]);
+    if (!connectedChain) throw new Error("Connect your wallet first.");
+    if (String(await rpc("eth_chainId")).toLowerCase() !== connectedChain) {
+      throw new Error(`Your wallet is on another network now. Switch it back to ${chainName(Number(connectedChain))} and try again. Nothing was sent.`);
+    }
+    const hash = await rpc("eth_sendTransaction", [{ from, to, data, chainId: connectedChain }]);
     if (onSent) onSent(hash);
     for (let i = 0; i < 120; i++) {
       const r = await receipt(hash);

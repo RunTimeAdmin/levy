@@ -211,6 +211,25 @@ describe("wallet.js chain names and explorer links", () => {
     await assert.rejects(wallet.connect(5042002), /still on another network/);
   });
 
+  it("sends nothing unless the wallet is still on the chain it connected on", async () => {
+    const chain = { id: ARC_TESTNET };
+    const sent: Array<{ chainId?: string }> = [];
+    fakeWallet(chain, (method, params) => {
+      if (method === "eth_sendTransaction") { sent.push(params[0] as { chainId?: string }); return hash; }
+      if (method === "eth_getTransactionReceipt") return { status: "0x1", transactionHash: hash, logs: [] };
+      throw new Error(method);
+    });
+    // The failed connect above left nothing to check against.
+    await assert.rejects(wallet.approve("0xaa", "0xbb", "0xcc", 5n), /Connect your wallet first/);
+    await wallet.connect(5042002);
+    chain.id = "0x1"; // the wallet moved after connecting
+    await assert.rejects(wallet.approve("0xaa", "0xbb", "0xcc", 5n), /on another network now.*Nothing was sent/);
+    assert.equal(sent.length, 0);
+    chain.id = ARC_TESTNET;
+    await wallet.approve("0xaa", "0xbb", "0xcc", 5n);
+    assert.deepEqual(sent.map((t) => t.chainId), [ARC_TESTNET], "the request names the chain, so a wallet that moves refuses it");
+  });
+
   it("reports a transaction whose receipt never arrives as unknown, with its hash", async () => {
     const hash = "0x" + "cd".repeat(32);
     let receiptCalls = 0;
@@ -223,6 +242,7 @@ describe("wallet.js chain names and explorer links", () => {
       }
       throw new Error(method);
     });
+    await wallet.connect(5042002);
     let sent: string | null = null;
     const err = await wallet.approve("0xaa", "0xbb", "0xcc", 5n, (h: string) => { sent = h; }).then(
       () => null, (e: { hash?: string; unknown?: boolean; failed?: boolean }) => e);
@@ -241,6 +261,7 @@ describe("wallet.js chain names and explorer links", () => {
       if (method === "eth_getTransactionReceipt") return { status: "0x0", transactionHash: hash, logs: [] };
       throw new Error(method);
     });
+    await wallet.connect(5042002);
     await assert.rejects(wallet.approve("0xaa", "0xbb", "0xcc", 5n),
       (e: { failed?: boolean; hash?: string }) => e.failed === true && e.hash === hash);
   });
@@ -252,7 +273,8 @@ describe("wallet.js chain names and explorer links", () => {
       if (method === "eth_getTransactionReceipt") return { status: "0x1", transactionHash: hash, logs: [] };
       throw new Error(method);
     });
-    const manager = "0x00000000000000000000000000000000000000cc";
+    await wallet.connect(5042002);
+    const manager ="0x00000000000000000000000000000000000000cc";
     const A = "0x00000000000000000000000000000000000000aa";
     const B = "0x00000000000000000000000000000000000000bb";
     const terms = {

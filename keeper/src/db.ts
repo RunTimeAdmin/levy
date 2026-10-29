@@ -132,6 +132,8 @@ export interface DeliveryRow {
   last_error: string | null;
   /** The keeper's MAC over the row (WebhookDispatcher); rows without a valid one are never sent. */
   mac: string | null;
+  /** `txHash:logIndex` of the chain event reported; null for allowance.low and older rows. */
+  event_key: string | null;
 }
 
 const SCHEMA = `
@@ -192,6 +194,7 @@ CREATE TABLE IF NOT EXISTS charge_failures (
   blockNumber INTEGER NOT NULL,
   at INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_charge_failures_tx ON charge_failures (txHash);
 CREATE TABLE IF NOT EXISTS dunning (
   subId TEXT PRIMARY KEY,
   attempts INTEGER NOT NULL,
@@ -296,7 +299,12 @@ export class LevyDb {
       introPrice: "TEXT NOT NULL DEFAULT '0'",
       introCycles: "INTEGER NOT NULL DEFAULT 0",
     });
-    this.addColumns("webhook_deliveries", { mac: "TEXT" });
+    this.addColumns("webhook_deliveries", { mac: "TEXT", event_key: "TEXT" });
+    // One delivery per chain event, webhook and type (enqueueDelivery). Rows
+    // without an event key never clash: SQLite counts NULLs as distinct.
+    this.db.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_deliveries_event ON webhook_deliveries (webhook_id, event_type, event_key)"
+    );
     // The API server may hold the same file open; wait instead of failing
     // on a locked database during brief concurrent writes.
     this.db.exec("PRAGMA busy_timeout = 5000");
@@ -379,13 +387,17 @@ export class LevyDb {
     return r.changes > 0;
   }
 
+  /** Ignores a failure already recorded, as when a chunk of logs is handled twice. */
   insertFailure(subId: string, failedAttempts: number, txHash: string, blockNumber: number, at: number): void {
     this.db
       .prepare(
         `INSERT INTO charge_failures (subId, failedAttempts, txHash, blockNumber, at)
-         VALUES (?, ?, ?, ?, ?)`
+         SELECT ?, ?, ?, ?, ?
+         WHERE NOT EXISTS (
+           SELECT 1 FROM charge_failures WHERE txHash = ? AND subId = ? AND failedAttempts = ?
+         )`
       )
-      .run(subId, failedAttempts, txHash, blockNumber, at);
+      .run(subId, failedAttempts, txHash, blockNumber, at, txHash, subId, failedAttempts);
   }
 
   // ---- dunning ----
@@ -666,15 +678,41 @@ export class LevyDb {
 
   // ---- webhook deliveries ----
 
-  enqueueDelivery(webhookId: number, eventType: string, payload: string, nowSec: number): number {
-    const r = this.db
-      .prepare(
-        `INSERT INTO webhook_deliveries
-           (webhook_id, event_type, payload, status, attempts, next_retry_at, created_at)
-         VALUES (?, ?, ?, 'pending', 0, ?, ?)`
-      )
-      .run(webhookId, eventType, payload, nowSec, nowSec);
-    return Number(r.lastInsertRowid);
+  /**
+   * Queue one delivery, and its MAC (WebhookDispatcher) in the same
+   * transaction, so a crash never leaves a row the keeper would refuse to
+   * send. `eventKey` names the chain event the delivery reports: a log handled
+   * twice, as after a crash before the cursor was saved, queues nothing new.
+   * Returns the row id, or null when that event is already queued for this
+   * webhook.
+   */
+  enqueueDelivery(
+    webhookId: number,
+    eventType: string,
+    payload: string,
+    nowSec: number,
+    opts: { eventKey?: string; mac?: (id: number) => string } = {}
+  ): number | null {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const r = this.db
+        .prepare(
+          `INSERT INTO webhook_deliveries
+             (webhook_id, event_type, payload, status, attempts, next_retry_at, created_at, event_key)
+           VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)
+           ON CONFLICT (webhook_id, event_type, event_key) DO NOTHING`
+        )
+        .run(webhookId, eventType, payload, nowSec, nowSec, opts.eventKey ?? null);
+      const id = r.changes > 0 ? Number(r.lastInsertRowid) : null;
+      if (id !== null && opts.mac) {
+        this.db.prepare(`UPDATE webhook_deliveries SET mac = ? WHERE id = ?`).run(opts.mac(id), id);
+      }
+      this.db.exec("COMMIT");
+      return id;
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
   }
 
   /**
@@ -687,7 +725,7 @@ export class LevyDb {
     return this.db
       .prepare(
         `SELECT id, webhook_id, event_type, payload, status, attempts,
-                next_retry_at, created_at, last_error, mac
+                next_retry_at, created_at, last_error, mac, event_key
          FROM (
            SELECT *, ROW_NUMBER() OVER (PARTITION BY webhook_id ORDER BY next_retry_at, id) AS turn
            FROM webhook_deliveries
@@ -716,10 +754,6 @@ export class LevyDb {
     return this.db
       .prepare(`SELECT d.* FROM webhook_deliveries d ${join} ${where} ORDER BY d.id DESC LIMIT ?`)
       .all(...params, limit) as unknown as DeliveryRow[];
-  }
-
-  setDeliveryMac(id: number, mac: string): void {
-    this.db.prepare(`UPDATE webhook_deliveries SET mac = ? WHERE id = ?`).run(mac, id);
   }
 
   markDeliverySent(id: number): void {
