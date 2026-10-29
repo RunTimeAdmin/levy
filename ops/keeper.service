@@ -9,16 +9,23 @@
 #        the unit runs `node dist/index.js`, no tsx at runtime)
 #   3. useradd -r -s /usr/sbin/nologin levy   (if not present)
 #   4. mkdir -p /var/lib/levy && chown levy:levy /var/lib/levy
-#        (SQLite DB + webhook signing key live here; survives redeploys)
-#   5. mkdir -p /etc/levy && cp /srv/levy/ops/.env.example /etc/levy/keeper.env
-#      Fill in the secrets, then chmod 600 /etc/levy/keeper.env
+#        (SQLite DB, webhook signing key and its public half live here;
+#        survives redeploys)
+#   5. mkdir -p /etc/levy && cat /srv/levy/ops/.env.example \
+#        /srv/levy/ops/keeper.env.example > /etc/levy/keeper.env
+#      The first file holds the settings, the second the keeper key and the
+#      signing key path (ops/.env.example alone has no LEVY_KEEPER_KEY).
+#      Fill both in, then chmod 600 /etc/levy/keeper.env
 #        (root-owned is fine: systemd reads it as root before switching user)
 #   6. cp ops/keeper.service /etc/systemd/system/levy-keeper.service
 #      systemctl daemon-reload && systemctl enable --now levy-keeper
 #
 # Logs: journalctl -u levy-keeper -f
-# The API is not packaged for systemd; run it with Docker (ops/docker-compose.yml),
-# pointing it at the same DB and signing key.
+# The API is not packaged for systemd; run it with Docker (ops/docker-compose.yml)
+# against the same DB and the public key the keeper publishes, never the
+# signing key. The keeper creates the signing key mode 600 as levy, so run the
+# API as a different user (not root, not the host's levy uid): it can then read
+# the public key (mode 644) but not the signing key. See docs/wiki/Deployment.md.
 
 [Unit]
 Description=Levy keeper - pull-based USDC subscription charges on Arc
