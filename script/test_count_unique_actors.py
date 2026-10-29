@@ -122,18 +122,71 @@ class Main(unittest.TestCase):
         self.dir.cleanup()
 
     def run_main(self, rpc, *extra):
-        actors.main(["--rpc", "x", "--contracts", MANAGER, ROUTER, "--from-block", "0", "--out", self.out, *extra], rpc=rpc)
+        actors.main(
+            ["--rpc", "x", "--chain-id", "5042002", "--contracts", MANAGER, ROUTER, "--from-block", "0", "--out", self.out, *extra],
+            rpc=rpc,
+        )
+
+    def read_out(self):
+        with open(self.out) as f:
+            return json.load(f)
 
     def test_writes_the_inputs_with_the_result(self):
         rpc = FakeRpc([log(MANAGER, 3, "0xa")], {"0xa": MERCHANT}, head=999)
         self.run_main(rpc)
-        with open(self.out) as f:
-            result = json.load(f)
+        result = self.read_out()
         self.assertEqual(result["chainId"], 5042002)
         self.assertEqual(result["contracts"], [MANAGER, ROUTER])
         self.assertEqual((result["fromBlock"], result["toBlock"]), (0, 999))
+        self.assertIn("tx.from", result["method"])
         self.assertEqual(result["uniqueAddresses"], 1)
         self.assertEqual(result["addresses"], {MERCHANT: 1})
+        self.assertEqual(result["excluded"], {})
+
+    def test_lists_excluded_senders_apart(self):
+        logs = [log(MANAGER, 3, "0xsub"), log(MANAGER, 4, "0xc1"), log(MANAGER, 5, "0xc2")]
+        rpc = FakeRpc(logs, {"0xsub": SUBSCRIBER, "0xc1": KEEPER, "0xc2": KEEPER}, head=999)
+        self.run_main(rpc, "--exclude", KEEPER.upper().replace("0X", "0x"))
+        result = self.read_out()
+        self.assertEqual(result["addresses"], {SUBSCRIBER: 1})
+        self.assertEqual((result["uniqueAddresses"], result["transactions"]), (1, 1))
+        self.assertEqual(result["excluded"], {KEEPER: 2})
+
+    def test_refuses_an_endpoint_on_another_chain(self):
+        rpc = FakeRpc([log(MANAGER, 3, "0xa")], {"0xa": MERCHANT}, head=999)
+        with self.assertRaises(SystemExit):
+            actors.main(["--rpc", "x", "--chain-id", "1", "--contracts", MANAGER, "--from-block", "0", "--out", self.out], rpc=rpc)
+        self.assertEqual(rpc.ranges, [])
+        self.assertFalse(os.path.exists(self.out))
+
+    def test_refuses_a_chunk_below_one(self):
+        for chunk in ("0", "-5"):
+            rpc = FakeRpc([], {}, head=999)
+            with self.assertRaises(SystemExit):
+                self.run_main(rpc, "--chunk", chunk)
+            self.assertEqual(rpc.ranges, [])
+
+    def test_refuses_a_malformed_address_or_block(self):
+        for bad in (["--contracts", "0x1234"], ["--exclude", "keeper"], ["--from-block", "-1"], ["--to-block", "-1"]):
+            rpc = FakeRpc([], {}, head=999)
+            with self.assertRaises(SystemExit):
+                self.run_main(rpc, *bad)
+            self.assertEqual(rpc.ranges, [])
+
+    def test_reads_the_endpoint_from_the_environment(self):
+        args = ["--chain-id", "5042002", "--contracts", MANAGER, "--from-block", "0", "--out", self.out]
+        rpc = FakeRpc([], {}, head=9)
+        with mock.patch.object(actors, "make_rpc", return_value=rpc) as make:
+            with mock.patch.dict(os.environ, {"LEVY_RPC_URL": "https://rpc.example/key123"}):
+                actors.main(args)
+            make.assert_called_once_with("https://rpc.example/key123")
+            with mock.patch.dict(os.environ, {"LEVY_RPC_URL": ""}):
+                with self.assertRaises(SystemExit):
+                    actors.main(args)
+            with mock.patch.dict(os.environ, {"LEVY_RPC_URL": "ws://rpc.example"}):
+                with self.assertRaises(SystemExit):
+                    actors.main(args)
+            self.assertEqual(make.call_count, 1)
 
     def test_no_output_when_the_scan_fails_part_way(self):
         rpc = FakeRpc([], {}, head=2000, fail_at_block=1500)
