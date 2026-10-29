@@ -1,10 +1,12 @@
 # Levy production stack: keeper (charging, dunning, webhook delivery) + API
 # (REST, dashboard, portal, checkout).
 #
-# Usage:
+# Usage, in this order (set-keeper-key.sh needs the keeper image, and `up`
+# needs ops/keeper.env, which the script writes):
 #   cp ops/.env.example ops/.env   # addresses and settings (NEVER commit ops/.env)
+#   docker compose -f ops/docker-compose.yml --env-file ops/.env build
 #   bash ops/set-keeper-key.sh     # writes the keeper's key to ops/keeper.env
-#   docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --build
+#   docker compose -f ops/docker-compose.yml --env-file ops/.env up -d
 #
 # Both services share one SQLite DB on the levy-data volume. The keeper does
 # most of the writing; the API writes webhook registrations and sign-in

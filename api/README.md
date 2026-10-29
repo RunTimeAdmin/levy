@@ -2,7 +2,7 @@
 
 Fastify API over the keeper's SQLite database, plus the merchant dashboard,
 customer portal and checkout page. The API holds no on-chain key and signs no
-transactions (it keeps only the webhook signing key): on-chain writes (plan creation and retirement, payout and
+transactions, and never holds the webhook signing key (it serves the public key the keeper publishes): on-chain writes (plan creation and retirement, payout and
 ownership changes, subscribe, pause, resume, cancel, plan changes, wallet transfers,
 allowance changes) are signed in the user's wallet, and the pages build those
 transactions in the browser. The pages encode manager v2's calls

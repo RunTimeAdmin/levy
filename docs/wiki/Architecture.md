@@ -13,7 +13,7 @@ Current testnet deployment (2026-10-24, blocks 68869601 and 68869602, built with
 | USDC and Permit2 | Arc (external) | The money (ERC-20 interface at `0x3600...0000`) and signature-based allowances (canonical Permit2) | none |
 | Keeper | operator's server, one instance | Indexer, charge loop, dunning retries, allowance-runway check, webhook delivery loop | gas key, webhook signing key |
 | SQLite (`levy.db`, WAL mode) | beside the keeper | Index of chain state plus webhooks, deliveries, dunning rows, sessions | none |
-| API | operator's server | Fastify REST API and static pages, wallet sign-in, reads the database | webhook signing key (to publish its public half); no on-chain key, no RPC connection |
+| API | operator's server | Fastify REST API and static pages, wallet sign-in, reads the database | none: it serves the public key the keeper publishes; no on-chain key, no RPC connection |
 | Pages (dashboard, portal, checkout) | user's browser | Build transactions and send them through the browser wallet; read balances and allowances through the wallet's provider | none |
 | Merchant endpoint | merchant's server | Receives signed webhooks over HTTPS | merchant's own |
 
@@ -126,7 +126,7 @@ Verified on 2026-09-25 and 2026-10-07 (`VERIFICATION.md`):
 
 ## Deployment shape
 
-One keeper (a second cannot double-charge or speed up dunning, it only wastes gas) and one API share a SQLite file and the signing key file, normally through the `levy-data` volume in `ops/docker-compose.yml`. The API listens on loopback behind a TLS reverse proxy. See [Deployment](Deployment.md) and [Keeper Service](Keeper-Service.md).
+One keeper (a second cannot double-charge or speed up dunning, it only wastes gas) and one API share a SQLite file, normally through the `levy-data` volume in `ops/docker-compose.yml`. The signing key stays on the keeper's own `levy-keys` volume, and the API serves the public key the keeper publishes. The API listens on loopback behind a TLS reverse proxy. See [Deployment](Deployment.md) and [Keeper Service](Keeper-Service.md).
 
 ## Source files
 

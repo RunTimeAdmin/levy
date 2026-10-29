@@ -17,7 +17,7 @@ The Levy API is a Fastify server that reads the keeper's SQLite database and ser
 | `GET /api/health` | `{"ok":true,"service":"levy-api","version":"0.1.0"}` |
 | `GET /api/config` | `{chainId, managerAddress, usdcAddress}`; an address is `null` when unset, malformed or all zeros. |
 | `GET /api/plans` | Every plan of every merchant account: `planId, merchant, price, priceUsdc, cycleSeconds, cycleDays, trialSeconds, maxFailed, retired, transferable, maxCycles, introPrice, introPriceUsdc, introCycles`. `retired` and `transferable` are booleans, `maxCycles` is 0 for no limit, and `introPrice` is `"0"` when the plan has no intro price. A read-only mirror of the on-chain registry, including plans with no subscribers. |
-| `GET /api/webhooks/public-key` | `{algorithm:"ed25519", keyId, publicKey, events}` (SPKI PEM and the thirteen event names). 503 if the signing key cannot be loaded. |
+| `GET /api/webhooks/public-key` | `{algorithm:"ed25519", keyId, publicKey, events}` (SPKI PEM and the thirteen event names), read from the public key file the keeper publishes. 503 until the keeper has published it. |
 
 Testnet `/api/config` today:
 
@@ -121,7 +121,7 @@ Row fields: `id, webhook_id, event_type, payload, status, attempts, next_retry_a
 | 403 | `the signed-in address does not own that merchant account`, `subscriber must be the signed-in address`, `pendingTransfer must be the signed-in address`, `cross-origin request refused` (cookie write without the right `Origin`) |
 | 404 | `subscription not found`, `webhook not found`, unknown route |
 | 429 | Reverse proxy: too many `POST /api/auth/challenge` from one IP |
-| 503 | `too many pending sign-ins; retry in a few minutes`; signing key not loadable |
+| 503 | `too many pending sign-ins; retry in a few minutes`; `signing key not available (keeper has not booted yet)` while the keeper has not published the public key |
 
 | Limit | Value |
 |---|---|

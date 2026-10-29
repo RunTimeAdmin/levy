@@ -14,7 +14,7 @@ flowchart LR
     K -->|"signed webhooks over HTTPS"| M["Merchant endpoints"]
 ```
 
-Compose publishes the API on the host's loopback only, so the reverse proxy is the single public entry point. The keeper publishes nothing: it calls the Arc RPC and delivers webhooks to merchants' own HTTPS endpoints. Both containers share one SQLite database and the webhook signing key through the `levy-data` volume.
+Compose publishes the API on the host's loopback only, so the reverse proxy is the single public entry point. The keeper publishes nothing: it calls the Arc RPC and delivers webhooks to merchants' own HTTPS endpoints. Both containers share one SQLite database through the `levy-data` volume. The webhook signing key is on `levy-keys`, which only the keeper mounts; the keeper publishes the public half to `levy-data` for the API to serve.
 
 ## Deploying the contracts
 
@@ -71,9 +71,12 @@ The contracts have no protocol owner and no upgrade path; the only admin functio
 
 ```bash
 cp ops/.env.example ops/.env     # edit it; ops/.env is git-ignored
+docker compose -f ops/docker-compose.yml --env-file ops/.env build
 bash ops/set-keeper-key.sh       # writes the keeper key to ops/keeper.env, see below
-docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --build
+docker compose -f ops/docker-compose.yml --env-file ops/.env up -d
 ```
+
+Keep this order: `set-keeper-key.sh` derives the keeper address with the keeper image, and `up` refuses to run until `ops/keeper.env` exists.
 
 `ops/.env.example` defaults to Arc **mainnet** (chain 5042, the mainnet RPC, zero addresses). For testnet, change at least `LEVY_RPC_URL` (`https://rpc.testnet.arc.io`), `LEVY_CHAIN_ID` (`5042002`), `LEVY_MANAGER_ADDRESS` and `LEVY_USDC_ADDRESS` (from the deploy output) and `LEVY_PUBLIC_ORIGIN` (the exact public origin, for example `https://app.getlevy.xyz`; the API will not start without it). If the keeper first starts more than 5000 blocks (about 40 minutes) after the deploy, set `LEVY_LOOKBACK_BLOCKS` to the current block minus the deploy block.
 
@@ -110,9 +113,21 @@ Hosts set up before 2026-10-27 kept the keeper key in `ops/.env` and the webhook
 
 1. Run `bash ops/set-keeper-key.sh`; it writes `ops/keeper.env`.
 2. Delete the `LEVY_KEEPER_KEY` line from `ops/.env`.
-3. Rebuild and recreate both containers (`docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --build`).
-4. The keeper creates a new signing key on `levy-keys` and publishes its public half, so the `keyId` changes. That rotation is deliberate, since the API could read the old key. Merchants, and the soak receiver, fetch the new public key.
-5. Delete the old key: `docker exec levy-keeper rm /data/webhook-signing-key.pem`.
+3. If `ops/.env` sets `LEVY_WEBHOOK_KEY` (an inline signing key), delete that line too. Do not move it to `ops/keeper.env`: the API could read that key, and step 6 replaces it. The API refuses to start while either line is in `ops/.env`.
+4. Stop both containers, set the old database aside and delete the old private key. Manager v2 is a new deployment, so it needs a fresh database (the keeper refuses one with data but no deployment record), and the old key on `levy-data` is readable by the API until it is gone. With the containers stopped, the new API never sees it:
+
+   ```bash
+   docker compose -f ops/docker-compose.yml --env-file ops/.env stop
+   docker run --rm -v levy-data:/data --entrypoint sh levy-keeper:latest -c '
+     cd /data && mkdir -p pre-v2
+     for f in levy.db levy.db-wal levy.db-shm; do if [ -e "$f" ]; then mv -n "$f" pre-v2/; fi; done
+     rm -f webhook-signing-key.pem
+     ls -la /data /data/pre-v2'
+   ```
+
+5. Rebuild and recreate both containers (`docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --build`).
+6. The keeper creates a new signing key on `levy-keys` and publishes its public half, so the `keyId` changes. That rotation is deliberate, since the API could read the old key. Merchants, and the soak receiver, fetch the new public key.
+7. Check that the old key is gone: `docker exec levy-api ls /data` must not list `webhook-signing-key.pem`.
 
 A new manager deployment also needs a fresh database: the keeper records the chain, manager and USDC in its database and refuses to start on one made for another deployment.
 
@@ -129,13 +144,15 @@ cast call <FEEROUTER> "treasury()(address)" --rpc-url https://rpc.testnet.arc.io
 
 ## systemd instead of Docker
 
-`ops/keeper.service` runs the keeper alone. The API is not packaged for systemd; the unit's comments say to run it with Docker against the same database and key. Setup, as the unit describes it:
+`ops/keeper.service` runs the keeper alone. The API is not packaged for systemd; the unit's comments say to run it with Docker against the same database and the public key the keeper publishes. Setup, as the unit describes it:
 
 1. Put the repo in `/srv/levy` (edit the unit's paths if different). Node 24 must be at `/usr/bin/node`, since the keeper uses built-in `node:sqlite`.
 2. `cd /srv/levy/keeper && npm ci && npx tsc && npm prune --omit=dev`. The unit runs `node dist/index.js`.
-3. Create the `levy` system user and `/var/lib/levy` (database and signing key).
-4. Copy `ops/.env.example` to `/etc/levy/keeper.env`, fill it in, set mode 600.
+3. Create the `levy` system user and `/var/lib/levy` (database, signing key and public key).
+4. Build `/etc/levy/keeper.env` from `ops/.env.example` (the settings) followed by `ops/keeper.env.example` (`LEVY_KEEPER_KEY` and the signing key path), fill it in, set mode 600. `ops/.env.example` alone has no `LEVY_KEEPER_KEY`, and the keeper will not start without it.
 5. Install the unit as `levy-keeper.service`, then `systemctl daemon-reload && systemctl enable --now levy-keeper`.
+
+**Keeping the API away from the signing key.** Under systemd both key files sit in `/var/lib/levy`, next to the database, so the separation comes from users and file modes rather than volumes. The keeper runs as `levy` and creates the signing key with mode 600, so only `levy` and root can read it; the public key it publishes is mode 644. Run the API container as a different user: never as root, and never with `--user` set to the host's `levy` uid. The `levy` user inside the `levy-api` image has its own uid; compare `id levy` on the host with `docker run --rm --entrypoint id levy-api:latest`. The API also writes the database (SQLite keeps `-wal` and `-shm` files beside it), so its user needs write access to the database files but never read access to the signing key. This layout has not been run yet, so the exact ownership and modes for the database are not documented.
 
 It restarts on failure after 10 seconds, gives up after 5 failed starts in 5 minutes (`start-limit-hit`), is hardened (`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, writes only to `/var/lib/levy` and its working directory) and logs to journald as `levy-keeper`.
 
