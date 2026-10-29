@@ -54,10 +54,11 @@ Common cycle values:
 
 The call emits `PlanCreated` with your `planId`. Save it; subscribers need it.
 
-To list plans from the API:
+To list your plans from the API, or read one:
 
 ```
-GET /api/plans
+GET /api/plans?merchant=<your account>
+GET /api/plans/<planId>
 ```
 
 ### Parameters, explained

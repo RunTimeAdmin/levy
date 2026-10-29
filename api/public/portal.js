@@ -10,7 +10,7 @@ const every = (sec) => ({ 86400: "day", 604800: "week", 2592000: "30 days", 7776
   ?? `${+(sec / 86400).toFixed(2)} days`;
 const date = (sec) => new Date(sec * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 let cfg; // chain id and contract addresses, for the wallet actions
-let plans = []; // every plan, for plan changes (same merchant only)
+let plans = []; // the plans of this wallet's merchants, for plan changes (same merchant only)
 function txCell(hash) {
   const url = LevyWallet.txUrl(cfg.chainId, hash);
   return url ? `<a href="${url}" target="_blank" rel="noopener">${short(hash)}</a>` : short(hash);
@@ -387,15 +387,17 @@ async function load() {
   if (!s) return;
   const main = $("main");
   main.innerHTML = `<p class="loading">Loading your subscriptions...</p>`;
-  const [subs, config, funds, allPlans, offers] = await Promise.all([
+  const [subs, config, funds, offers] = await Promise.all([
     LevyAuth.api(`/api/subscriptions?subscriber=${s}`),
     fetch("/api/config").then((r) => r.json()),
     LevyAuth.api("/api/funds"),
-    fetch("/api/plans").then((r) => r.json()),
     LevyAuth.api(`/api/subscriptions?pendingTransfer=${s}`),
   ]);
   cfg = config;
-  plans = allPlans;
+  // Only the plans of the merchants this wallet deals with: plan changes stay
+  // within a merchant, and the full list grows with anyone's plans.
+  const merchants = [...new Set([...subs, ...offers].map((x) => x.merchant.toLowerCase()))];
+  plans = (await Promise.all(merchants.map((m) => fetch(`/api/plans?merchant=${m}`).then((r) => r.json())))).flat();
   if (!subs.length) {
     main.innerHTML = `<section class="panel"><h2>No subscriptions</h2><p class="empty">This address has no Levy subscriptions. Subscriptions start from a merchant's checkout link.</p></section>`;
     if (offers.length && cfg.managerAddress) main.prepend(offersPanel(offers));

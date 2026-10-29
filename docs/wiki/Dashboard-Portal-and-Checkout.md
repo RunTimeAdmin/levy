@@ -14,7 +14,7 @@ Amounts are USDC with 6 decimals (1 USDC = 1,000,000 units). The pages show exac
 
 This page describes the pages for manager v2 ([design](https://github.com/RunTimeAdmin/levy/blob/main/docs/manager-v2-design.md)). They encode v2's calls, so they work only against a v2 deployment, not the testnet contracts from 2026-10-24.
 
-Dashboard and portal sign in with the wallet ([Authentication.md](Authentication.md)); checkout reads only the public `/api/config` and `/api/plans`. The shared scripts in `/public/` are `wallet.js` (`LevyWallet`: chain switching, `eth_call` reads, transaction sending, hand-encoded calls whose selectors `api/test/wallet.test.ts` checks against the contract ABI), `auth.js` (sign-in), `network.js` (testnet bar) and `app.css`, plus one controller per page.
+Dashboard and portal sign in with the wallet ([Authentication.md](Authentication.md)); checkout reads only the public `/api/config` and `/api/plans/:id`. The dashboard loads the merchant account's plans with `/api/plans?merchant=`, and the portal loads only the plans of the merchants the wallet subscribes to. The shared scripts in `/public/` are `wallet.js` (`LevyWallet`: chain switching, `eth_call` reads, transaction sending, hand-encoded calls whose selectors `api/test/wallet.test.ts` checks against the contract ABI), `auth.js` (sign-in), `network.js` (testnet bar) and `app.css`, plus one controller per page.
 
 ## On-chain actions
 

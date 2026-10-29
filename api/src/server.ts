@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAddress } from "viem";
-import { LevyDb, Status, deploymentId } from "../../keeper/src/db.js";
+import { LevyDb, Status, deploymentId, type DbPlan } from "../../keeper/src/db.js";
 import { checkWebhookUrl } from "../../keeper/src/webhook-url.js";
 import {
   WEBHOOK_EVENTS,
@@ -15,6 +15,9 @@ import { registerAuthRoutes } from "./auth.js";
 
 const API_DIR = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(API_DIR, "..", "public");
+/** Plans per page of GET /api/plans, by default and at most. */
+const PLAN_PAGE = 100;
+const PLAN_PAGE_MAX = 500;
 
 export interface ApiOptions {
   /** Path to the keeper's SQLite file. */
@@ -206,18 +209,38 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
 
   // ---- plans (read-only mirror of the on-chain plan registry) ----
 
-  app.get("/api/plans", async () => {
-    return db.listPlans().map((p) => ({
-      ...p,
-      priceUsdc: formatUsdc(p.price),
-      cycleDays: p.cycleSeconds / 86_400,
-      retired: p.retired === 1,
-      transferable: p.transferable === 1,
-      maxCycles: p.maxCycles ?? 0,
-      introPrice: p.introPrice ?? "0",
-      introPriceUsdc: formatUsdc(p.introPrice ?? "0"),
-      introCycles: p.introCycles ?? 0,
-    }));
+  const planView = (p: DbPlan) => ({
+    ...p,
+    priceUsdc: formatUsdc(p.price),
+    cycleDays: p.cycleSeconds / 86_400,
+    retired: p.retired === 1,
+    transferable: p.transferable === 1,
+    maxCycles: p.maxCycles ?? 0,
+    introPrice: p.introPrice ?? "0",
+    introPriceUsdc: formatUsdc(p.introPrice ?? "0"),
+    introCycles: p.introCycles ?? 0,
+  });
+
+  // Anyone can create plans, so the list is never sent whole: one merchant
+  // account's plans (only its owner can add to them), or a page by plan id.
+  app.get("/api/plans", async (req) => {
+    const q = req.query as { merchant?: string; after?: string; limit?: string };
+    if (q.merchant !== undefined) {
+      if (!isAddress(q.merchant)) return bad(400, "invalid merchant address");
+      return db.listPlans({ merchant: q.merchant }).map(planView);
+    }
+    const after = Number(q.after ?? 0);
+    if (!Number.isSafeInteger(after) || after < 0) return bad(400, "invalid after");
+    const limit = Number(q.limit ?? PLAN_PAGE);
+    if (!Number.isSafeInteger(limit) || limit < 1) return bad(400, "invalid limit");
+    return db.listPlans({ after, limit: Math.min(limit, PLAN_PAGE_MAX) }).map(planView);
+  });
+
+  app.get("/api/plans/:id", async (req) => {
+    const { id } = req.params as { id: string };
+    const plan = /^\d+$/.test(id) ? db.getPlan(id) : undefined;
+    if (!plan) return bad(404, "plan not found");
+    return planView(plan);
   });
 
   // ---- merchant accounts ----
