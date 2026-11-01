@@ -283,3 +283,9 @@ part (PR #5 merged, which fixes L-5, L-6, the `set-keeper-key.sh` half of
 L-7 and the action pinning in L-8). Each fix has a regression test; the
 webhook-cap and signature tests fail without their fix. Everything else
 listed above is still open; see `SECURITY_REVIEW.md` §9.
+
+M-2 fixed 2026-11-01, as the finding proposed: the keeper alone loads the key,
+from a volume only it mounts, creates it create-only, and publishes the public
+key and its id for the API to serve. Delivery rows carry a MAC only the keeper
+can make, so it signs no row the API wrote. Tests in `keeper/test/webhooks.test.ts`
+and `api/test/api.test.ts`.

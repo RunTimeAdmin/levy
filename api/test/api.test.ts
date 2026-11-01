@@ -1,20 +1,21 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateKeyPairSync } from "node:crypto";
 import dns from "node:dns";
-import { writeFileSync } from "node:fs";
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { parseSiweMessage } from "viem/siwe";
 import { LevyDb } from "../../keeper/src/db.js";
+import { keyId, writePublicKey } from "../../keeper/src/webhooks.js";
 import { apiOptionsFromEnv, buildServer, formatUsdc, publicOrigin } from "../src/server.js";
 import type { FastifyInstance } from "fastify";
 
 const tmp = mkdtempSync(join(tmpdir(), "levy-api-"));
 const DB = join(tmp, "test.db");
-const KEY = join(tmp, "wh-key.pem");
+const PUBLIC_KEY = join(tmp, "wh-public-key.json");
+const signingKey = generateKeyPairSync("ed25519").privateKey;
 const ORIGIN = "https://app.levy.test";
 
 // Real keys: sign-in needs genuine signatures.
@@ -78,12 +79,11 @@ function seed(): void {
 
 before(async () => {
   seed();
-  // Pre-generate the signing key so the API doesn't create one.
-  const { privateKey } = generateKeyPairSync("ed25519");
-  writeFileSync(KEY, privateKey.export({ format: "pem", type: "pkcs8" }), { mode: 0o600 });
+  // What the keeper publishes on boot. The API never sees the private key.
+  writePublicKey(PUBLIC_KEY, signingKey);
 
   app = buildServer({
-    dbPath: DB, webhookKeyPath: KEY, origin: ORIGIN, chainId: 5042002,
+    dbPath: DB, webhookPublicKeyPath: PUBLIC_KEY, origin: ORIGIN, chainId: 5042002,
     managerAddress: MANAGER, usdcAddress: USDC,
   });
   await app.listen({ port: 0, host: "127.0.0.1" });
@@ -271,7 +271,7 @@ describe("cookie sessions (the pages)", () => {
   });
 
   it("drops the __Host- prefix and Secure on a local http origin", async () => {
-    const local = buildServer({ dbPath: DB, webhookKeyPath: KEY, origin: "http://localhost:3001", chainId: 5042002 });
+    const local = buildServer({ dbPath: DB, webhookPublicKeyPath: PUBLIC_KEY, origin: "http://localhost:3001", chainId: 5042002 });
     await local.listen({ port: 0, host: "127.0.0.1" });
     try {
       const addr = local.server.address() as { port: number };
@@ -298,7 +298,7 @@ describe("public endpoints", () => {
 
   it("GET /api/config treats the zero-address placeholder as unset", async () => {
     const zero = `0x${"0".repeat(40)}`;
-    const local = buildServer({ dbPath: DB, webhookKeyPath: KEY, origin: ORIGIN, chainId: 5042002, managerAddress: zero, usdcAddress: USDC });
+    const local = buildServer({ dbPath: DB, webhookPublicKeyPath: PUBLIC_KEY, origin: ORIGIN, chainId: 5042002, managerAddress: zero, usdcAddress: USDC });
     try {
       const r = await local.inject({ method: "GET", url: "/api/config" });
       assert.deepEqual(r.json(), { chainId: 5042002, managerAddress: null, usdcAddress: USDC });
@@ -315,15 +315,28 @@ describe("public endpoints", () => {
     assert.equal(r.json[0].priceUsdc, "10.000000");
   });
 
-  it("GET /api/webhooks/public-key serves the SPKI PEM", async () => {
+  it("GET /api/webhooks/public-key serves the SPKI PEM the keeper published", async () => {
     const r = await get("/api/webhooks/public-key");
     assert.equal(r.status, 200);
     assert.equal(r.json.algorithm, "ed25519");
-    assert.match(r.json.keyId, /^[0-9a-f]{16}$/);
+    assert.equal(r.json.keyId, keyId(signingKey));
     assert.ok(r.json.publicKey.includes("BEGIN PUBLIC KEY"));
     assert.equal(r.json.events.length, 10);
     assert.ok(r.json.events.includes("allowance.low"));
     assert.ok(r.json.events.includes("subscription.updated"));
+  });
+
+  it("answers 503 until the keeper has published a key, and never makes one itself", async () => {
+    const missing = join(tmp, "not-published.json");
+    const local = buildServer({ dbPath: DB, webhookPublicKeyPath: missing, origin: ORIGIN, chainId: 5042002 });
+    try {
+      const r = await local.inject({ method: "GET", url: "/api/webhooks/public-key" });
+      assert.equal(r.statusCode, 503);
+      assert.match(r.body, /not published yet/);
+    } finally {
+      await local.close();
+    }
+    assert.equal(existsSync(missing), false);
   });
 });
 

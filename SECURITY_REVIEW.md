@@ -282,9 +282,12 @@ recorded, and the contract spaces those on the dunning schedule (§3).
     signed deliveries.
   - M-5, PR #5 (the 2026-10-17 sweep) is merged, which fixes L-5, L-6, the
     keeper key on `sed`'s command line (L-7) and the action pinning (L-8).
-  Open before mainnet: M-2 (the API container holds and can create the
-  webhook signing key; with item 14) and the signing-key race fix still on
-  branch `claude/awesome-mendel-xzq52r`, L-1 to L-4, the rest of L-7 and L-8,
+  M-2 fixed 2026-11-01: the signing key is on a volume only the keeper
+  mounts, created create-only and moved there from the shared volume on the
+  first boot after upgrading; the keeper publishes the public key for the API
+  to serve; and the keeper signs only delivery rows carrying its MAC, so rows
+  the API writes are dead-lettered (rows queued before the upgrade too).
+  Open before mainnet: L-1 to L-4, the rest of L-7 and L-8,
   L-10 to L-12 (including a dedicated host for the keeper), and I-1 to I-3.
   L-9, the `.gitignore`, was fixed on 2026-10-29.
 - **Fifth external review (2026-10-27, `docs/REVIEW_2026-10-27.md`).**
@@ -396,8 +399,8 @@ recorded, and the contract spaces those on the dunning schedule (§3).
     exposed the keeper's gas key (gas funds only, since `charge()` is
     permissionless anyway). The API now gets an explicit `environment` list of
     the variables `api/src/server.ts` reads, without the keeper key or
-    `LEVY_RPC_URL`. The webhook signing key on the shared volume is still the
-    API's to read (the 2026-10-24 infrastructure review's M-2).
+    `LEVY_RPC_URL`. Since 2026-11-01 it gets no webhook signing key either
+    (the 2026-10-24 infrastructure review's M-2).
 15. The CI ABI drift check compares `keeper/abi/*.json` with the compiled
     contracts but not the `.bin` files that the keeper integration test deploys,
     so a stale `.bin` would pass CI.

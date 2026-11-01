@@ -92,6 +92,8 @@ export interface DeliveryRow {
   next_retry_at: number; // unix seconds
   created_at: number; // unix seconds
   last_error: string | null;
+  /** The keeper's MAC over the row (webhooks.ts deliveryMac); null on a row it did not queue. */
+  mac: string | null;
 }
 
 const SCHEMA = `
@@ -182,7 +184,8 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
   attempts INTEGER NOT NULL DEFAULT 0,
   next_retry_at INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
-  last_error TEXT
+  last_error TEXT,
+  mac TEXT -- the keeper's MAC over the row; it signs no row without one
 );
 CREATE INDEX IF NOT EXISTS idx_deliveries_due
   ON webhook_deliveries (status, next_retry_at);
@@ -226,6 +229,10 @@ export class LevyDb {
     if (!cols.some((c) => c.name === "pausedByMerchant")) {
       this.db.exec(`ALTER TABLE subscriptions ADD COLUMN pausedByMerchant INTEGER NOT NULL DEFAULT 0`);
     }
+    // Databases created before deliveries carried the keeper's MAC. Rows queued
+    // before then have none and are dead-lettered rather than signed.
+    const deliveryCols = this.db.prepare(`PRAGMA table_info(webhook_deliveries)`).all() as Array<{ name: string }>;
+    if (!deliveryCols.some((c) => c.name === "mac")) this.db.exec(`ALTER TABLE webhook_deliveries ADD COLUMN mac TEXT`);
     // The API server may hold the same file open; wait instead of failing
     // on a locked database during brief concurrent writes.
     this.db.exec("PRAGMA busy_timeout = 5000");
@@ -509,7 +516,18 @@ export class LevyDb {
 
   // ---- webhook deliveries ----
 
-  enqueueDelivery(webhookId: number, eventType: string, payload: string, nowSec: number): number {
+  /**
+   * Queues a delivery. `seal` gives the keeper's MAC over the stored row, which
+   * names its id, so it is written right after the insert; a row queued without
+   * one is never sent.
+   */
+  enqueueDelivery(
+    webhookId: number,
+    eventType: string,
+    payload: string,
+    nowSec: number,
+    seal?: (row: { id: number; webhook_id: number; event_type: string; payload: string; created_at: number }) => string
+  ): number {
     const r = this.db
       .prepare(
         `INSERT INTO webhook_deliveries
@@ -517,7 +535,12 @@ export class LevyDb {
          VALUES (?, ?, ?, 'pending', 0, ?, ?)`
       )
       .run(webhookId, eventType, payload, nowSec, nowSec);
-    return Number(r.lastInsertRowid);
+    const id = Number(r.lastInsertRowid);
+    if (seal) {
+      const mac = seal({ id, webhook_id: webhookId, event_type: eventType, payload, created_at: nowSec });
+      this.db.prepare(`UPDATE webhook_deliveries SET mac = ? WHERE id = ?`).run(mac, id);
+    }
+    return id;
   }
 
   /**
@@ -530,7 +553,7 @@ export class LevyDb {
     return this.db
       .prepare(
         `SELECT id, webhook_id, event_type, payload, status, attempts,
-                next_retry_at, created_at, last_error
+                next_retry_at, created_at, last_error, mac
          FROM (
            SELECT *, ROW_NUMBER() OVER (PARTITION BY webhook_id ORDER BY next_retry_at, id) AS turn
            FROM webhook_deliveries

@@ -168,6 +168,7 @@ before(async () => {
   // boundaries (production default is 500).
   process.env.LEVY_LOG_CHUNK_BLOCKS = "7";
   process.env.LEVY_WEBHOOK_KEY_PATH = join(dirname(fileURLToPath(import.meta.url)), "test-webhook-key.pem");
+  process.env.LEVY_WEBHOOK_PUBLIC_KEY_PATH = join(dirname(fileURLToPath(import.meta.url)), "test-webhook-public-key.json");
 
   const { loadConfig } = await import("../src/config.js");
   const cfg = loadConfig();

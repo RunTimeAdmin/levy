@@ -2,7 +2,7 @@ import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LevyDb } from "../src/db.js";
@@ -11,13 +11,17 @@ import {
   canonicalJson,
   DELIVERY_ID_RE,
   keyId,
+  deliveryMac,
+  deliveryMacKey,
   loadSigningKey,
   nextRetryAt,
   publicKeyPem,
+  readPublicKey,
   signPayload,
   verifyDelivery,
   verifySignature,
   WebhookDispatcher,
+  writePublicKey,
   type WebhookEventType,
 } from "../src/webhooks.js";
 import { checkWebhookUrl, isBlockedAddress } from "../src/webhook-url.js";
@@ -86,6 +90,42 @@ describe("loadSigningKey", () => {
     const pem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
     const k = loadSigningKey(join(tmp, "unused3.pem"), pem);
     assert.equal(publicKeyPem(k), publicKeyPem(privateKey));
+  });
+
+  it("moves a key from where the API could read it, so merchants' pinned key keeps working", () => {
+    const legacy = join(tmp, "shared-key.pem");
+    const kept = join(tmp, "keeper-only-key.pem");
+    const old = testKey();
+    writeFileSync(legacy, old.export({ format: "pem", type: "pkcs8" }), { mode: 0o600 });
+    const k = loadSigningKey(kept, undefined, legacy);
+    assert.equal(keyId(k), keyId(old));
+    assert.equal(existsSync(legacy), false);
+    assert.equal(keyId(loadSigningKey(kept, undefined, legacy)), keyId(old));
+  });
+
+  it("never replaces a key, and leaves both when they differ", () => {
+    const legacy = join(tmp, "shared-key-2.pem");
+    const kept = join(tmp, "keeper-only-key-2.pem");
+    const held = loadSigningKey(kept);
+    const pemBefore = readFileSync(kept, "utf-8");
+    // The kept key wins over a legacy one; nothing is moved or removed.
+    writeFileSync(legacy, testKey().export({ format: "pem", type: "pkcs8" }), { mode: 0o600 });
+    assert.equal(keyId(loadSigningKey(kept, undefined, legacy)), keyId(held));
+    assert.equal(readFileSync(kept, "utf-8"), pemBefore);
+    assert.equal(existsSync(legacy), true);
+  });
+});
+
+describe("the published public key", () => {
+  it("round-trips the public half only, and refuses a record whose id does not match", () => {
+    const key = testKey();
+    const path = join(tmp, "public-key.json");
+    writePublicKey(path, key);
+    const text = readFileSync(path, "utf-8");
+    assert.ok(!text.includes("PRIVATE"));
+    assert.deepEqual(readPublicKey(path), { algorithm: "ed25519", keyId: keyId(key), publicKey: publicKeyPem(key) });
+    writeFileSync(path, JSON.stringify({ ...JSON.parse(text), keyId: "0".repeat(16) }));
+    assert.throws(() => readPublicKey(path), /not a published Ed25519 public key/);
   });
 });
 
@@ -465,6 +505,34 @@ describe("dispatchDue (live HTTP)", () => {
     await d.dispatchDue(0);
     assert.equal(db.listDeliveries()[0].last_error, "connection failed");
     db.close();
+  });
+  it("signs only rows it queued: one written by another process, or copied, is dead-lettered unsent", async () => {
+    await ready;
+    received.length = 0;
+    const db = testDb();
+    const d = new WebhookDispatcher(db, testKey(), LOCAL);
+    const hookId = d.register(MERCHANT, `http://127.0.0.1:${port}/hook`, ["charge.succeeded"], 1000);
+    // What a compromised API could write into the shared database (M-2).
+    const forged = db.enqueueDelivery(hookId, "charge.succeeded", canonicalJson({ subId: "1", amount: "999" }), 1000);
+    const [queued] = d.enqueue("charge.succeeded", MERCHANT, { subId: "2", amount: "500" }, 1000);
+    const mac = db.listDeliveries({}).find((r) => r.id === queued)!.mac!;
+    const copied = db.enqueueDelivery(hookId, "charge.succeeded", canonicalJson({ subId: "2", amount: "500" }), 1000, () => mac);
+
+    const out = await d.dispatchDue(1000);
+    assert.deepEqual(out, { sent: 1, failed: 0, dead: 2 });
+    assert.equal(received.length, 1);
+    assert.equal(JSON.parse(received[0].body).subId, "2");
+    const dead = db.listDeliveries({ status: "dead" });
+    assert.deepEqual(dead.map((r) => r.id).sort((a, b) => a - b), [forged, copied]);
+    for (const r of dead) assert.match(r.last_error ?? "", /not queued by the keeper/);
+  });
+
+  it("binds the delivery MAC to the signing key", () => {
+    const row = { id: 1, webhook_id: 2, event_type: "charge.succeeded", payload: "{}", created_at: 3 };
+    const k = testKey();
+    assert.equal(deliveryMac(deliveryMacKey(k), row), deliveryMac(deliveryMacKey(k), row));
+    assert.notEqual(deliveryMac(deliveryMacKey(k), row), deliveryMac(deliveryMacKey(testKey()), row));
+    assert.notEqual(deliveryMac(deliveryMacKey(k), row), deliveryMac(deliveryMacKey(k), { ...row, payload: "{\"x\":1}" }));
   });
 });
 

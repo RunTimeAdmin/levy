@@ -4,7 +4,7 @@ import { LevyDb } from "./db.js";
 import { Indexer } from "./indexer.js";
 import { managerAbi, usdcAbi } from "./chain.js";
 import { FUNDS_CHECKS_PER_CYCLE, FUNDS_RECHECK_SEC, fundsStatus } from "./funds.js";
-import { WebhookDispatcher, loadSigningKey } from "./webhooks.js";
+import { WebhookDispatcher, loadSigningKey, writePublicKey } from "./webhooks.js";
 import { decodeEventLog } from "viem";
 
 /**
@@ -40,7 +40,10 @@ export class Keeper {
     private clients: ChainClients,
     private db: LevyDb
   ) {
-    this.webhooks = new WebhookDispatcher(db, loadSigningKey(cfg.webhookKeyPath, cfg.webhookKey), {
+    const signingKey = loadSigningKey(cfg.webhookKeyPath, cfg.webhookKey, cfg.webhookKeyLegacyPath);
+    // The API serves this; it never reads the private key (M-2).
+    writePublicKey(cfg.webhookPublicKeyPath, signingKey);
+    this.webhooks = new WebhookDispatcher(db, signingKey, {
       allowPrivate: cfg.webhookAllowPrivate,
     });
     this.indexer = new Indexer(cfg, clients, db, this.webhooks.sink());
