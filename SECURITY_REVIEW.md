@@ -390,11 +390,14 @@ recorded, and the contract spaces those on the dunning schedule (§3).
     chargeable. Pausing or cancelling does not clear it, so the dashboard's
     retry queue and `dunningDepth` still list those subscriptions until the
     stale retry time arrives. Cosmetic: nothing is charged.
-14. `ops/docker-compose.yml` gives the keeper and the API container the same
-    `env_file`, so the internet-facing API holds `LEVY_KEEPER_KEY`, which only
-    the keeper reads. A compromised API would expose the keeper's gas key (gas
-    funds only, since `charge()` is permissionless anyway). Give each service
-    its own env file or an explicit `environment` list.
+14. Fixed 2026-11-01: `ops/docker-compose.yml` gave the keeper and the API
+    container the same `env_file`, so the internet-facing API held
+    `LEVY_KEEPER_KEY`, which only the keeper reads. A compromised API would have
+    exposed the keeper's gas key (gas funds only, since `charge()` is
+    permissionless anyway). The API now gets an explicit `environment` list of
+    the variables `api/src/server.ts` reads, without the keeper key or
+    `LEVY_RPC_URL`. The webhook signing key on the shared volume is still the
+    API's to read (the 2026-10-24 infrastructure review's M-2).
 15. The CI ABI drift check compares `keeper/abi/*.json` with the compiled
     contracts but not the `.bin` files that the keeper integration test deploys,
     so a stale `.bin` would pass CI.

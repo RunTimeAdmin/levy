@@ -43,9 +43,18 @@ services:
       dockerfile: ops/Dockerfile.api
     image: levy-api:latest
     container_name: levy-api
-    env_file:
-      - .env
+    # No env_file: .env holds LEVY_KEEPER_KEY (the keeper's gas key) and LEVY_RPC_URL,
+    # which the API never reads (SECURITY_REVIEW.md §9 item 14). It gets only what
+    # api/src/server.ts reads, filled in from ops/.env; the Dockerfile sets NODE_ENV and
+    # LEVY_API_HOST. Defaults match the keeper's, and an empty value reads as unset
+    # (LEVY_WEBHOOK_KEY empty means "use the key file", as in the keeper).
     environment:
+      LEVY_PUBLIC_ORIGIN: ${LEVY_PUBLIC_ORIGIN:?set LEVY_PUBLIC_ORIGIN in ops/.env}
+      LEVY_CHAIN_ID: ${LEVY_CHAIN_ID:-5042}
+      LEVY_MANAGER_ADDRESS: ${LEVY_MANAGER_ADDRESS:?set LEVY_MANAGER_ADDRESS in ops/.env}
+      LEVY_USDC_ADDRESS: ${LEVY_USDC_ADDRESS:?set LEVY_USDC_ADDRESS in ops/.env}
+      LEVY_WEBHOOK_KEY: ${LEVY_WEBHOOK_KEY:-}
+      LEVY_WEBHOOK_ALLOW_PRIVATE: ${LEVY_WEBHOOK_ALLOW_PRIVATE:-}
       LEVY_DB_PATH: /data/levy.db
       LEVY_WEBHOOK_KEY_PATH: /data/webhook-signing-key.pem
       # Fixed inside the container; LEVY_API_PORT only picks the host port.

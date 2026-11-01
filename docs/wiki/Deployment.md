@@ -101,7 +101,7 @@ The keeper key is a hot wallet that pays gas; fund it minimally. `ops/set-keeper
 3. It derives the address by piping the key to the `levy-keeper` image on stdin, writes `LEVY_KEEPER_KEY=` into `ops/.env` and sets mode 600.
 4. It prints the keeper address and its USDC balance (via `python3`; "unknown" if that fails), so you can confirm it is the wallet you funded.
 
-It needs the keeper image built and a `LEVY_KEEPER_KEY=` line already in `ops/.env`, because it replaces that line with `sed`. Two caveats from reading it: the key passes through a `sed` argument for an instant, so run it where only you can list processes; and compose gives the whole `ops/.env` to both containers, so the API container's environment also holds the key, although the API code never reads it. After changing the key, recreate the keeper with `docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --force-recreate keeper`. A plain `docker restart` does not re-read the env file.
+It needs the keeper image built and a `LEVY_KEEPER_KEY=` line already in `ops/.env`, because it replaces that line with `sed`. One caveat from reading it: the key passes through a `sed` argument for an instant, so run it where only you can list processes. Compose gives the whole `ops/.env` to the keeper only. The API container gets an explicit list of the variables it reads, so its environment does not hold the key. After changing the key, recreate the keeper with `docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --force-recreate keeper`. A plain `docker restart` does not re-read the env file.
 
 ### Verifying
 

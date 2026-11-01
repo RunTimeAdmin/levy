@@ -59,7 +59,7 @@ The API reads some of the same variables. Where the name matches, the meaning is
 | `LEVY_WEBHOOK_ALLOW_PRIVATE` | off | Relaxes the URL check at registration. |
 | `LEVY_MANAGER_ADDRESS`, `LEVY_USDC_ADDRESS` | unset | Optional here. `GET /api/config` hands them to the checkout page; unset or the zero address means "checkout not configured". |
 
-The API never reads `LEVY_KEEPER_KEY`. See [Authentication](Authentication.md) and [API Reference](API-Reference.md).
+The API never reads `LEVY_KEEPER_KEY`, and in `ops/docker-compose.yml` it does not receive it: the API service lists its variables instead of loading `ops/.env`, so a variable added to `ops/.env` for the API must also be added to that list. See [Authentication](Authentication.md) and [API Reference](API-Reference.md).
 
 `ops/soak/status.mjs` and `ops/soak/webhook-receiver.mjs` are testnet soak tools that read their own extra variables (`LEVY_ABI_DIR`, `PORT`, `PUBLIC_KEY_URL`, `LOG_PATH`, `WEBHOOK_ID`, `MERCHANT`). They are not part of the keeper.
 
