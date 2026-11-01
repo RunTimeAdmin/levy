@@ -1,6 +1,6 @@
 # Security policy
 
-Levy runs on Arc testnet and has not been audited yet. No real money flows through it, and its contracts never hold funds at rest. Reports now still matter: everything found before mainnet gets fixed before mainnet.
+Levy runs on Arc testnet and has not been audited yet. No real money flows through it, and its contracts never hold customer payments at rest, only the 1% fee until it is swept. Reports now still matter: everything found before mainnet gets fixed before mainnet.
 
 The full policy is at https://getlevy.xyz/security.html, with the same contact in https://getlevy.xyz/.well-known/security.txt.
 

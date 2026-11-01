@@ -34,9 +34,9 @@ flowchart TD
     I -->|"no"| J["Return log count and chain time"]
 ```
 
-- **Cursor.** `sync_state` holds one key, `manager_events_from_block`, the next block to read. It moves after every chunk, so a failure part-way through a long catch-up loses at most one chunk.
+- **Cursor.** `sync_state` holds the cursor under `manager_events_from_block`, the next block to read. It moves after every chunk, so a failure part-way through a long catch-up loses at most one chunk.
 - **Chunking.** Ranges are inclusive and at most `LEVY_LOG_CHUNK_BLOCKS` blocks (default 500; some providers reject 1,000). A keeper that was down for a day is about 172,800 blocks behind, which is 346 chunks and roughly 1,400 requests.
-- **First boot.** With no cursor, the first sync scans back `LEVY_LOOKBACK_BLOCKS` (default 5000, about 40 minutes). If the keeper starts long after deployment, raise it to reach the deploy block (the testnet deployment is at block 65201372), or older charge history is never indexed.
+- **First boot.** With no cursor, the first sync scans back `LEVY_LOOKBACK_BLOCKS` (default 5000, about 40 minutes). If the keeper starts long after deployment, raise it to reach the deploy block (the current testnet SubscriptionManager was deployed in block 68869602), or older charge history is never indexed.
 - **Transport.** The RPC client retries a failed request 4 times with a doubling delay starting at 1 second (about 15 seconds in total) before the cycle fails.
 - **Chain time.** The sync returns the latest block's timestamp. Failure and dunning records are stamped with it, so retry math agrees with due math.
 
@@ -87,7 +87,7 @@ The schema is created with `CREATE TABLE IF NOT EXISTS` when the database opens.
 
 | Table | Key | Main columns | Purpose |
 |---|---|---|---|
-| `sync_state` | `key` | `value` | The log cursor. |
+| `sync_state` | `key` | `value` | The log cursor (`manager_events_from_block`) and `delivery_epoch`, the random 16 hex digits that start every webhook delivery id. |
 | `subscriber_funds` | `subscriber` (NOCASE) | `allowance`, `balance`, `per_cycle`, `cycles_covered`, `low`, `checked_at` | Allowance runway per subscriber. `checked_at` of 0 forces a recheck. `cycles_covered` is capped at 1,000,000 so unlimited approvals fit. |
 | `webhooks` | `id` | `merchant`, `url`, `events` (JSON array), `active`, `created_at` | Merchant endpoints. Written by the API; deleting one removes the row. |
 | `webhook_deliveries` | `id`; index on (`status`, `next_retry_at`) | `webhook_id`, `event_type`, `payload`, `status`, `attempts`, `next_retry_at`, `created_at`, `last_error` | One row per event per endpoint. `payload` is the exact canonical JSON that is posted. `webhook_id` has no foreign key, so rows survive endpoint deletion and are dead-lettered on the next pass. |
