@@ -16,7 +16,9 @@ async function main(): Promise<void> {
   console.log(
     `levy keeper: chain=${cfg.chainId} manager=${cfg.managerAddress} keeper=${clients.account.address}`
   );
-  console.log(`webhook signing key: ${cfg.webhookKeyPath} (public key at GET /api/webhooks/public-key)`);
+  console.log(
+    `webhook signing key: ${cfg.webhookKeyPath}; public key published to ${cfg.webhookPublicKeyPath} for GET /api/webhooks/public-key`
+  );
 
   // First boot: hydrate subscription state from chain.
   const indexer = new Indexer(cfg, clients, db);

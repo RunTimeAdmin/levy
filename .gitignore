@@ -3,6 +3,8 @@
 .env.*
 !.env.example
 *.pem
+# The public key the keeper publishes for the API (keeper/src/webhooks.ts writePublicKey).
+*webhook-public-key.json
 *.db
 *.db-wal
 *.db-shm

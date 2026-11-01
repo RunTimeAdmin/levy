@@ -12,8 +12,12 @@ export interface LevyConfig {
   initialLookbackBlocks: number;
   /** Blocks per eth_getLogs request. Arc RPCs cap the range (dRPC under 1,000). */
   logChunkBlocks: number;
-  /** Path of the Ed25519 webhook signing key (generated on first run). */
+  /** Path of the Ed25519 webhook signing key (generated on first run). Keep it where the API cannot read it. */
   webhookKeyPath: string;
+  /** Where the key used to live, readable by the API; moved to webhookKeyPath on boot (M-2). */
+  webhookKeyLegacyPath?: string;
+  /** Where the keeper publishes the public key for the API to serve. */
+  webhookPublicKeyPath: string;
   /** Optional inline signing key: PEM PKCS#8 or base64 32-byte seed. */
   webhookKey?: string;
   /** Allow http and private-address webhook URLs. Local development only. */
@@ -66,6 +70,8 @@ export function loadConfig(): LevyConfig {
     initialLookbackBlocks: integer("LEVY_LOOKBACK_BLOCKS", 5000, 0),
     logChunkBlocks: integer("LEVY_LOG_CHUNK_BLOCKS", 500, 1),
     webhookKeyPath: process.env.LEVY_WEBHOOK_KEY_PATH ?? "./webhook-signing-key.pem",
+    webhookKeyLegacyPath: process.env.LEVY_WEBHOOK_KEY_LEGACY_PATH || undefined,
+    webhookPublicKeyPath: process.env.LEVY_WEBHOOK_PUBLIC_KEY_PATH ?? "./webhook-public-key.json",
     webhookKey: process.env.LEVY_WEBHOOK_KEY,
     webhookAllowPrivate: process.env.LEVY_WEBHOOK_ALLOW_PRIVATE === "1",
     webhookPollMs: integer("LEVY_WEBHOOK_POLL_MS", 5_000, 100),

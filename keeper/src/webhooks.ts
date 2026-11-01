@@ -1,13 +1,15 @@
 import {
   createHash,
+  createHmac,
   createPrivateKey,
   createPublicKey,
   generateKeyPairSync,
   sign,
+  timingSafeEqual,
   verify,
   type KeyObject,
 } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import { LevyDb, type DeliveryRow } from "./db.js";
@@ -55,12 +57,19 @@ export function canonicalJson(v: unknown): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Load the webhook signing key. Precedence:
+ * Load the webhook signing key. Only the keeper does: the API serves the public
+ * key the keeper publishes (writePublicKey), so a compromise of the
+ * internet-facing API does not yield the key (M-2, 2026-10-24 infrastructure
+ * review). Precedence:
  *  1. `envKey` (LEVY_WEBHOOK_KEY): PEM PKCS#8, or a base64 32-byte seed.
- *  2. `keyPath` file (LEVY_WEBHOOK_KEY_PATH): loaded if present, otherwise a
- *     fresh keypair is generated and saved with 0600 permissions.
+ *  2. `keyPath` file (LEVY_WEBHOOK_KEY_PATH), if present.
+ *  3. `legacyPath` (LEVY_WEBHOOK_KEY_LEGACY_PATH): a key kept where the API
+ *     could read it is moved to `keyPath` and removed, so the key merchants
+ *     hold keeps working.
+ *  4. Otherwise a fresh keypair, written create-only with 0600 permissions; if
+ *     another process wrote one first, that one is used.
  */
-export function loadSigningKey(keyPath: string, envKey?: string): KeyObject {
+export function loadSigningKey(keyPath: string, envKey?: string, legacyPath?: string): KeyObject {
   if (envKey && envKey.trim()) {
     const v = envKey.trim();
     if (v.includes("BEGIN")) return createPrivateKey(v);
@@ -73,14 +82,95 @@ export function loadSigningKey(keyPath: string, envKey?: string): KeyObject {
     ]);
     return createPrivateKey({ key: der, format: "der", type: "pkcs8" });
   }
-  try {
-    return createPrivateKey(readFileSync(keyPath, "utf-8"));
-  } catch (e: unknown) {
-    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") throw e;
-    const { privateKey } = generateKeyPairSync("ed25519");
-    writeFileSync(keyPath, privateKey.export({ format: "pem", type: "pkcs8" }), { mode: 0o600 });
-    return privateKey;
+  const held = readKeyFile(keyPath);
+  if (held) return held;
+  const legacy = legacyPath && legacyPath !== keyPath ? readKeyFile(legacyPath) : null;
+  if (legacy) {
+    writeKeyOnce(keyPath, legacy);
+    const moved = readKeyFile(keyPath);
+    if (!moved || keyId(moved) !== keyId(legacy)) {
+      throw new Error(`${keyPath} holds a different key from ${legacyPath}; left both in place`);
+    }
+    unlinkSync(legacyPath!);
+    return moved;
   }
+  writeKeyOnce(keyPath, generateKeyPairSync("ed25519").privateKey);
+  return readKeyFile(keyPath)!;
+}
+
+function readKeyFile(path: string): KeyObject | null {
+  try {
+    return createPrivateKey(readFileSync(path, "utf-8"));
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+    throw e;
+  }
+}
+
+/** Writes a key only where none exists, so no key is ever replaced. */
+function writeKeyOnce(path: string, key: KeyObject): void {
+  try {
+    writeFileSync(path, key.export({ format: "pem", type: "pkcs8" }), { mode: 0o600, flag: "wx" });
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException)?.code !== "EEXIST") throw e;
+  }
+}
+
+/** What GET /api/webhooks/public-key serves, minus the event list. */
+export interface PublicKeyRecord {
+  algorithm: "ed25519";
+  keyId: string;
+  publicKey: string;
+}
+
+/**
+ * Publishes the public half of the signing key where the API reads it, written
+ * whole (a temporary file, then a rename) so the API never reads half a file.
+ */
+export function writePublicKey(path: string, privateKey: KeyObject): void {
+  const record: PublicKeyRecord = { algorithm: "ed25519", keyId: keyId(privateKey), publicKey: publicKeyPem(privateKey) };
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(record)}\n`, { mode: 0o644 });
+  renameSync(tmp, path);
+}
+
+/** The record the keeper published, checked: an Ed25519 key whose id matches it. */
+export function readPublicKey(path: string): PublicKeyRecord {
+  const record = JSON.parse(readFileSync(path, "utf-8")) as Partial<PublicKeyRecord>;
+  const key = createPublicKey(String(record.publicKey));
+  if (record.algorithm !== "ed25519" || key.asymmetricKeyType !== "ed25519" || record.keyId !== keyId(key)) {
+    throw new Error(`${path} is not a published Ed25519 public key`);
+  }
+  return {
+    algorithm: "ed25519",
+    keyId: record.keyId,
+    publicKey: key.export({ format: "pem", type: "spki" }).toString(),
+  };
+}
+
+/**
+ * The key for delivery MACs, derived from the signing key, so only the keeper
+ * holds it. The API shares the database and could otherwise queue an event for
+ * the keeper to sign (M-2): the keeper signs only rows that carry its MAC.
+ */
+export function deliveryMacKey(signingKey: KeyObject): Buffer {
+  return createHash("sha256")
+    .update("levy/delivery-mac/v1\n")
+    .update(signingKey.export({ format: "der", type: "pkcs8" }))
+    .digest();
+}
+
+/**
+ * MAC over a delivery row's id, webhook, event, payload and creation time, so
+ * neither a row the keeper did not queue, nor a changed or copied one, passes.
+ */
+export function deliveryMac(
+  macKey: Buffer,
+  d: { id: number; webhook_id: number; event_type: string; payload: string; created_at: number }
+): string {
+  return createHmac("sha256", macKey)
+    .update(canonicalJson([d.id, d.webhook_id, d.event_type, d.payload, d.created_at]))
+    .digest("hex");
 }
 
 /** SPKI PEM of the public half, published via GET /api/webhooks/public-key. */
@@ -325,12 +415,16 @@ function deliveryError(e: NodeJS.ErrnoException): string {
 }
 
 export class WebhookDispatcher {
+  private macKey: Buffer;
+
   /** allowPrivate: deliver to http and private addresses (local dev and tests only). */
   constructor(
     private db: LevyDb,
     private privateKey: KeyObject,
     private policy: WebhookUrlPolicy = { allowPrivate: false }
-  ) {}
+  ) {
+    this.macKey = deliveryMacKey(privateKey);
+  }
 
   get publicKey(): string {
     return publicKeyPem(this.privateKey);
@@ -355,7 +449,11 @@ export class WebhookDispatcher {
       if (!hook.active) continue;
       const subscribed: string[] = JSON.parse(hook.events);
       if (!subscribed.includes(type)) continue;
-      ids.push(this.db.enqueueDelivery(hook.id, type, canonicalJson(payload), nowSec));
+      ids.push(
+        this.db.enqueueDelivery(hook.id, type, canonicalJson(payload), nowSec, (row) =>
+          deliveryMac(this.macKey, row)
+        )
+      );
     }
     return ids;
   }
@@ -406,6 +504,12 @@ export class WebhookDispatcher {
     nowSec: number,
     out: { sent: number; failed: number; dead: number }
   ): Promise<void> {
+    // A row without this keeper's MAC was not queued by it: never signed.
+    if (!this.queuedHere(d)) {
+      this.db.markDeliveryDead(d.id, "not queued by the keeper (no valid delivery MAC); not sent");
+      out.dead++;
+      return;
+    }
     const hook = this.db.getWebhook(d.webhook_id);
     if (!hook || !hook.active) {
       this.db.markDeliveryDead(d.id, "webhook deleted or deactivated");
@@ -426,6 +530,11 @@ export class WebhookDispatcher {
       this.db.markDeliveryFailed(d.id, next, res.error);
       out.failed++;
     }
+  }
+
+  private queuedHere(d: DeliveryRow): boolean {
+    if (typeof d.mac !== "string" || !/^[0-9a-f]{64}$/.test(d.mac)) return false;
+    return timingSafeEqual(Buffer.from(d.mac, "hex"), Buffer.from(deliveryMac(this.macKey, d), "hex"));
   }
 
   /**

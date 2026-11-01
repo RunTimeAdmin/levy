@@ -4,13 +4,7 @@ import { dirname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LevyDb, Status } from "../../keeper/src/db.js";
 import { checkWebhookUrl } from "../../keeper/src/webhook-url.js";
-import {
-  WEBHOOK_EVENTS,
-  isWebhookEventType,
-  keyId,
-  loadSigningKey,
-  publicKeyPem,
-} from "../../keeper/src/webhooks.js";
+import { WEBHOOK_EVENTS, isWebhookEventType, readPublicKey } from "../../keeper/src/webhooks.js";
 import { registerAuthRoutes } from "./auth.js";
 
 const API_DIR = dirname(fileURLToPath(import.meta.url));
@@ -19,9 +13,8 @@ const PUBLIC_DIR = join(API_DIR, "..", "public");
 export interface ApiOptions {
   /** Path to the keeper's SQLite file. */
   dbPath: string;
-  /** Path of the Ed25519 webhook signing key (for the public-key endpoint). */
-  webhookKeyPath: string;
-  webhookKey?: string;
+  /** Where the keeper publishes the webhook public key. The API never reads the private key (M-2). */
+  webhookPublicKeyPath: string;
   /** Origin the dashboard is served from; sign-in messages are bound to it. */
   origin: string;
   chainId: number;
@@ -42,10 +35,9 @@ export function apiOptionsFromEnv(): ApiOptions {
   return {
     dbPath:
       process.env.LEVY_DB_PATH ?? join(API_DIR, "..", "..", "keeper", "levy.db"),
-    webhookKeyPath:
-      process.env.LEVY_WEBHOOK_KEY_PATH ??
-      join(API_DIR, "..", "..", "keeper", "webhook-signing-key.pem"),
-    webhookKey: process.env.LEVY_WEBHOOK_KEY,
+    webhookPublicKeyPath:
+      process.env.LEVY_WEBHOOK_PUBLIC_KEY_PATH ??
+      join(API_DIR, "..", "..", "keeper", "webhook-public-key.json"),
     origin: publicOrigin(
       process.env.LEVY_PUBLIC_ORIGIN ?? `http://localhost:${process.env.LEVY_API_PORT ?? 3001}`,
       production
@@ -384,13 +376,13 @@ export function buildServer(opts: ApiOptions): FastifyInstance {
   });
 
   app.get("/api/webhooks/public-key", async () => {
-    let key;
+    let published;
     try {
-      key = loadSigningKey(opts.webhookKeyPath, opts.webhookKey);
+      published = readPublicKey(opts.webhookPublicKeyPath);
     } catch {
-      return bad(503, "signing key not available (keeper has not booted yet)");
+      return bad(503, "public key not published yet (keeper has not booted)");
     }
-    return { algorithm: "ed25519", keyId: keyId(key), publicKey: publicKeyPem(key), events: [...WEBHOOK_EVENTS] };
+    return { ...published, events: [...WEBHOOK_EVENTS] };
   });
 
   app.get("/api/deliveries", async (req) => {

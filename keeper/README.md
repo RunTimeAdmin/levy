@@ -49,8 +49,13 @@ type and reject a delivery made for another endpoint (`verifyDelivery` in
 unknown event types). The webhook id is also sent as `X-Levy-Webhook`, and
 delivery ids are `{16 hex digits}-{row id}`, the prefix fixed per database so a
 recreated database never repeats one. `X-Levy-Key-Id` names the key. The signing key is loaded
-from `LEVY_WEBHOOK_KEY_PATH`, or created there on first boot (or passed inline via
-`LEVY_WEBHOOK_KEY`); the public key is served at `GET /api/webhooks/public-key`.
+from `LEVY_WEBHOOK_KEY_PATH`, or created there on first boot, never over an existing
+key (or passed inline via `LEVY_WEBHOOK_KEY`). Keep it where the API cannot read it:
+the keeper publishes the public key to `LEVY_WEBHOOK_PUBLIC_KEY_PATH`, which the API
+serves at `GET /api/webhooks/public-key`. A key at `LEVY_WEBHOOK_KEY_LEGACY_PATH` is
+moved to `LEVY_WEBHOOK_KEY_PATH` on boot, so an upgrade keeps the key merchants hold.
+The keeper signs only delivery rows that carry its MAC (derived from the signing key),
+so a row written by anything else sharing the database is dead-lettered unsent.
 
 Deliveries only go to https URLs on port 443 at public addresses. The address is
 checked at connect time (so DNS rebinding after registration does not help), and
