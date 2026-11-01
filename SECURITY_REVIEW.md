@@ -2,7 +2,7 @@
 
 Adversarial read of `SubscriptionManager.sol` and `FeeRouter.sol` before any
 paid audit, plus a short section on the off-chain services. Goal: find
-problems, not confirm correctness. Last revised 2026-10-24.
+problems, not confirm correctness. Last revised 2026-11-01.
 
 ## 1. Access control
 
@@ -305,8 +305,10 @@ recorded, and the contract spaces those on the dunning schedule (§3).
   it found almost nothing. It now counts the senders of transactions in which
   a Levy contract emitted a log, writes its inputs with the result, backs off
   when the RPC rate limits, and has tests that CI runs. The keeper and API
-  findings are being fixed on branch `fix/review-2026-10-27`, made from
-  manager v2, so soak 3 runs the fixes; soak 2 keeps its deployment.
+  findings were fixed on manager v2, not on `main`: PR #10 (M-1 to M-4 and
+  L-3) and PR #11 (L-1 and L-4), merged into `docs/manager-v2-design` on
+  2026-10-28 and 2026-10-29, so soak 3 runs the fixes; soak 2 keeps its
+  deployment.
 - **Sixth external review (2026-10-29, `docs/REVIEW_2026-10-29.md`).**
   No-go for mainnet, with no critical or high finding. It reviewed `main` at
   `f8005b3`, the soak 2 contracts, and says it did not review manager v2.
@@ -320,8 +322,8 @@ recorded, and the contract spaces those on the dunning schedule (§3).
   history back only as far as `LEVY_LOOKBACK_BLOCKS`. Still open: F-07
   (item 6), F-08 (items 7 and 8) and F-13 (items 12 and 15). F-10 and F-14
   are the infrastructure review's L-4 and L-9. F-10, the plan list sent
-  whole, is being fixed on manager v2 on branch
-  `fix/review-2026-10-29-plans`. F-14 is fixed: `.gitignore` now covers a
+  whole, is fixed on manager v2 by PR #14 (merged 2026-10-29), not on
+  `main`. F-14 is fixed: `.gitignore` now covers a
   root `.env`, `*.pem` and SQLite database files; the CI secret scan it also
   suggests is not done. New, and fixed the same day, F-11 and F-12 in
   `script/count-unique-actors.py`: it needs `--chain-id` and stops on an

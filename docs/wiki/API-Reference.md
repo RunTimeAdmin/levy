@@ -1,6 +1,6 @@
 # API Reference
 
-The Levy API is a Fastify server that reads the keeper's SQLite database and serves the three browser pages. It holds no on-chain key and sends no transactions: plans, subscriptions, pauses, cancels and allowance changes are signed in the user's wallet (see [Dashboard-Portal-and-Checkout.md](Dashboard-Portal-and-Checkout.md)). The API writes only sign-in state and webhook registrations. Every route lives on one origin, for example `https://app.getlevy.xyz` on Arc testnet.
+The Levy API is a Fastify server that reads the keeper's SQLite database and serves the three browser pages. Its code reads no on-chain key and it sends no transactions (although the Compose file gives its container the keeper's `.env`, gas key included; see [Security](Security.md), open item 14): plans, subscriptions, pauses, cancels and allowance changes are signed in the user's wallet (see [Dashboard-Portal-and-Checkout.md](Dashboard-Portal-and-Checkout.md)). The API writes only sign-in state and webhook registrations. Every route lives on one origin, for example `https://app.getlevy.xyz` on Arc testnet.
 
 ## Conventions
 

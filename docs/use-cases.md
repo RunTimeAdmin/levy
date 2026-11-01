@@ -36,10 +36,11 @@ payments.
 
 ## Commerce
 
-**On-chain installment plans (not built yet).** A fixed number of scheduled
-pulls, then the plan ends. Plans have no cycle count or end date today; a
-subscription runs until someone cancels it. Buy-now-pay-later without a lender
-in the middle would need a cycle limit in the contract.
+**On-chain installment plans (not deployed yet).** A fixed number of scheduled
+pulls, then the plan ends. The deployed contracts have no cycle count or end
+date; a subscription runs until someone cancels it. Manager v2, built on the
+`docs/manager-v2-design` branch and not deployed, adds the cycle limit
+(`maxCycles`) that buy-now-pay-later without a lender in the middle needs.
 
 **Domain and hosting renewals.** Recurring renewals for portfolios of
 domains and servers. The pull fails safe: missed payment triggers dunning,

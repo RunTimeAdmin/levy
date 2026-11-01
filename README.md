@@ -54,7 +54,7 @@ flowchart LR
     K -->|"signed webhooks"| WH
 ```
 
-Every on-chain write is signed in the user's wallet, and the API holds no on-chain key. The keeper indexes contract events into SQLite, sends the `charge()` transactions (paying gas in USDC), runs the dunning retries and delivers signed webhooks to the merchant's own endpoints. The API serves the dashboard, the customer portal and the checkout page from the same database. See [Architecture](docs/wiki/Architecture.md) for the sequence diagrams.
+Every on-chain write is signed in the user's wallet, and the API's code reads no on-chain key (though `ops/docker-compose.yml` still hands the API container the keeper's `.env`, gas key included; `SECURITY_REVIEW.md` §9, item 14). The keeper indexes contract events into SQLite, sends the `charge()` transactions (paying gas in USDC), runs the dunning retries and delivers signed webhooks to the merchant's own endpoints. The API serves the dashboard, the customer portal and the checkout page from the same database. See [Architecture](docs/wiki/Architecture.md) for the sequence diagrams.
 
 ## Quick start
 
@@ -99,7 +99,7 @@ For a full local stack (anvil, a local deploy, the keeper and the API) follow [G
 - `nextChargeAt` never falls below the subscription's start. (It can move earlier on a switch to a shorter-cycle plan, which bills the new cycle immediately.)
 - Credit is backed: a subscription never holds more credit than the USDC it has paid.
 - Credit never exceeds the largest plan price.
-- The manager holds no funds at rest: every pull is fully split in the same transaction.
+- The manager holds no funds at rest: every pull is fully split in the same transaction. USDC sent to it by a plain transfer is outside this and stays there, since nothing can move it out (the testnet manager has held 12,256 units from one such transfer since 2026-10-30).
 - A successful charge never leaves its subscription chargeable, so missed cycles are never pulled back to back.
 
 ## Off-chain services
@@ -145,6 +145,8 @@ On Windows, `script/deploy-testnet.ps1` does the testnet broadcast for you: it a
 Use `--rpc-url arc_mainnet` for mainnet, and add `--legacy` if fee estimation fails. `LEVY_USDC` and `LEVY_PERMIT2` override the defaults on testnet; on mainnet the script accepts only the canonical USDC and Permit2. The current testnet deploy used 4.12M gas at 25 gwei, about 0.10 USDC (2026-10-24). Broadcast records land in `broadcast/`; commit the testnet and mainnet ones as the deployment record. If the keeper first starts more than `LEVY_LOOKBACK_BLOCKS` (default 5000, about 40 minutes) after the deploy, raise it to reach back to the deploy block.
 
 To run the keeper and API: `docker compose -f ops/docker-compose.yml --env-file ops/.env up -d --build` (copy `ops/.env.example` first; `LEVY_PUBLIC_ORIGIN` is required). The API is published on the host's loopback only; put a TLS reverse proxy in front (`ops/nginx-app.conf.example` is the nginx site the testnet host uses). `ops/keeper.service` is the systemd alternative for the keeper.
+
+The public site, getlevy.xyz, is the static `site/` folder with no build step. It is uploaded as-is to Hostinger web hosting (`public_html`), which serves it through Hostinger's CDN; `site/.htaccess` sets its headers, redirects and cache lifetimes. Nothing in the repo or CI deploys it, so upload the changed files after merging, from a checkout with `core.autocrlf=false` so text files keep LF endings. `site/levy-whitepaper.pdf` is printed from `site/whitepaper.html` with headless Edge; print it again whenever the paper changes. `site/docs.html` is the public copy of `docs/merchant-guide.md`.
 
 ## Deployments
 

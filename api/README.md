@@ -1,8 +1,10 @@
 # Levy API + Pages
 
 Fastify API over the keeper's SQLite database, plus the merchant dashboard,
-customer portal and checkout page. The API holds no on-chain key and signs no
-transactions (it keeps only the webhook signing key): on-chain writes (plan creation, subscribe, pause, resume,
+customer portal and checkout page. The API reads no on-chain key and signs no
+transactions (it uses only the webhook signing key), though
+`ops/docker-compose.yml` still gives its container the keeper's `.env`, gas
+key included (`SECURITY_REVIEW.md` §9, item 14): on-chain writes (plan creation, subscribe, pause, resume,
 cancel, allowance changes) are signed in the user's wallet, and the pages
 build those transactions in the browser.
 
@@ -105,16 +107,19 @@ errors.
 
 Every delivery POSTs canonical JSON with headers:
 
-- `X-Levy-Signature`: base64 Ed25519 signature over `{timestamp}.{deliveryId}.{event}.{body}`
+- `X-Levy-Signature`: base64 Ed25519 signature over `{timestamp}.{deliveryId}.{webhookId}.{event}.{body}`
 - `X-Levy-Timestamp`: unix seconds when this attempt was signed
-- `X-Levy-Delivery`: delivery id (signed, so safe to dedupe on)
+- `X-Levy-Delivery`: delivery id, `{16 hex digits}-{number}` (signed, so safe to dedupe on)
+- `X-Levy-Webhook`: the id of the endpoint the delivery was made for
 - `X-Levy-Key-Id`: signing key id, also returned by the public-key endpoint
 - `X-Levy-Event`: event type, e.g. `charge.succeeded` (signed; reject unknown types)
 
-Verify with the public key from `GET /api/webhooks/public-key`, reject
-timestamps more than 5 minutes off, and drop delivery ids already seen.
-`verifyDelivery` in `keeper/src/webhooks.ts` does the signature and timestamp
-checks; the merchant guide has a standalone example and the payload fields.
+Verify with the public key from `GET /api/webhooks/public-key` over your own
+webhook id (not the `X-Levy-Webhook` header), reject timestamps more than 5
+minutes off, drop delivery ids already seen, and check that the payload's
+`merchant` is you. `verifyDelivery` in `keeper/src/webhooks.ts` does the
+signature, webhook id, timestamp, event type and delivery id format checks;
+the merchant guide has a standalone example and the payload fields.
 
 ## Deploying
 

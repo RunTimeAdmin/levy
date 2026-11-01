@@ -61,7 +61,7 @@ The API reads some of the same variables. Where the name matches, the meaning is
 
 The API never reads `LEVY_KEEPER_KEY`. See [Authentication](Authentication.md) and [API Reference](API-Reference.md).
 
-`ops/soak/status.mjs` and `ops/soak/webhook-receiver.mjs` are testnet soak tools that read their own extra variables (`LEVY_ABI_DIR`, `PORT`, `PUBLIC_KEY_URL`, `LOG_PATH`). They are not part of the keeper.
+`ops/soak/status.mjs` and `ops/soak/webhook-receiver.mjs` are testnet soak tools that read their own extra variables (`LEVY_ABI_DIR`, `PORT`, `PUBLIC_KEY_URL`, `LOG_PATH`, `WEBHOOK_ID`, `MERCHANT`). They are not part of the keeper.
 
 ## Keys
 
