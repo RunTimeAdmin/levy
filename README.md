@@ -58,7 +58,7 @@ Every on-chain write is signed in the user's wallet, and the API's code reads no
 
 ## Quick start
 
-Requires [Foundry](https://getfoundry.sh/) for the contracts and Node 24 for the keeper and API (22.13 or later also works). The repository is private, so cloning needs read access.
+Requires [Foundry](https://getfoundry.sh/) for the contracts and Node 24 for the keeper and API (22.13 or later also works).
 
 ```bash
 git clone --recurse-submodules https://github.com/RunTimeAdmin/levy.git && cd levy

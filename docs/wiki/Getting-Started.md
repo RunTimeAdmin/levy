@@ -26,8 +26,6 @@ cd levy
 git submodule update --init --recursive   # only if you cloned without --recurse-submodules
 ```
 
-The repository is private, so cloning needs read access.
-
 ## Build and test the contracts
 
 ```bash
