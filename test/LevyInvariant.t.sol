@@ -37,6 +37,7 @@ contract LevyHandler is Test {
     mapping(uint256 => address) public holder; // who should be the subscriber
     mapping(uint256 => address) public proposedTo; // the subscriber's live transfer proposal
     bool public transferWithoutProposal; // an acceptTransfer succeeded for a wallet nobody proposed
+    mapping(uint256 => address) public merchantOf; // the account each subscription subscribed to
 
     constructor(MockUSDC _usdc, FeeRouter _router, SubscriptionManager _manager, address _treasury) {
         usdc = _usdc;
@@ -47,6 +48,7 @@ contract LevyHandler is Test {
         actors.push(makeAddr("h-alice"));
         actors.push(makeAddr("h-bob"));
         actors.push(makeAddr("h-carol"));
+        actors.push(makeAddr("h-merchant-2")); // a second merchant account, so plan changes can cross accounts
         for (uint256 i = 0; i < actors.length; i++) {
             usdc.mint(actors[i], 1_000_000_000_000); // $1M each, plenty of runway
         }
@@ -81,13 +83,26 @@ contract LevyHandler is Test {
         }
     }
 
-    /// @dev The merchant account is actors[0]; whoever owns it now acts for it.
-    function _merchantOwner() internal view returns (address) {
-        return manager.ownerOf(actors[0]);
+    function actorCount() external view returns (uint256) {
+        return actors.length;
+    }
+
+    /// @dev The merchant accounts are actors[0] and actors[4]; whoever owns one now acts for it.
+    function _account(uint256 seed) internal view returns (address) {
+        return seed % 2 == 0 ? actors[0] : actors[4];
+    }
+
+    function _ownerOf(address account) internal view returns (address) {
+        return manager.ownerOf(account);
+    }
+
+    function _merchantOfPlan(uint256 planId) internal view returns (address merchant) {
+        (merchant, , , , , , , , , , ) = manager.plans(planId);
     }
 
     /// @dev `seed` picks the v2 terms: an intro price, a cycle limit of 1 to 4
     ///      (so one-cycle plans come up), both or neither, and transferability.
+    ///      Bit 3 picks the merchant account.
     function createPlan(uint256 price, uint256 cycleDays, uint8 maxFailed, bool withTrial, uint256 seed) external {
         SubscriptionManager.PlanTerms memory t;
         t.price = bound(price, 1, 1_000_000_000_000);
@@ -100,8 +115,9 @@ contract LevyHandler is Test {
             t.introPrice = bound(seed >> 16, 1, t.price - 1);
             t.introCycles = uint32(bound(seed >> 80, 1, t.maxCycles > 0 ? t.maxCycles : 3));
         }
-        vm.prank(_merchantOwner());
-        try manager.createPlan(actors[0], t) returns (uint256 planId) {
+        address account = _account(seed >> 3);
+        vm.prank(_ownerOf(account));
+        try manager.createPlan(account, t) returns (uint256 planId) {
             planIds.push(planId);
             if (t.price > maxPriceSeen) maxPriceSeen = t.price;
         } catch {}
@@ -116,6 +132,7 @@ contract LevyHandler is Test {
         try manager.subscribe(planId, bytes32(0)) returns (uint256 subId) {
             subIds.push(subId);
             holder[subId] = sub;
+            merchantOf[subId] = _merchantOfPlan(planId);
             if (retired[planId]) joinedRetired = true;
         } catch {}
         _recordPaid();
@@ -124,27 +141,29 @@ contract LevyHandler is Test {
     function retirePlan(uint256 planSeed, bool retire) external {
         if (planIds.length == 0) return;
         uint256 planId = planIds[planSeed % planIds.length];
-        vm.prank(_merchantOwner());
+        vm.prank(_ownerOf(_merchantOfPlan(planId)));
         try manager.setPlanRetired(planId, retire) {
             retired[planId] = retire;
         } catch {}
     }
 
-    /// @dev The merchant account changes hands; later merchant actions come from the new owner.
-    function handOver(uint256 actorSeed) external {
+    /// @dev A merchant account changes hands; later actions for it come from the new owner.
+    function handOver(uint256 accountSeed, uint256 actorSeed) external {
+        address account = _account(accountSeed);
         address to = _actor(actorSeed);
-        vm.prank(_merchantOwner());
-        try manager.transferOwnership(actors[0], to) {} catch {}
+        vm.prank(_ownerOf(account));
+        try manager.transferOwnership(account, to) {} catch {}
         vm.prank(to);
-        try manager.acceptOwnership(actors[0]) {} catch {}
+        try manager.acceptOwnership(account) {} catch {}
     }
 
     /// @dev A fixed payout at an actor or payoutAddr, or zero to follow the owner.
-    function setPayout(uint256 seed) external {
+    function setPayout(uint256 accountSeed, uint256 seed) external {
+        address account = _account(accountSeed);
         uint256 pick = seed % (actors.length + 2);
         address payout = pick < actors.length ? actors[pick] : pick == actors.length ? payoutAddr : address(0);
-        vm.prank(_merchantOwner());
-        try manager.setPayout(actors[0], payout) {} catch {}
+        vm.prank(_ownerOf(account));
+        try manager.setPayout(account, payout) {} catch {}
     }
 
     /// @dev The subscriber proposes a move to another actor, who accepts.
@@ -226,6 +245,29 @@ contract LevyHandler is Test {
         _recordPaid();
     }
 
+    /// @dev A subscriber tries to move to a plan of the other merchant account,
+    ///      having approved its price, so only the same-merchant rule can stop it.
+    function changePlanAcrossAccounts(uint256 subSeed, uint256 planSeed) external {
+        if (subIds.length == 0) return;
+        uint256 subId = subIds[subSeed % subIds.length];
+        (address subscriber, uint256 planId, , , , , , ) = manager.subscriptions(subId);
+        address merchant = _merchantOfPlan(planId);
+        for (uint256 i = 0; i < planIds.length; i++) {
+            uint256 newPlan = planIds[(planSeed + i) % planIds.length];
+            if (_merchantOfPlan(newPlan) == merchant) continue;
+            (, uint256 price, , , , , , , , , ) = manager.plans(newPlan);
+            vm.prank(subscriber);
+            usdc.approve(address(manager), price);
+            vm.recordLogs();
+            vm.prank(subscriber);
+            try manager.changePlan(subId, newPlan) {
+                if (retired[newPlan]) joinedRetired = true;
+            } catch {}
+            _recordPaid();
+            return;
+        }
+    }
+
     function cancelSub(uint256 subSeed, uint256 actorSeed) external {
         if (subIds.length == 0) return;
         uint256 subId = subIds[subSeed % subIds.length];
@@ -283,7 +325,7 @@ contract LevyInvariantTest is Test {
             usdc.balanceOf(address(router)) +
             usdc.balanceOf(treasury) +
             usdc.balanceOf(handler.payoutAddr());
-        for (uint256 i = 0; i < 4; i++) {
+        for (uint256 i = 0; i < handler.actorCount(); i++) {
             accounted += usdc.balanceOf(handler.actors(i));
         }
         assertEq(accounted, usdc.totalSupply());
@@ -337,6 +379,18 @@ contract LevyInvariantTest is Test {
         for (uint256 id = 1; id <= n; id++) {
             (, , , , , uint256 credit, , ) = manager.subscriptions(id);
             assertLe(credit, handler.paid(id));
+        }
+    }
+
+    /// @notice A subscription only ever moves between plans of the account it
+    ///         subscribed to, so with creditBacked its credit is backed by USDC
+    ///         that same merchant account was paid.
+    function invariant_subscriptionKeepsItsMerchant() public view {
+        uint256 n = manager.subCount();
+        for (uint256 id = 1; id <= n; id++) {
+            (, uint256 planId, , , , , , ) = manager.subscriptions(id);
+            (address merchant, , , , , , , , , , ) = manager.plans(planId);
+            assertEq(merchant, handler.merchantOf(id));
         }
     }
 
