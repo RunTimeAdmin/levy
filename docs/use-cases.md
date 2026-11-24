@@ -7,13 +7,31 @@ customer action, on-chain dunning, webhook events for every state change.
 ## Agent economy
 
 **Agent service subscriptions.** An agent pays for API access, compute, or
-data feeds on a schedule. The agent holds an allowance and the provider
-pulls each cycle. No per-cycle signing, no missed payments when the agent
-is busy.
+data feeds on a schedule. Its subscription draws on a USDC allowance, and
+the provider pulls each cycle. No per-cycle signing, no missed payments when
+the agent is busy.
 
 **Agent-to-agent retainers.** One agent subscribes to another agent's output:
 a scoring feed, monitoring, alerts. Recurring USDC, settled on-chain,
 auditable from the ledger.
+
+**Who holds the subscriber key.** The wallet that subscribes also sets its
+own allowance, and one allowance to the manager pays every Levy subscription
+that wallet has, across merchants. An agent that holds this key can raise
+its allowance and subscribe to any plan. Two setups leave the spending
+limit with a person:
+
+- **The person subscribes, the agent asks.** A person, or a Safe they
+  control, is the subscriber. The agent hands them the plan's checkout link
+  (`/checkout.html?plan=<id>&ref=<ref>`), and they approve and subscribe
+  from their own wallet. After that, each cycle is charged with no
+  signature, at the plan's fixed price, to that plan's merchant. A plan
+  change needs the person's signature too.
+- **The agent subscribes, its balance is the limit.** Give the agent a
+  wallet of its own that holds only what it may spend, and top it up as
+  needed. Levy pulls only from the subscribing wallet, so a charge the
+  balance cannot cover fails and goes to dunning. The person's own wallet
+  is never touched.
 
 ## Crypto-native SaaS
 
